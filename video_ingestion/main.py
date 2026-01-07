@@ -7,82 +7,79 @@ import numpy as np
 import redis
 import logging
 
-# --- Setup Logging (สำคัญสำหรับคนทำงานร่วมกัน) ---
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+# Setup Logger
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- Load Config from .env ---
-RTSP_URL = os.getenv("RTSP_URL", "0") # Default เป็น 0 (Webcam)
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+# Config (ดึงจาก Environment ที่เราตั้งใน docker-compose)
+RTSP_URL = os.getenv("RTSP_URL", "/app/video.mp4")
+PLAY_LOOP = os.getenv("PLAY_LOOP", "true") == "true"
 QUEUE_NAME = os.getenv("QUEUE_NAME", "video_frames_queue")
-SHARED_PATH = os.getenv("SHARED_PATH", "/dev/shm")
-IMG_SIZE = int(os.getenv("IMG_SIZE", 640))
-MAX_QUEUE_SIZE = int(os.getenv("MAX_QUEUE_SIZE", 50))
+SHARED_PATH = "/dev/shm"
 
-# --- Redis Connection ---
+# Connect Redis
 try:
-    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
+    r = redis.Redis(host="redis", port=6379, db=0)
     r.ping()
-    logger.info(f"✅ Connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
+    logger.info("✅ Redis Connected!")
 except Exception as e:
-    logger.error(f"❌ Redis Connection Error: {e}")
+    logger.error(f"❌ Redis Failed: {e}")
     exit(1)
 
-def run_ingestion():
-    logger.info(f"🚀 Starting Ingestion: Source={RTSP_URL}, Size={IMG_SIZE}x{IMG_SIZE}")
-    cap = cv2.VideoCapture(RTSP_URL)
-    
-    # ถ้าเป็นไฟล์วิดีโอ (ไม่ใช่ stream) อาจต้องวน Loop เล่นซ้ำ
-    # แต่ถ้าเป็น RTSP กล้องจริง มันจะมาเรื่อยๆ
+def run():
+    # 1. เช็คไฟล์ก่อนเริ่ม (เหมือนตัวเทส)
+    if not os.path.exists(RTSP_URL):
+        logger.error(f"❌ CRITICAL: File not found at {RTSP_URL}")
+        return
 
+    cap = cv2.VideoCapture(RTSP_URL)
+    if not cap.isOpened():
+        logger.error("❌ CRITICAL: OpenCV cannot open file.")
+        return
+
+    logger.info("🚀 System Started. Processing frames...")
+    
     while True:
         ret, frame = cap.read()
         
+        # ถ้าจบไฟล์ -> วนลูป
         if not ret:
-            logger.warning("⚠️ No frame / Camera disconnected. Retrying in 2s...")
-            cap.release()
-            time.sleep(2)
-            cap = cv2.VideoCapture(RTSP_URL)
+            if PLAY_LOOP:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                continue
+            else:
+                break
+
+        # ถ้าคิวเต็ม -> รอ
+        if r.llen(QUEUE_NAME) >= 50:
+            time.sleep(0.01)
             continue
 
-        # 1. Backpressure Check
-        q_len = r.llen(QUEUE_NAME)
-        if q_len >= MAX_QUEUE_SIZE:
-            # ใช้ logging.debug หรือไม่ต้อง print บ่อยๆ เพื่อไม่ให้รก
-            # logger.warning(f"🛑 Queue full ({q_len}). Dropping frame.") 
-            time.sleep(0.05) # รอแป๊บนึงค่อยวนใหม่
-            continue
-
-        # 2. Resize
-        resized = cv2.resize(frame, (IMG_SIZE, IMG_SIZE))
-
-        # 3. Save to Shared Memory
-        frame_id = str(uuid.uuid4())
-        file_name = f"{frame_id}.npy"
-        file_path = os.path.join(SHARED_PATH, file_name)
-
+        # Process: Resize -> Save .npy -> Send Redis
         try:
+            # Resize
+            resized = cv2.resize(frame, (640, 640))
+            
+            # Save to RAM (/dev/shm)
+            frame_id = str(uuid.uuid4())
+            file_path = os.path.join(SHARED_PATH, f"{frame_id}.npy")
             np.save(file_path, resized)
-        except Exception as e:
-            logger.error(f"❌ Write Error: {e}")
-            continue
 
-        # 4. Notify Redis
-        message = {
-            "id": frame_id,
-            "file_path": file_path,
-            "shape": resized.shape,
-            "dtype": str(resized.dtype),
-            "timestamp": time.time()
-        }
-        
-        r.rpush(QUEUE_NAME, json.dumps(message))
-        # logger.info(f"Sent frame {frame_id}") # เปิดเมื่อต้องการ debug
+            # Send Notification to Redis
+            msg = {
+                "id": frame_id,
+                "file_path": file_path,
+                "shape": resized.shape,
+                "timestamp": time.time()
+            }
+            r.rpush(QUEUE_NAME, json.dumps(msg))
+            
+            # ปริ้นบอกทุกๆ 100 เฟรม ว่าระบบยังวิ่งอยู่
+            if int(time.time()) % 5 == 0 and r.llen(QUEUE_NAME) < 5:
+                 logger.info(f"✅ Active... Last frame: {frame_id}")
+
+        except Exception as e:
+            logger.error(f"Error: {e}")
 
 if __name__ == "__main__":
-    run_ingestion()
+    run()
