@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:alpine
+    container_name: message_queue
+    ports:
+      - "6379:6379"
+
+  ingestion:
+    image: video-ingestion  # <-- เพิ่มบรรทัดนี้ (ใช้ชื่อเดียวกับที่เรา build ตะกี้)
+    # build: .              # <-- ใส่ # ปิดบรรทัดนี้ไว้ก่อน หรือลบทิ้ง
+    container_name: video_ingestion
+    env_file:
+      - .env
+    volumes:
+      - /dev/shm:/dev/shm
+    depends_on:
+      - redis
