@@ -1,0 +1,24 @@
+artifact_path: file:///D:/Jipata/mlruns/1/models/m-596c18ff326c4d0d93f5e6619701c6cd/artifacts
+flavors:
+  onnx:
+    code: null
+    data: model.onnx
+    onnx_session_options: null
+    onnx_version: 1.20.0
+    providers:
+    - CUDAExecutionProvider
+    - CPUExecutionProvider
+  python_function:
+    data: model.onnx
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.onnx
+    python_version: 3.11.14
+mlflow_version: 3.8.1
+model_id: m-596c18ff326c4d0d93f5e6619701c6cd
+model_size_bytes: 80477293
+model_uuid: m-596c18ff326c4d0d93f5e6619701c6cd
+prompts: null
+run_id: 802a9597eecb4e76a04a706a56c54705
+utc_time_created: '2026-01-06 10:01:53.807650'
