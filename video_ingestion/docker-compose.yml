@@ -7,18 +7,50 @@ services:
     ports:
       - "6379:6379"
 
-  ingestion:
+  # --- กล้องตัวที่ 1 ---
+  cam1:
     build: .
-    container_name: video_ingestion
+    container_name: ingestion_cam1
     volumes:
       - /dev/shm:/dev/shm
-      # จุดสำคัญ: Mount ไฟล์วิดีโอแบบเดียวกับที่เทสผ่านเมื่อกี้
-      - ./test_video.mp4:/app/video.mp4
-    depends_on:
-      - redis
-    # ตั้งค่า Environment ตรงนี้เลย (จะได้ไม่ต้องพะวงกับไฟล์ .env)
+      - ./video1.mp4:/app/video.mp4  # เอาไฟล์ 1 ใส่เข้าไป
     environment:
+      - CAM_ID=camera_01
       - RTSP_URL=/app/video.mp4
       - PLAY_LOOP=true
       - REDIS_HOST=redis
       - QUEUE_NAME=video_frames_queue
+    depends_on:
+      - redis
+
+  # --- กล้องตัวที่ 2 ---
+  cam2:
+    build: .
+    container_name: ingestion_cam2
+    volumes:
+      - /dev/shm:/dev/shm
+      - ./video2.mp4:/app/video.mp4  # เอาไฟล์ 2 ใส่เข้าไป
+    environment:
+      - CAM_ID=camera_02
+      - RTSP_URL=/app/video.mp4
+      - PLAY_LOOP=true
+      - REDIS_HOST=redis
+      - QUEUE_NAME=video_frames_queue
+    depends_on:
+      - redis
+
+  # --- กล้องตัวที่ 3 ---
+  cam3:
+    build: .
+    container_name: ingestion_cam3
+    volumes:
+      - /dev/shm:/dev/shm
+      - ./video3.mp4:/app/video.mp4  # เอาไฟล์ 3 ใส่เข้าไป
+    environment:
+      - CAM_ID=camera_03
+      - RTSP_URL=/app/video.mp4
+      - PLAY_LOOP=true
+      - REDIS_HOST=redis
+      - QUEUE_NAME=video_frames_queue
+    depends_on:
+      - redis
