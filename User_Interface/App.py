@@ -150,7 +150,7 @@ with left_col:
     # Truck Log Section
     st.markdown(f"""
     <div class="truck-log">
-        <div class="truck-log-header">TRUCK LOG</div>
+        <div class="truck-log-header">Current Vehicle</div>
         <div class="info-item"><span class="info-label">Camera ID:</span> {current_truck_data['camera_id']}</div>
         <div class="info-item"><span class="info-label">Type:</span> {current_truck_data['truck_type']}</div>
         <div class="info-item"><span class="info-label">Entry fee:</span> {current_truck_data['entry_fee']}</div>
@@ -161,14 +161,14 @@ with left_col:
     """, unsafe_allow_html=True)
     
     # History Button
-    if st.button("History", use_container_width=True):
+    if st.button("### History", use_container_width=True):
         st.session_state.current_page = 'history'
         st.rerun()
     
     st.write("")
     
     # Summary Button
-    if st.button("Summary", use_container_width=True):
+    if st.button("### Summary", use_container_width=True):
         st.session_state.current_page = 'summary_all'
         st.rerun()
 
