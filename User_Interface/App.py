@@ -513,9 +513,9 @@ with right_col:
         st.markdown("---")
         col_count, col_amount = st.columns(2)
         with col_count:
-            st.markdown(f"### Count: {all_gates_data['count']}")
+            st.markdown(f"<h3 style='color: #000000;'>Count: {all_gates_data['count']}</h3>", unsafe_allow_html=True)
         with col_amount:
-            st.markdown(f"### Amount: {all_gates_data['amount']:,}")
+            st.markdown(f"<h3 style='color: #000000;'>Amount: {all_gates_data['amount']:,}</h3>", unsafe_allow_html=True)
         
         # Vehicle type legend
         st.markdown("---")
@@ -524,30 +524,31 @@ with right_col:
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.markdown("**0:** car")
-            st.markdown("**1:** other")
-            st.markdown("**2:** other_truck")
-        
+            st.markdown("<span style='color: #000000;'><strong>0:</strong> car</span>", unsafe_allow_html=True)
+            st.markdown("<span style='color: #000000;'><strong>1:</strong> other</span>", unsafe_allow_html=True)
+            st.markdown("<span style='color: #000000;'><strong>2:</strong> other_truck</span>", unsafe_allow_html=True)   
+
         with col2:
-            st.markdown("**3:** pickup_truck")
-            st.markdown("**4:** truck_20_back")
-            st.markdown("**5:** truck_20_front")
-        
+            st.markdown("<span style='color: #000000;'><strong>3:</strong> pickup_truck</span>", unsafe_allow_html=True)
+            st.markdown("<span style='color: #000000;'><strong>4:</strong> truck_20_back</span>", unsafe_allow_html=True)
+            st.markdown("<span style='color: #000000;'><strong>5:</strong> truck_20_front</span>", unsafe_allow_html=True)
+
         with col3:
-            st.markdown("**6:** truck_20×2")
-            st.markdown("**7:** truck_40")
-            st.markdown("**8:** truck_roro")
-        
+            st.markdown("<span style='color: #000000;'><strong>6:</strong> truck_20×2</span>", unsafe_allow_html=True)
+            st.markdown("<span style='color: #000000;'><strong>7:</strong> truck_40</span>", unsafe_allow_html=True)
+            st.markdown("<span style='color: #000000;'><strong>8:</strong> truck_roro</span>", unsafe_allow_html=True)
+
         with col4:
-            st.markdown("**9:** truck_tail")
-            st.markdown("**10:** motorcycle")
-            st.markdown("**11:** truck_head")
+            st.markdown("<span style='color: #000000;'><strong>9:</strong> truck_tail</span>", unsafe_allow_html=True)
+            st.markdown("<span style='color: #000000;'><strong>10:</strong> motorcycle</span>", unsafe_allow_html=True)
+            st.markdown("<span style='color: #000000;'><strong>11:</strong> truck_head</span>", unsafe_allow_html=True)
+
     
     else:
         # SUMMARY PAGE (original content)
         # Summary header with gate buttons - FIXED to avoid nested columns
         
-        # Clock display with working JavaScript using st.components.html
+       # Clock display with working JavaScript using st.components.html
         from streamlit.components.v1 import html as st_html
         
         clock_html = """
@@ -590,7 +591,6 @@ with right_col:
         """ 
         
         st_html(clock_html, height=60)
-        
         
         # Gate buttons at top level (no nesting)
         gate_col1, gate_col2, gate_col3 = st.columns(3)
@@ -698,9 +698,9 @@ with right_col:
         # Count and Amount
         col_count, col_amount = st.columns(2)
         with col_count:
-            st.markdown(f"### Count: {current_gate_data['count']}")
+            st.markdown(f"<h3 style='color: #000000;'>Count: {current_gate_data['count']}</h3>", unsafe_allow_html=True)
         with col_amount:
-            st.markdown(f"### Amount: {current_gate_data['amount']:,}")
+            st.markdown(f"<h3 style='color: #000000;'>Amount: {current_gate_data['amount']:,}</h3>", unsafe_allow_html=True)
         
         # Vehicle type legend
         st.markdown("---")
@@ -709,24 +709,24 @@ with right_col:
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.markdown("**0:** car")
-            st.markdown("**1:** other")
-            st.markdown("**2:** other_truck")
-        
+            st.markdown("<span style='color: #000000;'><strong>0:</strong> car</span>", unsafe_allow_html=True)
+            st.markdown("<span style='color: #000000;'><strong>1:</strong> other</span>", unsafe_allow_html=True)
+            st.markdown("<span style='color: #000000;'><strong>2:</strong> other_truck</span>", unsafe_allow_html=True)   
+
         with col2:
-            st.markdown("**3:** pickup_truck")
-            st.markdown("**4:** truck_20_back")
-            st.markdown("**5:** truck_20_front")
-        
+            st.markdown("<span style='color: #000000;'><strong>3:</strong> pickup_truck</span>", unsafe_allow_html=True)
+            st.markdown("<span style='color: #000000;'><strong>4:</strong> truck_20_back</span>", unsafe_allow_html=True)
+            st.markdown("<span style='color: #000000;'><strong>5:</strong> truck_20_front</span>", unsafe_allow_html=True)
+            
         with col3:
-            st.markdown("**6:** truck_20×2")
-            st.markdown("**7:** truck_40")
-            st.markdown("**8:** truck_roro")
-        
+            st.markdown("<span style='color: #000000;'><strong>6:</strong> truck_20×2</span>", unsafe_allow_html=True)
+            st.markdown("<span style='color: #000000;'><strong>7:</strong> truck_40</span>", unsafe_allow_html=True)
+            st.markdown("<span style='color: #000000;'><strong>8:</strong> truck_roro</span>", unsafe_allow_html=True)
+
         with col4:
-            st.markdown("**9:** truck_tail")
-            st.markdown("**10:** motorcycle")
-            st.markdown("**11:** truck_head")
+            st.markdown("<span style='color: #000000;'><strong>9:</strong> truck_tail</span>", unsafe_allow_html=True)
+            st.markdown("<span style='color: #000000;'><strong>10:</strong> motorcycle</span>", unsafe_allow_html=True)
+            st.markdown("<span style='color: #000000;'><strong>11:</strong> truck_head</span>", unsafe_allow_html=True)
             
         # End of summary page
         st.write("")
