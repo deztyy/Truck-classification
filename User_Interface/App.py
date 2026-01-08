@@ -73,7 +73,37 @@ st.markdown("""
         border: none !important;
         padding: 0 !important;
     }
+    
+    /* Footer styles */
+    .footer {
+        position: fixed;
+        left: 0;
+        bottom: 0;
+        width: 100%;
+        background-color: #808080;
+        color: white;
+        text-align: center;
+        padding: 10px 0;
+        font-size: 14px;
+        z-index: 999;
+    }
+    
+    .footer a {
+        color: #ffcc00;
+        text-decoration: none;
+    }
+    
+    .footer a:hover {
+        text-decoration: underline;
+    }
 </style>
+""", unsafe_allow_html=True)
+
+# Footer
+st.markdown("""
+<div class="footer">
+    Developed by <strong>Aik Pick Tle</strong> | © 2026 Truck Classification System | Contact: <a href="mailto:your.email@example.com">AikPickTle@example.com</a>
+</div>
 """, unsafe_allow_html=True)
 
 # Header with home icon
@@ -520,7 +550,7 @@ with right_col:
             # Create HTML component with real-time clock using JavaScript
             html_code = """
             <div id="clock-container">
-                <h3 id="realtime-clock" style="font-family: 'Source Sans Pro', sans-serif; font-weight: 600; color: rgb(49, 51, 63); margin: 0;">
+                <h3 id="realtime-clock" style="font-family: 'Source Sans Pro', sans-serif; font-weight: 600; color: rgb(217, 217, 217); margin: 0;">
                     Summary today: <span id="date-display"></span> time: <span id="time-display"></span>
                 </h3>
             </div>
@@ -692,76 +722,3 @@ with right_col:
             
         # End of summary page
         st.write("")
-# import streamlit as st
-# import plotly.express as px
-# import pandas as pd
-
-# # 1. ตั้งค่าหน้าจอ
-# st.set_page_config(layout="wide", page_title="Truck Classification")
-
-# # 2. Custom CSS เพื่อทำให้ UI เหมือนในแบบ (เช่น กล่องสีเทา, ขอบมน)
-# st.markdown("""
-#     <style>
-#     .main { background-color: #f0f2f6; }
-#     .stSidebar { background-color: #d1d1d1; }
-#     .truck-card {
-#         background-color: #707070;
-#         padding: 15px;
-#         border-radius: 10px;
-#         color: white;
-#         margin-bottom: 10px;
-#         display: flex;
-#         align-items: center;
-#     }
-#     </style>
-#     """, unsafe_allow_html=True)
-
-# # 3. ส่วน Sidebar (เหมือนในรูป 2 และ 3)
-# with st.sidebar:
-#     st.image("https://cdn-icons-png.flaticon.com/512/1995/1995471.png", width=40) # ไอคอนจำลอง
-#     st.title("TRUCK LOG")
-#     st.write("**Camera ID:** 01")
-#     st.write("**Type:** truck_20x2")
-#     st.write("**Entry fee:** 100")
-#     st.write("**Xray-fee:** 500")
-#     st.write("**Time:** 12:43:06")
-#     st.subheader("Amount: 600")
-#     st.divider()
-#     st.button("📜 History", use_container_width=True)
-#     st.button("📊 Summary", use_container_width=True)
-
-# # 4. ส่วนเนื้อหาหลัก
-# st.header("🏠 TRUCK CLASSIFICATION")
-
-# # ส่วนเลือก Gate แบบ Radio แนวนอน (เหมือนปุ่ม 1 2 3 ด้านบน)
-# gate = st.radio("GATE", [1, 2, 3], horizontal=True)
-
-# tab1, tab2 = st.tabs(["History List", "Summary Chart"])
-
-# with tab1:
-#     # จำลองการสร้าง Card แบบในรูปที่ 1
-#     for i in range(3):
-#         st.markdown(f"""
-#         <div class="truck-card">
-#             <div style="flex: 1;"> <img src="https://via.placeholder.com/150x80" width="100%"> </div>
-#             <div style="flex: 2; padding-left: 20px;">
-#                 <b>GATE {gate}</b><br>
-#                 Type: truck_20x2<br>
-#                 Date: {i+6}/1/68
-#             </div>
-#             <div style="flex: 1; text-align: right;">
-#                 Amount: 600
-#             </div>
-#         </div>
-#         """, unsafe_allow_html=True)
-
-# with tab2:
-#     st.subheader("📊 Summary Today")
-#     # ข้อมูลจำลองสำหรับกราฟแท่ง
-#     data = pd.DataFrame({
-#         'Type': [f'Type {i}' for i in range(12)],
-#         'Count': [10, 5, 18, 2, 12, 15, 18, 20, 10, 18, 4, 15]
-#     })
-#     fig = px.bar(data, x='Type', y='Count', color_discrete_sequence=['black'])
-#     fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(230,230,230,1)')
-#     st.plotly_chart(fig, use_container_width=True)
