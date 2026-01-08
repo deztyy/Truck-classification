@@ -545,21 +545,19 @@ with right_col:
     
     else:
         # SUMMARY PAGE (original content)
-        # Summary header with gate buttons
-        # SUMMARY PAGE (original content)
         # Summary header with gate buttons - FIXED to avoid nested columns
         
-        # Clock display using HTML (no columns)
-        st.markdown("""
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        # Clock display with working JavaScript using st.components.html
+        from streamlit.components.v1 import html as st_html
+        
+        clock_html = """
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; ">
             <div style="flex: 2;">
-                <div id="clock-container">
-                    <h3 id="realtime-clock" style="font-family: 'Source Sans Pro', sans-serif; font-weight: 600; color: rgb(0, 0, 0); margin: 0;">
-                        Summary today: <span id="date-display"></span> time: <span id="time-display"></span>
-                    </h3>
-                </div>
+                <h3 id="realtime-clock" style="font-family: 'Source Sans Pro', sans-serif; font-weight: 600; color: rgb(0, 0, 0); margin: 0; ">
+                    Summary today: <span id="date-display">--/--/----</span> time: <span id="time-display">--:--:--</span>
+                </h3>
             </div>
-            <div style="flex: 1; text-align: right;">
+            <div style="flex: 1; text-align: right; ">
                 <span style="font-weight: bold; margin-right: 10px;">GATE</span>
             </div>
         </div>
@@ -589,7 +587,10 @@ with right_col:
         updateClock();
         setInterval(updateClock, 1000);
         </script>
-        """, unsafe_allow_html=True)
+        """
+        
+        st_html(clock_html, height=60)
+        
         
         # Gate buttons at top level (no nesting)
         gate_col1, gate_col2, gate_col3 = st.columns(3)
