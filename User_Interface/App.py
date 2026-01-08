@@ -551,14 +551,14 @@ with right_col:
         from streamlit.components.v1 import html as st_html
         
         clock_html = """
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; ">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; background-color: #d9d9d9; padding: 10px 20px; border-radius: 10px;">
             <div style="flex: 2;">
                 <h3 id="realtime-clock" style="font-family: 'Source Sans Pro', sans-serif; font-weight: 600; color: rgb(0, 0, 0); margin: 0; ">
                     Summary today: <span id="date-display">--/--/----</span> time: <span id="time-display">--:--:--</span>
                 </h3>
             </div>
             <div style="flex: 1; text-align: right; ">
-                <span style="font-weight: bold; margin-right: 10px;">GATE</span>
+                <span style="font-weight: bold; margin-right: 10px; color: black;">GATE</span>
             </div>
         </div>
         
@@ -587,7 +587,7 @@ with right_col:
         updateClock();
         setInterval(updateClock, 1000);
         </script>
-        """
+        """ 
         
         st_html(clock_html, height=60)
         
