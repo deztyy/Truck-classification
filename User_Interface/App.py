@@ -106,12 +106,13 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Header with home icon
-col_home, col_title = st.columns([0.5, 9.5])
-with col_home:
-    st.markdown('<div style="font-size: 40px; margin-top: -10px;"></div>', unsafe_allow_html=True)
-with col_title:
-    st.markdown('<h1 style="margin-top: 0;">TRUCK CLASSIFICATION</h1>', unsafe_allow_html=True)
+# Header with home icon (like Figma)
+st.markdown("""
+<div style="display: flex; align-items: center; padding: 10px 20px; background-color: #d9d9d9;">
+    <span style="font-size: 24px; margin-right: 15px;"></span>
+    <h1 style="margin: 0; font-size: 20px; font-weight: bold; color: #000000;">TRUCK CLASSIFICATION</h1>
+</div>
+""", unsafe_allow_html=True)
 
 # Main layout
 left_col, right_col = st.columns([1, 3])
@@ -150,7 +151,7 @@ with left_col:
     # Truck Log Section
     st.markdown(f"""
     <div class="truck-log">
-        <div class="truck-log-header">Current Vehicle</div>
+        <div class="truck-log-header">TRUCK LOG</div>
         <div class="info-item"><span class="info-label">Camera ID:</span> {current_truck_data['camera_id']}</div>
         <div class="info-item"><span class="info-label">Type:</span> {current_truck_data['truck_type']}</div>
         <div class="info-item"><span class="info-label">Entry fee:</span> {current_truck_data['entry_fee']}</div>
@@ -160,14 +161,14 @@ with left_col:
     </div>
     """, unsafe_allow_html=True)
     
-    # History Button
+    # History Button with icon
     if st.button("### History", use_container_width=True):
         st.session_state.current_page = 'history'
         st.rerun()
     
     st.write("")
     
-    # Summary Button
+    # Summary Button with icon
     if st.button("### Summary", use_container_width=True):
         st.session_state.current_page = 'summary_all'
         st.rerun()
@@ -545,69 +546,75 @@ with right_col:
     else:
         # SUMMARY PAGE (original content)
         # Summary header with gate buttons
-        col_summary, col_gates = st.columns([2, 1])
-        with col_summary:
-            # Create HTML component with real-time clock using JavaScript
-            html_code = """
-            <div id="clock-container">
-                <h3 id="realtime-clock" style="font-family: 'Source Sans Pro', sans-serif; font-weight: 600; color: rgb(217, 217, 217); margin: 0;">
-                    Summary today: <span id="date-display"></span> time: <span id="time-display"></span>
-                </h3>
-            </div>
-            
-            <script>
-            function updateClock() {
-                const now = new Date();
-                
-                // Convert to Thailand timezone (UTC+7)
-                const thailandTime = new Date(now.toLocaleString("en-US", {timeZone: "Asia/Bangkok"}));
-                
-                const day = String(thailandTime.getDate()).padStart(2, '0');
-                const month = String(thailandTime.getMonth() + 1).padStart(2, '0');
-                const year = thailandTime.getFullYear();
-                
-                const hours = String(thailandTime.getHours()).padStart(2, '0');
-                const minutes = String(thailandTime.getMinutes()).padStart(2, '0');
-                const seconds = String(thailandTime.getSeconds()).padStart(2, '0');
-                
-                const dateStr = day + '/' + month + '/' + year;
-                const timeStr = hours + ':' + minutes + ':' + seconds;
-                
-                document.getElementById('date-display').textContent = dateStr;
-                document.getElementById('time-display').textContent = timeStr;
-            }
-            
-            // Update clock immediately and then every second
-            updateClock();
-            setInterval(updateClock, 1000);
-            </script>
-            """
-            html(html_code, height=50)
+        # SUMMARY PAGE (original content)
+        # Summary header with gate buttons - FIXED to avoid nested columns
         
-        with col_gates:
-            st.markdown('<div style="text-align: right; margin-bottom: 10px;"><span style="font-weight: bold; margin-right: 10px;">GATE</span></div>', unsafe_allow_html=True)
-            gate_col1, gate_col2, gate_col3 = st.columns(3)
+        # Clock display using HTML (no columns)
+        st.markdown("""
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+            <div style="flex: 2;">
+                <div id="clock-container">
+                    <h3 id="realtime-clock" style="font-family: 'Source Sans Pro', sans-serif; font-weight: 600; color: rgb(0, 0, 0); margin: 0;">
+                        Summary today: <span id="date-display"></span> time: <span id="time-display"></span>
+                    </h3>
+                </div>
+            </div>
+            <div style="flex: 1; text-align: right;">
+                <span style="font-weight: bold; margin-right: 10px;">GATE</span>
+            </div>
+        </div>
+        
+        <script>
+        function updateClock() {
+            const now = new Date();
+            const thailandTime = new Date(now.toLocaleString("en-US", {timeZone: "Asia/Bangkok"}));
             
-            # Gate button 1
-            with gate_col1:
-                gate1_type = "primary" if st.session_state.selected_gate == 1 else "secondary"
-                if st.button("1", key="gate1", use_container_width=True, type=gate1_type):
-                    st.session_state.selected_gate = 1
-                    st.rerun()
+            const day = String(thailandTime.getDate()).padStart(2, '0');
+            const month = String(thailandTime.getMonth() + 1).padStart(2, '0');
+            const year = thailandTime.getFullYear();
             
-            # Gate button 2
-            with gate_col2:
-                gate2_type = "primary" if st.session_state.selected_gate == 2 else "secondary"
-                if st.button("2", key="gate2", use_container_width=True, type=gate2_type):
-                    st.session_state.selected_gate = 2
-                    st.rerun()
+            const hours = String(thailandTime.getHours()).padStart(2, '0');
+            const minutes = String(thailandTime.getMinutes()).padStart(2, '0');
+            const seconds = String(thailandTime.getSeconds()).padStart(2, '0');
             
-            # Gate button 3
-            with gate_col3:
-                gate3_type = "primary" if st.session_state.selected_gate == 3 else "secondary"
-                if st.button("3", key="gate3", use_container_width=True, type=gate3_type):
-                    st.session_state.selected_gate = 3
-                    st.rerun()
+            const dateStr = day + '/' + month + '/' + year;
+            const timeStr = hours + ':' + minutes + ':' + seconds;
+            
+            const dateEl = document.getElementById('date-display');
+            const timeEl = document.getElementById('time-display');
+            if (dateEl) dateEl.textContent = dateStr;
+            if (timeEl) timeEl.textContent = timeStr;
+        }
+        
+        updateClock();
+        setInterval(updateClock, 1000);
+        </script>
+        """, unsafe_allow_html=True)
+        
+        # Gate buttons at top level (no nesting)
+        gate_col1, gate_col2, gate_col3 = st.columns(3)
+        
+        # Gate button 1
+        with gate_col1:
+            gate1_type = "primary" if st.session_state.selected_gate == 1 else "secondary"
+            if st.button("1", key="gate1", use_container_width=True, type=gate1_type):
+                st.session_state.selected_gate = 1
+                st.rerun()
+        
+        # Gate button 2
+        with gate_col2:
+            gate2_type = "primary" if st.session_state.selected_gate == 2 else "secondary"
+            if st.button("2", key="gate2", use_container_width=True, type=gate2_type):
+                st.session_state.selected_gate = 2
+                st.rerun()
+        
+        # Gate button 3
+        with gate_col3:
+            gate3_type = "primary" if st.session_state.selected_gate == 3 else "secondary"
+            if st.button("3", key="gate3", use_container_width=True, type=gate3_type):
+                st.session_state.selected_gate = 3
+                st.rerun()
+
         
         # Additional CSS for primary buttons (selected gate)
         st.markdown("""
