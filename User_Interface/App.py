@@ -151,7 +151,7 @@ with left_col:
     # Truck Log Section
     st.markdown(f"""
     <div class="truck-log">
-        <div class="truck-log-header">TRUCK LOG</div>
+        <div class="truck-log-header">Current Vehicle</div>
         <div class="info-item"><span class="info-label">Camera ID:</span> {current_truck_data['camera_id']}</div>
         <div class="info-item"><span class="info-label">Type:</span> {current_truck_data['truck_type']}</div>
         <div class="info-item"><span class="info-label">Entry fee:</span> {current_truck_data['entry_fee']}</div>
@@ -519,7 +519,7 @@ with right_col:
         
         # Vehicle type legend
         st.markdown("---")
-        st.markdown("#### Type")
+        st.markdown("<h4 style='color: #404040;'>Type</h4>", unsafe_allow_html=True)
         
         col1, col2, col3, col4 = st.columns(4)
         
@@ -704,7 +704,7 @@ with right_col:
         
         # Vehicle type legend
         st.markdown("---")
-        st.markdown("#### Type")
+        st.markdown("<h4 style='color: #404040;'>Type</h4>", unsafe_allow_html=True)
         
         col1, col2, col3, col4 = st.columns(4)
         
