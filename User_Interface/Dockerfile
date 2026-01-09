@@ -4,13 +4,7 @@ FROM python:3.10-slim
 # ตั้งค่าที่ทำงานใน Container
 WORKDIR /app
 
-# ติดตั้ง Library พื้นฐานสำหรับ PostgreSQL
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# [cite_start]Copy และติดตั้ง Library ตามที่ระบุใน requirements.txt [cite: 1]
+# Copy และติดตั้ง Library ตามที่ระบุใน requirements.txt
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
