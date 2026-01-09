@@ -207,7 +207,8 @@ with right_col:
         # Single row header with all elements aligned
         st.markdown('<div style="margin-bottom: 30px;"></div>', unsafe_allow_html=True)
         
-        col_back, col_history, col_space1, col_gate_section, col_space2, col_date = st.columns([0.8, 2, 0.3, 4, 0.3, 2])
+        # แก้ไข: ใช้ columns เดียว ไม่ซ้อน
+        col_back, col_history, col_space1, col_gate_label, col_gate1, col_gate2, col_gate3, col_space2, col_date = st.columns([0.6, 1.5, 0.2, 0.8, 0.5, 0.5, 0.5, 0.2, 1.5])
         
         with col_back:
             if st.button("⬅", key="back_btn", help="Back to Summary", use_container_width=True):
@@ -221,36 +222,31 @@ with right_col:
                 </div>
             ''', unsafe_allow_html=True)
         
-        with col_gate_section:
-            # Create sub-columns for GATE label and buttons
-            inner_cols = st.columns([1, 1, 1, 1])
-            
-            with inner_cols[0]:
-                st.markdown('''
-                    <div style="display: flex; align-items: center; justify-content: center; height: 60px;">
-                        <span style="font-size: 18px; font-weight: bold;">GATE</span>
-                    </div>
-                ''', unsafe_allow_html=True)
-            
-            # Gate buttons
-            with inner_cols[1]:
-                gate1_type = "primary" if st.session_state.selected_gate == 1 else "secondary"
-                if st.button("1", key="gate1_hist", use_container_width=True, type=gate1_type):
-                    st.session_state.selected_gate = 1
-                    st.rerun()
-            
-            with inner_cols[2]:
-                gate2_type = "primary" if st.session_state.selected_gate == 2 else "secondary"
-                if st.button("2", key="gate2_hist", use_container_width=True, type=gate2_type):
-                    st.session_state.selected_gate = 2
-                    st.rerun()
-            
-            with inner_cols[3]:
-                gate3_type = "primary" if st.session_state.selected_gate == 3 else "secondary"
-                if st.button("3", key="gate3_hist", use_container_width=True, type=gate3_type):
-                    st.session_state.selected_gate = 3
-                    st.rerun()
+        with col_gate_label:
+            st.markdown('''
+                <div style="display: flex; align-items: center; justify-content: center; height: 60px;">
+                    <span style="font-size: 18px; font-weight: bold;">GATE</span>
+                </div>
+            ''', unsafe_allow_html=True)
         
+        # Gate buttons
+        with col_gate1:
+            gate1_type = "primary" if st.session_state.selected_gate == 1 else "secondary"
+            if st.button("1", key="gate1_hist", use_container_width=True, type=gate1_type):
+                st.session_state.selected_gate = 1
+                st.rerun()
+        
+        with col_gate2:
+            gate2_type = "primary" if st.session_state.selected_gate == 2 else "secondary"
+            if st.button("2", key="gate2_hist", use_container_width=True, type=gate2_type):
+                st.session_state.selected_gate = 2
+                st.rerun()
+        
+        with col_gate3:
+            gate3_type = "primary" if st.session_state.selected_gate == 3 else "secondary"
+            if st.button("3", key="gate3_hist", use_container_width=True, type=gate3_type):
+                st.session_state.selected_gate = 3
+                st.rerun()
         with col_date:
             # Date picker
             from datetime import datetime, date
@@ -729,4 +725,4 @@ with right_col:
             st.markdown("<span style='color: #000000;'><strong>11:</strong> truck_head</span>", unsafe_allow_html=True)
             
         # End of summary page
-        st.write("")
+        st.write("") 
