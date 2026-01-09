@@ -1,56 +1,27 @@
 version: '3.8'
 
 services:
-  redis:
+  # 1. Message Queue
+  redis_broker:
     image: redis:alpine
-    container_name: message_queue
+    container_name: my-redis
     ports:
       - "6379:6379"
 
-  # --- กล้องตัวที่ 1 ---
-  cam1:
+  # 2. Video Ingestion Service
+  ingestion_service:
     build: .
-    container_name: ingestion_cam1
-    volumes:
-      - /dev/shm:/dev/shm
-      - ./video1.mp4:/app/video.mp4  # เอาไฟล์ 1 ใส่เข้าไป
-    environment:
-      - CAM_ID=camera_01
-      - RTSP_URL=/app/video.mp4
-      - PLAY_LOOP=true
-      - REDIS_HOST=redis
-      - QUEUE_NAME=video_frames_queue
+    container_name: video-ingester
     depends_on:
-      - redis
-
-  # --- กล้องตัวที่ 2 ---
-  cam2:
-    build: .
-    container_name: ingestion_cam2
+      - redis_broker
     volumes:
-      - /dev/shm:/dev/shm
-      - ./video2.mp4:/app/video.mp4  # เอาไฟล์ 2 ใส่เข้าไป
-    environment:
-      - CAM_ID=camera_02
-      - RTSP_URL=/app/video.mp4
-      - PLAY_LOOP=true
-      - REDIS_HOST=redis
-      - QUEUE_NAME=video_frames_queue
-    depends_on:
-      - redis
-
-  # --- กล้องตัวที่ 3 ---
-  cam3:
-    build: .
-    container_name: ingestion_cam3
-    volumes:
-      - /dev/shm:/dev/shm
-      - ./video3.mp4:/app/video.mp4  # เอาไฟล์ 3 ใส่เข้าไป
-    environment:
-      - CAM_ID=camera_03
-      - RTSP_URL=/app/video.mp4
-      - PLAY_LOOP=true
-      - REDIS_HOST=redis
-      - QUEUE_NAME=video_frames_queue
-    depends_on:
-      - redis
+      # Map โฟลเดอร์ videos ในคอมเรา -> เข้าไปใน Docker
+      - ./videos:/app/videos
+      
+      # Map โฟลเดอร์ output -> จำลองเป็น Shared Memory/Volume
+      # ไฟล์ .npy จะโผล่ที่เครื่องคุณในโฟลเดอร์ output_shared
+      - ./output_shared:/app/shared_memory
+    
+    # (สำคัญ) ถ้าวิดีโอใหญ่มาก Shared memory ของ Docker อาจจะไม่พอ
+    # บรรทัดนี้ช่วยเพิ่ม shared memory limit
+    shm_size: '2gb'
