@@ -642,9 +642,17 @@ def render_summary_all_page():
     st.markdown('<div style="margin-bottom: 20px;"></div>', unsafe_allow_html=True)
     
     # Combine data from all gates
-    all_values = [sum(GATE_CHART_DATA[g]['values'][i] for g in [1, 2, 3]) for i in range(12)]
-    total_count = sum(GATE_CHART_DATA[g]['count'] for g in [1, 2, 3])
-    total_amount = sum(GATE_CHART_DATA[g]['amount'] for g in [1, 2, 3])
+    all_values = [0] * 12
+    total_count = 0
+    total_amount = 0
+    
+    # ดึงข้อมูลจากทุก Gate
+    for gate in [1, 2, 3]:
+        gate_data = get_live_chart_data(gate, st.session_state.selected_date)
+        for i in range(12):
+            all_values[i] += gate_data['values'][i]
+        total_count += gate_data['count']
+        total_amount += gate_data['amount']
     
     # Render chart
     render_bar_chart(all_values, max_range=35000)
