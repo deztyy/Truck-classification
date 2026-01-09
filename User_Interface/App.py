@@ -11,7 +11,48 @@ import plotly.graph_objects as go
 from datetime import datetime, date
 import pytz
 from streamlit.components.v1 import html as st_html
+import psycopg2
+from psycopg2.extras import RealDictCursor
+# ฟังก์ชันเชื่อมต่อ Database (ดึงค่าจาก secrets.toml หรือ st.secrets)
+def get_db_connection():
+    return psycopg2.connect(
+        host=st.secrets["DB_HOST"],
+        database=st.secrets["DB_NAME"],
+        user=st.secrets["DB_USER"],
+        password=st.secrets["DB_PASSWORD"],
+        port=st.secrets["DB_PORT"]
+    )
 
+# ฟังก์ชันดึงข้อมูลประเภทรถจากฐานข้อมูล
+def get_vehicle_types():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT class_id, class_name FROM vehicle_classes ORDER BY class_id;")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return {row[0]: row[1] for row in rows}
+
+# ฟังก์ชันดึงข้อมูลสรุปรายวัน (สำหรับ Chart)
+def get_daily_summary(selected_date, gate_id=None):
+    conn = get_db_connection()
+    # Query เพื่อนับจำนวนรถและยอดรวมแยกตามประเภท (class_id 0-11)
+    # หมายเหตุ: ใน SQL ของคุณไม่มี Column Gate แนะนำให้กรองด้วย camera_id หรือเพิ่ม column gate
+    query = """
+        SELECT class_id, COUNT(*), SUM(total_applied_fee) 
+        FROM toll_transactions 
+        WHERE DATE(created_at) = %s 
+    """
+    params = [selected_date]
+    if gate_id:
+        query += " AND camera_id = %s "
+        params.append(f"0{gate_id}") # สมมติ camera_id คือ '01', '02'
+    
+    query += " GROUP BY class_id"
+    
+    df = pd.read_sql(query, conn, params=params)
+    conn.close()
+    return df
 # ===========================
 # Configuration
 # ===========================
