@@ -8,6 +8,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy โฟลเดอร์ .streamlit ก่อน (สำคัญ!)
+COPY .streamlit/ /app/.streamlit/
+
 # Copy ไฟล์ทั้งหมดเข้า Container
 COPY . .
 

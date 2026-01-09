@@ -446,27 +446,7 @@ def render_bar_chart(values, max_range=15000):
     
     st.plotly_chart(fig, use_container_width=True)
 
-def render_vehicle_type_legend():
-    """Render vehicle type legend"""
-    st.markdown("---")
-    st.markdown(f"<h4 style='color: {COLORS['text_dark']};'>Type</h4>", unsafe_allow_html=True)
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    legend_groups = [
-        [(0, 'car'), (1, 'other'), (2, 'other_truck')],
-        [(3, 'pickup_truck'), (4, 'truck_20_back'), (5, 'truck_20_front')],
-        [(6, 'truck_20×2'), (7, 'truck_40'), (8, 'truck_roro')],
-        [(9, 'truck_tail'), (10, 'motorcycle'), (11, 'truck_head')]
-    ]
-    
-    for col, group in zip([col1, col2, col3, col4], legend_groups):
-        with col:
-            for num, name in group:
-                st.markdown(
-                    f"<span style='color: {COLORS['text_black']};'><strong>{num}:</strong> {name}</span>",
-                    unsafe_allow_html=True
-                )
+
 
 def render_stats(count, amount):
     """Render count and amount statistics"""
@@ -494,8 +474,31 @@ def render_summary_page():
     # Render stats
     render_stats(data['count'], data['amount'])
     
-    # Render legend
-    render_vehicle_type_legend()
+    # Vehicle type legend
+    st.markdown("---")
+    st.markdown('<h4 style="color: #000000; margin-bottom: 10px;">Type</h4>', unsafe_allow_html=True)
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.markdown('<p style="color: #000000; margin: 3px 0;"><strong>0:</strong> car</p>', unsafe_allow_html=True)
+        st.markdown('<p style="color: #000000; margin: 3px 0;"><strong>1:</strong> other</p>', unsafe_allow_html=True)
+        st.markdown('<p style="color: #000000; margin: 3px 0;"><strong>2:</strong> other_truck</p>', unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown('<p style="color: #000000; margin: 3px 0;"><strong>3:</strong> pickup_truck</p>', unsafe_allow_html=True)
+        st.markdown('<p style="color: #000000; margin: 3px 0;"><strong>4:</strong> truck_20_back</p>', unsafe_allow_html=True)
+        st.markdown('<p style="color: #000000; margin: 3px 0;"><strong>5:</strong> truck_20_front</p>', unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown('<p style="color: #000000; margin: 3px 0;"><strong>6:</strong> truck_20×2</p>', unsafe_allow_html=True)
+        st.markdown('<p style="color: #000000; margin: 3px 0;"><strong>7:</strong> truck_40</p>', unsafe_allow_html=True)
+        st.markdown('<p style="color: #000000; margin: 3px 0;"><strong>8:</strong> truck_roro</p>', unsafe_allow_html=True)
+    
+    with col4:
+        st.markdown('<p style="color: #000000; margin: 3px 0;"><strong>9:</strong> truck_tail</p>', unsafe_allow_html=True)
+        st.markdown('<p style="color: #000000; margin: 3px 0;"><strong>10:</strong> motorcycle</p>', unsafe_allow_html=True)
+        st.markdown('<p style="color: #000000; margin: 3px 0;"><strong>11:</strong> truck_head</p>', unsafe_allow_html=True)
 
 def render_history_page():
     """Render history page"""
@@ -650,8 +653,31 @@ def render_summary_all_page():
     st.markdown("---")
     render_stats(total_count, total_amount)
     
-    # Render legend
-    render_vehicle_type_legend()
+    # Vehicle type legend
+    st.markdown("---")
+    st.markdown('<h4 style="color: #000000; margin-bottom: 10px;">Type</h4>', unsafe_allow_html=True)
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.markdown('<p style="color: #000000; margin: 3px 0;"><strong>0:</strong> car</p>', unsafe_allow_html=True)
+        st.markdown('<p style="color: #000000; margin: 3px 0;"><strong>1:</strong> other</p>', unsafe_allow_html=True)
+        st.markdown('<p style="color: #000000; margin: 3px 0;"><strong>2:</strong> other_truck</p>', unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown('<p style="color: #000000; margin: 3px 0;"><strong>3:</strong> pickup_truck</p>', unsafe_allow_html=True)
+        st.markdown('<p style="color: #000000; margin: 3px 0;"><strong>4:</strong> truck_20_back</p>', unsafe_allow_html=True)
+        st.markdown('<p style="color: #000000; margin: 3px 0;"><strong>5:</strong> truck_20_front</p>', unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown('<p style="color: #000000; margin: 3px 0;"><strong>6:</strong> truck_20×2</p>', unsafe_allow_html=True)
+        st.markdown('<p style="color: #000000; margin: 3px 0;"><strong>7:</strong> truck_40</p>', unsafe_allow_html=True)
+        st.markdown('<p style="color: #000000; margin: 3px 0;"><strong>8:</strong> truck_roro</p>', unsafe_allow_html=True)
+    
+    with col4:
+        st.markdown('<p style="color: #000000; margin: 3px 0;"><strong>9:</strong> truck_tail</p>', unsafe_allow_html=True)
+        st.markdown('<p style="color: #000000; margin: 3px 0;"><strong>10:</strong> motorcycle</p>', unsafe_allow_html=True)
+        st.markdown('<p style="color: #000000; margin: 3px 0;"><strong>11:</strong> truck_head</p>', unsafe_allow_html=True)
 
 # ===========================
 # Main Application
