@@ -271,14 +271,14 @@ def render_navigation_buttons():
     st.markdown('<div style="margin-top: 15px;"></div>', unsafe_allow_html=True)
     
     # History Button
-    if st.button("🕐  History", use_container_width=True, key="nav_history"):
+    if st.button("  History", use_container_width=True, key="nav_history"):
         st.session_state.current_page = 'history'
         st.rerun()
     
     st.markdown('<div style="margin: 15px 0;"></div>', unsafe_allow_html=True)
     
     # Summary Button
-    if st.button("📊  Summary", use_container_width=True, key="nav_summary"):
+    if st.button(" Summary", use_container_width=True, key="nav_summary"):
         st.session_state.current_page = 'summary_all'
         st.rerun()
 
