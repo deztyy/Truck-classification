@@ -127,24 +127,39 @@ GATE_DATA = {
     }
 }
 
-GATE_CHART_DATA = {
-    1: {
-        'values': [10000, 5000, 12000, 2000, 8000, 10000, 11000, 13000, 6000, 12000, 4000, 9000],
-        'count': 100,
-        'amount': 99900
-    },
-    2: {
-        'values': [8000, 7000, 9000, 3000, 11000, 8500, 9500, 10000, 7500, 9000, 5000, 8000],
-        'count': 95,
-        'amount': 85500
-    },
-    3: {
-        'values': [7000, 6000, 10000, 4000, 9000, 7500, 10500, 11000, 8000, 10500, 6000, 9500],
-        'count': 88,
-        'amount': 78000
-    }
-}
+def get_live_chart_data(gate_num, selected_date):
+    """ดึงข้อมูลจากตาราง toll_transactions มาทำสรุปรายวัน"""
+    conn = get_db_connection()
+    
+    # คำสั่ง SQL: นับจำนวนรถและรวมยอดเงิน แยกตามประเภทรถ (class_id)
+    # เราใช้ camera_id '01', '02', '03' ตามที่คุณออกแบบไว้
+    camera_id = f"0{gate_num}"
+    
+    query = """
+        SELECT class_id, COUNT(*) as vehicle_count, SUM(total_applied_fee) as total_amount
+        FROM toll_transactions
+        WHERE camera_id = %s AND DATE(created_at) = %s
+        GROUP BY class_id
+    """
+    
+    # ใช้ pandas อ่านข้อมูลจาก SQL
+    df = pd.read_sql(query, conn, params=(camera_id, selected_date))
+    conn.close()
 
+    # สร้าง List 12 ช่อง (สำหรับรถ 12 ประเภท) เริ่มต้นที่เลข 0 ทั้งหมด
+    chart_values = [0] * 12
+    
+    # เอาข้อมูลจาก Database ไปใส่ใน List ตามตำแหน่ง class_id (0-11)
+    for _, row in df.iterrows():
+        c_id = int(row['class_id'])
+        if 0 <= c_id <= 11:
+            chart_values[c_id] = float(row['total_amount'])
+            
+    return {
+        'values': chart_values,
+        'count': df['vehicle_count'].sum() if not df.empty else 0,
+        'amount': df['total_amount'].sum() if not df.empty else 0
+    }
 HISTORY_DATA = [
     {'gate': 1, 'camera_id': 1, 'type': 'truck_20×2', 'entry_fee': 100, 'xray_fee': 500, 'time': '12:43:06', 'date': '6/1/68', 'amount': 600},
     {'gate': 1, 'camera_id': 1, 'type': 'truck_20×2', 'entry_fee': 100, 'xray_fee': 500, 'time': '12:43:06', 'date': '7/1/68', 'amount': 600},
@@ -470,7 +485,8 @@ def render_summary_page():
     render_gate_buttons()
     
     # Get data for selected gate
-    data = GATE_CHART_DATA[st.session_state.selected_gate]
+    # ของใหม่ เรียกใช้ฟังก์ชันที่เราเพิ่งสร้าง
+    data = get_live_chart_data(st.session_state.selected_gate, st.session_state.selected_date)
     
     # Render chart
     render_bar_chart(data['values'])
