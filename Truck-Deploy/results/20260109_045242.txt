@@ -1,0 +1,9 @@
+Camera ID: CAM_01
+Class ID: 7
+Class Name: truck_40
+Confidence: 0.7106
+Entry Fee: 100.00
+X-ray Fee: 350.00
+Total Fee: 450.00
+Image Path: test_images/frame_41134.jpg
+Created At: 2026-01-09 04:52:42

@@ -1,0 +1,6 @@
+mlflow
+numpy
+opencv-python-headless
+onnxruntime
+boto3
+requests
