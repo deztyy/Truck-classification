@@ -4,15 +4,16 @@ from sqlalchemy import create_engine, text
 import os
 from datetime import datetime
 
-# 1. เชื่อมต่อฐานข้อมูล
-engine = create_engine('postgresql://user:password@db:5432/mydb')
+# 1. เชื่อมต่อฐานข้อมูล (ใช้ SQLite สำหรับการทดสอบ)
+# เปลี่ยนจาก PostgreSQL เป็น SQLite เพื่อให้รันได้ง่าย
+engine = create_engine('sqlite:///vehicle_entry.db')
 
 def init_db():
     with engine.connect() as conn:
         # ตารางอัตราค่าบริการ (Master Data)
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS vehicle_classes (
-                class_id SERIAL PRIMARY KEY,
+                class_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 class_name VARCHAR(50) UNIQUE NOT NULL,
                 entry_fee NUMERIC(10, 2),
                 xray_fee NUMERIC(10, 2),
@@ -22,10 +23,15 @@ def init_db():
         # ตารางบันทึกรายการใช้งาน (Transactions)
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS vehicle_transactions (
-                trans_id SERIAL PRIMARY KEY,
+                trans_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 license_plate VARCHAR(20) NOT NULL,
-                class_id INTEGER REFERENCES vehicle_classes(class_id),
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                class_id INT,
+                applied_entry_fee NUMERIC(10, 2),
+                applied_xray_fee NUMERIC(10, 2),
+                image_path TEXT,
+                total_applied_fee NUMERIC(10, 2),
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (class_id) REFERENCES vehicle_classes(class_id)
             );
         """))
         conn.commit()
@@ -37,11 +43,11 @@ init_db()
 # ดึงข้อมูล Master เพื่อมาทำ Dropdown
 df_classes = pd.read_sql("SELECT * FROM vehicle_classes", engine)
 
-st.title("📝 บันทึกข้อมูลการเข้าสถานี")
+st.title("📝 Entry fee system")
 
 # กรณีฐานข้อมูลว่างเปล่า (ให้กดโหลด Master Data ก่อน)
 if df_classes.empty:
-    st.warning("กรุณาโหลดข้อมูลอัตราค่าบริการก่อนที่ Sidebar")
+    st.warning("Please load data ")
     with st.sidebar:
         if st.button("🔄 Load Master Data"):
             sample_data = [
@@ -55,7 +61,7 @@ if df_classes.empty:
                 for name, entry, xray in sample_data:
                     conn.execute(text("""
                         INSERT INTO vehicle_classes (class_name, entry_fee, xray_fee, total_fee) 
-                        VALUES (:n, :e, :x, :t) ON CONFLICT (class_name) DO NOTHING
+                        VALUES (:n, :e, :x, :t)
                     """), {"n": name, "e": entry, "x": xray, "t": entry+xray})
                 conn.commit()
             st.rerun()
@@ -64,35 +70,47 @@ else:
     with st.container(border=True):
         col1, col2 = st.columns(2)
         with col1:
-            plate = st.text_input("เลขทะเบียนรถ", placeholder="กข 1234")
+            plate = st.text_input("CAM-ID", placeholder="CAM 1")
             # เลือกประเภทรถจากรายชื่อใน Master Data
             class_options = {row['class_name']: row['class_id'] for _, row in df_classes.iterrows()}
-            selected_class_name = st.selectbox("ประเภทรถ", options=list(class_options.keys()))
+            selected_class_name = st.selectbox("Vehicle-type", options=list(class_options.keys()))
         
         with col2:
             # แสดงรูปพรีวิวตามประเภทที่เลือกทันที
-            img_path = os.path.join("app", "image", f"{selected_class_name}.png")
+            img_path = os.path.join("image", f"{selected_class_name}.jpg")
             if os.path.exists(img_path):
                 st.image(img_path, use_container_width=True)
             else:
-                st.info("🖼️ ไม่มีรูปพรีวิว")
+                st.info("🖼️ No-preview-image")
 
-        if st.button("💾 บันทึกข้อมูล", use_container_width=True, type="primary"):
+        if st.button("💾 Save-image", use_container_width=True, type="primary"):
             if plate:
+                # ดึงค่าธรรมเนียมจาก master data
+                selected_class = df_classes[df_classes['class_name'] == selected_class_name].iloc[0]
+                
                 with engine.connect() as conn:
                     conn.execute(text("""
-                        INSERT INTO vehicle_transactions (license_plate, class_id) 
-                        VALUES (:plate, :cid)
-                    """), {"plate": plate, "cid": class_options[selected_class_name]})
+                        INSERT INTO vehicle_transactions 
+                        (license_plate, class_id, applied_entry_fee, applied_xray_fee, total_applied_fee, image_path) 
+                        VALUES (:plate, :cid, :entry, :xray, :total, :img)
+                    """), {
+                        "plate": plate, 
+                        "cid": class_options[selected_class_name],
+                        "entry": selected_class['entry_fee'],
+                        "xray": selected_class['xray_fee'],
+                        "total": selected_class['total_fee'],
+                        "img": img_path
+                    })
                     conn.commit()
-                st.success("บันทึกรายการสำเร็จ!")
+                st.success("Save successfully!")
+                st.rerun()
             else:
-                st.error("กรุณากรอกเลขทะเบียนรถ")
+                st.error("Please enter camera id")
 
     st.divider()
 
     # --- ส่วนการแสดงผลรายการล่าสุด ---
-    st.subheader("📋 รายการที่เพิ่งบันทึก")
+    st.subheader("📋 History ")
     query = """
         SELECT t.trans_id, t.license_plate, c.class_name, c.total_fee, t.timestamp 
         FROM vehicle_transactions t
@@ -103,15 +121,15 @@ else:
     
     if not df_recent.empty:
         for idx, row in df_recent.iterrows():
-            with st.expander(f"🚗 {row['license_plate']} - {row['class_name']} ({row['timestamp'].strftime('%H:%M')})"):
+            with st.expander(f"🚗 {row['license_plate']} - {row['class_name']} ({pd.to_datetime(row['timestamp']).strftime('%H:%M')})"):
                 c1, c2 = st.columns([0.3, 0.7])
                 with c1:
-                    img_path = os.path.join("app", "image", f"{row['class_name']}.jpg")
+                    img_path = os.path.join("image", f"{row['class_name']}.jpg")
                     if os.path.exists(img_path):
                         st.image(img_path, width=150)
                 with c2:
-                    st.write(f"**ประเภท:** {row['class_name']}")
-                    st.write(f"**ยอดชำระ:** {row['total_fee']:.2f} บาท")
-                    st.write(f"**เวลา:** {row['timestamp']}")
+                    st.write(f"**Type:** {row['class_name']}")
+                    st.write(f"**Entry fee:** {row['total_fee']:.2f} bath")
+                    st.write(f"**Time:** {row['timestamp']}")
     else:
-        st.write("ยังไม่มีรายการบันทึกในวันนี้")
+        st.write("No record today")
