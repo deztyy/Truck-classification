@@ -153,8 +153,8 @@ def cleanup_worker(folder_path, retention_sec):
     while RUNNING:
         try:
             now = time.time()
-            # Find all JPG files in the directory
-            files = glob.glob(os.path.join(folder_path, "*.jpg"))
+            # Find all NumPy files in the directory
+            files = glob.glob(os.path.join(folder_path, "*.npy"))
             for f in files:
                 # Delete if modification time is older than retention limit
                 if os.stat(f).st_mtime < now - retention_sec:
@@ -235,12 +235,11 @@ def main():
             
             # Generate Filename
             timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            file_name = f"{timestamp_str}.jpg"
+            file_name = f"{timestamp_str}.npy"
             full_path = os.path.join(save_dir, file_name)
 
-            # Save to Disk (JPEG)
-            cv2.imwrite(full_path, processed_frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPG_QUALITY])
-            
+            # Save to Disk (NumPy)
+            np.save(full_path, processed_frame)
             # D. Redis Push (Flow Control)
             # Check queue size to prevent backpressure
             q_len = r.llen('video_jobs')
