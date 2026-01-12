@@ -1,27 +1,82 @@
 version: '3.8'
 
 services:
-  # 1. Message Queue
+  # --- Service 1: Redis (ตัวกลางเก็บคิวงาน) ---
   redis_broker:
     image: redis:alpine
-    container_name: my-redis
+    container_name: redis_broker
+    restart: always
     ports:
       - "6379:6379"
+    networks:
+      - video_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
-  # 2. Video Ingestion Service
-  ingestion_service:
+  # --- Service 2: กล้องตัวที่ 1 ---
+  cam_01:
     build: .
-    container_name: video-ingester
+    container_name: worker_cam_01
+    restart: always  # สำคัญ! ถ้าโปรแกรม Error หรือหลุด มันจะ Restart เอง
     depends_on:
-      - redis_broker
+      redis_broker:
+        condition: service_healthy
+    environment:
+      - REDIS_HOST=redis_broker
+      - REDIS_PORT=6379
+      - OUTPUT_FOLDER=/app/shared_memory
+      - CAMERA_ID=CAM_001
+      # 👇 ใส่ URL ของจริงตรงนี้
+      - RTSP_URL=rtsp://admin:Smarterware2025@stwcctv.autoddns.com:554/chID=1
     volumes:
-      # Map โฟลเดอร์ videos ในคอมเรา -> เข้าไปใน Docker
-      - ./videos:/app/videos
-      
-      # Map โฟลเดอร์ output -> จำลองเป็น Shared Memory/Volume
-      # ไฟล์ .npy จะโผล่ที่เครื่องคุณในโฟลเดอร์ output_shared
-      - ./output_shared:/app/shared_memory
-    
-    # (สำคัญ) ถ้าวิดีโอใหญ่มาก Shared memory ของ Docker อาจจะไม่พอ
-    # บรรทัดนี้ช่วยเพิ่ม shared memory limit
-    shm_size: '2gb'
+      - ./data_output:/app/shared_memory  # Map โฟลเดอร์ออกมาที่เครื่อง Host
+    networks:
+      - video_network
+
+  # --- Service 3: กล้องตัวที่ 2 ---
+  cam_02:
+    build: .
+    container_name: worker_cam_02
+    restart: always
+    depends_on:
+      redis_broker:
+        condition: service_healthy
+    environment:
+      - REDIS_HOST=redis_broker
+      - REDIS_PORT=6379
+      - OUTPUT_FOLDER=/app/shared_memory
+      - CAMERA_ID=CAM_002
+      # 👇 ใส่ URL ของจริงตรงนี้
+      - RTSP_URL=rtsp://admin:Smarterware2025@stwcctv.autoddns.com:554/chID=2
+    volumes:
+      - ./data_output:/app/shared_memory
+    networks:
+      - video_network
+
+  # --- Service 4: กล้องตัวที่ 3 ---
+  cam_03:
+    build: .
+    container_name: worker_cam_03
+    restart: always
+    depends_on:
+      redis_broker:
+        condition: service_healthy
+    environment:
+      - REDIS_HOST=redis_broker
+      - REDIS_PORT=6379
+      - OUTPUT_FOLDER=/app/shared_memory
+      - CAMERA_ID=CAM_003
+      # 👇 ใส่ URL ของจริงตรงนี้
+      - RTSP_URL=rtsp://admin:Smarterware2025@stwcctv.autoddns.com:554/chID=3
+    volumes:
+      - ./data_output:/app/shared_memory
+    networks:
+      - video_network
+
+# สร้าง Network ให้คุยกันได้
+networks:
+  video_network:
+    driver: bridge
