@@ -5,6 +5,99 @@ import os
 from datetime import datetime
 import pytz
 
+# --- Simple Authentication ---
+ADMIN_PASSWORD = "1234"  # รหัส Admin (เปลี่ยนได้ตามต้องการ)
+
+def check_auth():
+    """ตรวจสอบสถานะ login"""
+    if 'user_role' not in st.session_state:
+        st.session_state.user_role = None
+
+def simple_login_page():
+    """หน้า Login แบบง่าย - เลือก User หรือ Admin"""
+    # CSS สำหรับ dark theme
+    st.markdown("""
+    <style>
+        .stApp {
+            background-color: #0e1117;
+        }
+        div[data-testid="stVerticalBlock"] > div:has(div.login-header) {
+            text-align: center;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # ใช้ columns เพื่อจัดให้อยู่กลาง
+    col1, col2, col3 = st.columns([1, 3, 1])
+    
+    with col2:
+        # Header
+        st.markdown('<div class="login-header">', unsafe_allow_html=True)
+        st.markdown("# 🚗")
+        st.markdown("# Vehicle Entry System")
+        st.markdown("### เลือกโหมดการใช้งาน")
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        st.markdown("")
+        st.markdown("")
+        
+        # ปุ่ม User (ไม่ต้องใส่รหัส)
+        if st.button("👤 User Mode", use_container_width=True, type="primary", key="user_btn"):
+            st.session_state.user_role = "user"
+            st.success("✅ เข้าสู่โหมด User")
+            st.rerun()
+        
+        st.markdown("")
+        
+        # ปุ่ม Admin (ต้องใส่รหัส)
+        if st.button("👑 Admin Mode", use_container_width=True, type="secondary", key="admin_btn"):
+            st.session_state.show_password_input = True
+        
+        # แสดง input รหัสผ่านเมื่อกดปุ่ม Admin
+        if st.session_state.get('show_password_input', False):
+            st.markdown("---")
+            password = st.text_input("🔒 รหัส Admin", type="password", placeholder="ใส่รหัส Admin")
+            
+            col_ok, col_cancel = st.columns(2)
+            with col_ok:
+                if st.button("✅ ยืนยัน", use_container_width=True, type="primary"):
+                    if password == ADMIN_PASSWORD:
+                        st.session_state.user_role = "admin"
+                        st.session_state.show_password_input = False
+                        st.success("✅ เข้าสู่โหมด Admin")
+                        st.rerun()
+                    else:
+                        st.error("❌ รหัสผ่านไม่ถูกต้อง")
+            
+            with col_cancel:
+                if st.button("❌ ยกเลิก", use_container_width=True):
+                    st.session_state.show_password_input = False
+                    st.rerun()
+        
+        # แสดงคำแนะนำ
+        st.markdown("")
+        st.markdown("")
+        st.info(f"""
+**💡 คำแนะนำ:**
+- **User Mode:** ใช้งานทั่วไป (บันทึก/ดูข้อมูล)
+- **Admin Mode:** จัดการระบบ (ลบข้อมูล, SQL Command)
+- **รหัส Admin:** `{ADMIN_PASSWORD}` (สามารถเปลี่ยนได้ในโค้ด)
+        """)
+
+def switch_mode():
+    """เปลี่ยนโหมด"""
+    st.session_state.user_role = None
+    st.session_state.show_password_input = False
+    st.rerun()
+
+# เช็คสถานะ login
+check_auth()
+
+# ถ้ายังไม่เลือกโหมด ให้แสดงหน้าเลือก
+if st.session_state.user_role is None:
+    simple_login_page()
+    st.stop()
+
 # 1. เชื่อมต่อฐานข้อมูล PostgreSQL
 DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://user:password@localhost:5433/mydb')
 
@@ -120,9 +213,20 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-col_header1, col_header2 = st.columns([0.6, 0.4])
+col_header1, col_header2 = st.columns([0.5, 0.5])
 with col_header1:
     st.markdown('<div class="main-header"><p class="header-title">🚗 Vehicle Entry System</p></div>', unsafe_allow_html=True)
+    
+    # แสดงโหมดและปุ่มเปลี่ยนโหมด
+    col_user1, col_user2 = st.columns([0.7, 0.3])
+    with col_user1:
+        role_emoji = "👑" if st.session_state.user_role == "admin" else "👤"
+        role_text = "Admin Mode" if st.session_state.user_role == "admin" else "User Mode"
+        st.markdown(f"**{role_emoji} {role_text}**")
+    with col_user2:
+        if st.button("🔄 Switch", type="secondary", use_container_width=True, help="เปลี่ยนโหมด"):
+            switch_mode()
+
 with col_header2:
     # ใช้ HTML component สำหรับ real-time clock
     import streamlit.components.v1 as components
@@ -203,38 +307,39 @@ with col_header2:
 
 st.markdown("---")
 
-# --- Sidebar: SQL Command Input ---
-if 'sql_command' not in st.session_state:
-    st.session_state.sql_command = ""
-with st.sidebar:
-    st.subheader("🔧 Manual SQL Command")
-    sql_command = st.text_area(
-        "Enter SQL Command",
-        placeholder="INSERT INTO vehicle_transactions ...\nor\nUPDATE vehicle_classes ...",
-        height=150,
-        key="sql_input"
-    )
-    
-    if st.button("▶️ Execute SQL", type="secondary"):
-        if sql_command.strip():
-            try:
-                with engine.connect() as conn:
-                    result = conn.execute(text(sql_command))
-                    conn.commit()
-                    st.success(f"✅ Command executed successfully!")
-                    if result.rowcount > 0:
-                        st.info(f"Affected rows: {result.rowcount}")
-                    st.rerun()
-            except Exception as e:
-                st.error(f"❌ Error: {str(e)}")
-        else:
-            st.warning("Please enter SQL command")
-    
-    st.divider()
-    
-    with st.expander("📝 Example Commands"):
-        st.code("""
--- Insert transaction (ไม่ต้องใส่ total_applied_fee)
+# --- Sidebar: SQL Command Input (Admin Only) ---
+if st.session_state.user_role == "admin":
+    if 'sql_command' not in st.session_state:
+        st.session_state.sql_command = ""
+    with st.sidebar:
+        st.subheader("🔧 Manual SQL Command")
+        sql_command = st.text_area(
+            "Enter SQL Command",
+            placeholder="INSERT INTO vehicle_transactions ...\nor\nUPDATE vehicle_classes ...",
+            height=150,
+            key="sql_input"
+        )
+        
+        if st.button("▶️ Execute SQL", type="secondary"):
+            if sql_command.strip():
+                try:
+                    with engine.connect() as conn:
+                        result = conn.execute(text(sql_command))
+                        conn.commit()
+                        st.success(f"✅ Command executed successfully!")
+                        if result.rowcount > 0:
+                            st.info(f"Affected rows: {result.rowcount}")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Error: {str(e)}")
+            else:
+                st.warning("Please enter SQL command")
+        
+        st.divider()
+        
+        with st.expander("📝 Example Commands"):
+            st.code("""
+-- Insert transaction
 INSERT INTO vehicle_transactions 
 (camera_id, class_id, applied_entry_fee, 
  applied_xray_fee, image_path) 
@@ -256,84 +361,46 @@ ORDER BY created_at DESC;
 
 -- View all vehicle classes
 SELECT * FROM vehicle_classes;
-        """, language="sql")
-    
-    st.divider()
-    
-    with st.expander("🔗 Database Info"):
-        st.code(f"Connection: {DATABASE_URL}")
-        st.write(f"Total vehicle classes: {len(df_classes)}")
+            """, language="sql")
+        
+        st.divider()
+        
+        with st.expander("🔗 Database Info"):
+            st.code(f"Connection: {DATABASE_URL}")
+            st.write(f"Total vehicle classes: {len(df_classes)}")
 
 # กรณีฐานข้อมูลว่างเปล่า
 if df_classes.empty:
     st.warning("⚠️ ไม่พบข้อมูลประเภทรถ กรุณาโหลด Master Data")
     
-    if st.button("🔄 Load Master Data", type="primary", use_container_width=True):
-        sample_data = [
-            ('car', 0, 0), ('other', 0, 0), ('other_truck', 100, 50),
-            ('pickup_truck', 0, 0), ('truck_20_back', 100, 250),
-            ('truck_20_front', 100, 250), ('truck_20x2', 100, 500),
-            ('truck_40', 100, 350), ('truck_roro', 100, 50),
-            ('truck_tail', 100, 50), ('motorcycle', 0, 0), ('truck_head', 100, 50)
-        ]
-        try:
-            with engine.connect() as conn:
-                for name, entry, xray in sample_data:
-                    conn.execute(text("""
-                        INSERT INTO vehicle_classes (class_name, entry_fee, xray_fee, total_fee) 
-                        VALUES (:n, :e, :x, :t)
-                        ON CONFLICT (class_name) DO NOTHING
-                    """), {"n": name, "e": entry, "x": xray, "t": entry+xray})
-                conn.commit()
-            st.success("✅ Master Data loaded successfully!")
-            st.rerun()
-        except Exception as e:
-            st.error(f"❌ Error loading master data: {e}")
+    # ปุ่ม Load Master Data (Admin Only)
+    if st.session_state.user_role == "admin":
+        if st.button("🔄 Load Master Data", type="primary", use_container_width=True):
+            sample_data = [
+                ('car', 0, 0), ('other', 0, 0), ('other_truck', 100, 50),
+                ('pickup_truck', 0, 0), ('truck_20_back', 100, 250),
+                ('truck_20_front', 100, 250), ('truck_20x2', 100, 500),
+                ('truck_40', 100, 350), ('truck_roro', 100, 50),
+                ('truck_tail', 100, 50), ('motorcycle', 0, 0), ('truck_head', 100, 50)
+            ]
+            try:
+                with engine.connect() as conn:
+                    for name, entry, xray in sample_data:
+                        conn.execute(text("""
+                            INSERT INTO vehicle_classes (class_name, entry_fee, xray_fee, total_fee) 
+                            VALUES (:n, :e, :x, :t)
+                            ON CONFLICT (class_name) DO NOTHING
+                        """), {"n": name, "e": entry, "x": xray, "t": entry+xray})
+                    conn.commit()
+                st.success("✅ Master Data loaded successfully!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Error loading master data: {e}")
+    else:
+        st.info("💡 กรุณาติดต่อ Admin เพื่อโหลด Master Data")
 else:
-    # ดึงรายการ Camera ID ที่มีอยู่ใน database
-    try:
-        camera_list_query = """
-            SELECT DISTINCT camera_id 
-            FROM vehicle_transactions 
-        """
-        df_cameras = pd.read_sql(camera_list_query, engine)
-        
-        if not df_cameras.empty:
-            # แปลงเป็น string และหาค่าที่ไม่ซ้ำ
-            camera_list_raw = [str(cam).strip() for cam in df_cameras['camera_id'].unique()]
-            
-            # แยกเป็น 2 กลุ่ม: ตัวเลขล้วน และมีตัวอักษร
-            numeric_cameras = []
-            text_cameras = []
-            
-            for cam in camera_list_raw:
-                if cam:  # ตรวจสอบว่าไม่ใช่ค่าว่าง
-                    try:
-                        # ลองแปลงเป็นตัวเลข
-                        num = int(cam)
-                        numeric_cameras.append(num)
-                    except:
-                        # ถ้าแปลงไม่ได้คือมีตัวอักษร
-                        text_cameras.append(str(cam))
-            
-            # ลบค่าซ้ำ และเรียงตัวเลข
-            numeric_cameras = sorted(list(set(numeric_cameras)))
-            sorted_numeric = [str(x) for x in numeric_cameras]
-            
-            # เรียงที่มีตัวอักษร และไม่ซ้ำกัน
-            text_cameras = sorted(list(set(text_cameras)))
-            
-            # รวมกัน
-            camera_list = sorted_numeric + text_cameras
-            
-            # ใช้แค่ 1, 2, 3 เท่านั้น (ไม่เอาจาก database)
-            camera_list = ['1', '2', '3']
-        else:
-            # ถ้ายังไม่มีกล้องใน database ให้ใช้ตัวเลือกเริ่มต้น
-            camera_list = ['1', '2', '3']
-    except Exception as e:
-        st.error(f"Error loading cameras: {e}")
-        camera_list = []
+    # กำหนด camera list เป็น 1, 2, 3 เสมอ
+    camera_list = ['1', '2', '3']
     
     # --- ส่วนการ Input ข้อมูล ---
     st.markdown("### 📝 Record New Entry")
@@ -361,7 +428,7 @@ else:
                     if camera_selection == "➕ Add New":
                         camera_id = st.text_input(
                             "Enter New Camera ID",
-                            placeholder="Enter New Camera Id",
+                            placeholder="4",
                             help="กรอกหมายเลขกล้องใหม่"
                         )
                     else:
@@ -616,17 +683,18 @@ else:
                         
                         st.markdown(f"**🕐 Time:** {row['created_at']}")
                     
-                    # เพิ่มปุ่มลบ
-                    col_del1, col_del2, col_del3 = st.columns([2, 1, 2])
-                    with col_del2:
-                        if st.button(f"🗑️ Delete", key=f"del_{row['id']}", type="secondary", use_container_width=True):
-                            try:
-                                with engine.connect() as conn:
-                                    conn.execute(text("DELETE FROM vehicle_transactions WHERE id = :id"), {"id": row['id']})
-                                    conn.commit()
-                                st.success("Deleted!")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Error: {e}")
+                    # เพิ่มปุ่มลบ (Admin Only)
+                    if st.session_state.user_role == "admin":
+                        col_del1, col_del2, col_del3 = st.columns([2, 1, 2])
+                        with col_del2:
+                            if st.button(f"🗑️ Delete", key=f"del_{row['id']}", type="secondary", use_container_width=True):
+                                try:
+                                    with engine.connect() as conn:
+                                        conn.execute(text("DELETE FROM vehicle_transactions WHERE id = :id"), {"id": row['id']})
+                                        conn.commit()
+                                    st.success("Deleted!")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error: {e}")
     else:
         st.info(f"📭 No transactions found for {date_filter.strftime('%d %B %Y')}")
