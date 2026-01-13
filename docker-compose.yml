@@ -1,3 +1,7 @@
 include:
   - video_ingestion/compose.yml
   - Truck-Deploy/compose.yml
+networks:
+  shared_network:
+    driver: bridge
+    name: truck_system_network
