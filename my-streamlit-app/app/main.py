@@ -325,8 +325,12 @@ else:
             
             # รวมกัน
             camera_list = sorted_numeric + text_cameras
+            
+            # ใช้แค่ 1, 2, 3 เท่านั้น (ไม่เอาจาก database)
+            camera_list = ['1', '2', '3']
         else:
-            camera_list = []
+            # ถ้ายังไม่มีกล้องใน database ให้ใช้ตัวเลือกเริ่มต้น
+            camera_list = ['1', '2', '3']
     except Exception as e:
         st.error(f"Error loading cameras: {e}")
         camera_list = []
@@ -357,7 +361,7 @@ else:
                     if camera_selection == "➕ Add New":
                         camera_id = st.text_input(
                             "Enter New Camera ID",
-                            placeholder="5",
+                            placeholder="Enter New Camera Id",
                             help="กรอกหมายเลขกล้องใหม่"
                         )
                     else:
