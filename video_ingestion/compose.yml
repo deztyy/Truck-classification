@@ -54,13 +54,12 @@
 # =============================================================================
 
 services:
-  # --- Redis Message Broker ---
   redis_broker:
     image: redis:alpine
     container_name: redis_broker
     restart: always
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     networks:
       - truck_system_network
     healthcheck:
@@ -69,7 +68,6 @@ services:
       timeout: 3s
       retries: 5
 
-  # --- Camera 1 Worker ---
   cam_01:
     build:
       context: .
@@ -80,17 +78,18 @@ services:
       redis_broker:
         condition: service_healthy
     environment:
-      - REDIS_HOST=redis_broker
-      - REDIS_PORT=6379
-      - OUTPUT_FOLDER=/app/shared_memory
-      - CAMERA_ID=CAM_001
-      - RTSP_URL=rtsp://admin:Smarterware2025@stwcctv.autoddns.com:554/chID=1
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - OUTPUT_FOLDER=${OUTPUT_FOLDER}
+      - CAMERA_ID=${CAM_01_ID}
+      - RTSP_URL=${CAM_01_RTSP_URL}
+      - PROCESS_FPS=${PROCESS_FPS:-1.0}
+      - RETENTION_SECONDS=${RETENTION_SECONDS:-3600}
     volumes:
       - ../shared_data:/app/shared_memory
     networks:
       - truck_system_network
 
-  # --- Camera 2 Worker ---
   cam_02:
     build:
       context: .
@@ -101,17 +100,18 @@ services:
       redis_broker:
         condition: service_healthy
     environment:
-      - REDIS_HOST=redis_broker
-      - REDIS_PORT=6379
-      - OUTPUT_FOLDER=/app/shared_memory
-      - CAMERA_ID=CAM_002
-      - RTSP_URL=rtsp://admin:Smarterware2025@stwcctv.autoddns.com:554/chID=2
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - OUTPUT_FOLDER=${OUTPUT_FOLDER}
+      - CAMERA_ID=${CAM_02_ID}
+      - RTSP_URL=${CAM_02_RTSP_URL}
+      - PROCESS_FPS=${PROCESS_FPS:-1.0}
+      - RETENTION_SECONDS=${RETENTION_SECONDS:-3600}
     volumes:
       - ../shared_data:/app/shared_memory
     networks:
       - truck_system_network
 
-  # --- Camera 3 Worker ---
   cam_03:
     build:
       context: .
@@ -122,18 +122,19 @@ services:
       redis_broker:
         condition: service_healthy
     environment:
-      - REDIS_HOST=redis_broker
-      - REDIS_PORT=6379
-      - OUTPUT_FOLDER=/app/shared_memory
-      - CAMERA_ID=CAM_003
-      - RTSP_URL=rtsp://admin:Smarterware2025@stwcctv.autoddns.com:554/chID=3
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - OUTPUT_FOLDER=${OUTPUT_FOLDER}
+      - CAMERA_ID=${CAM_03_ID}
+      - RTSP_URL=${CAM_03_RTSP_URL}
+      - PROCESS_FPS=${PROCESS_FPS:-1.0}
+      - RETENTION_SECONDS=${RETENTION_SECONDS:-3600}
     volumes:
       - ../shared_data:/app/shared_memory
     networks:
       - truck_system_network
 
-# Network will be created by main compose.yml
 networks:
   truck_system_network:
-    name: truck_system_network
+    name: ${NETWORK_NAME:-truck_system_network}
     external: true
