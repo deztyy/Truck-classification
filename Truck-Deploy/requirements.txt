@@ -4,3 +4,4 @@ opencv-python-headless
 onnxruntime
 boto3
 requests
+redis

@@ -1,5 +1,10 @@
+# =============================================================================
+# TRUCK CLASSIFICATION INFERENCE SUBSYSTEM
+# Handles ML model deployment and inference processing
+# =============================================================================
+
 services:
-  # 1. MinIO (S3 Storage)
+  # --- MinIO (S3 Storage) ---
   minio:
     image: minio/minio
     container_name: mlflow_minio
@@ -13,21 +18,21 @@ services:
       - ./minio_data:/data
     command: server /data --console-address ":9001"
     networks:
-      - mlflow-net
+      - truck_system_network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # 2. Helper to create the bucket
+  # --- MinIO Bucket Setup ---
   create-bucket:
     image: minio/mc
     depends_on:
       minio:
         condition: service_healthy
     networks:
-      - mlflow-net
+      - truck_system_network
     entrypoint: >
       /bin/sh -c "
       until (/usr/bin/mc alias set myminio http://minio:9000 admin123 password123) do sleep 1; done;
@@ -36,7 +41,7 @@ services:
       exit 0;
       "
 
-  # 3. MLflow Server
+  # --- MLflow Model Registry ---
   mlflow-server:
     image: ghcr.io/mlflow/mlflow:latest
     container_name: mlflow_registry
@@ -53,7 +58,7 @@ services:
     volumes:
       - ./mlflow_db:/mlflow_db
     networks:
-      - mlflow-net
+      - truck_system_network
     command: >
       mlflow server 
       --host 0.0.0.0 
@@ -70,26 +75,40 @@ services:
       retries: 5
       start_period: 30s
 
-  # 4. Your Worker
+  # --- Inference Worker ---
   truck-worker:
-    build: .
-    container_name: truck_worker
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: truck_inference_worker
+    restart: always
     depends_on:
       mlflow-server:
         condition: service_healthy
+      redis_broker:
+        condition: service_started
     environment:
+      # MLflow Configuration
       - MLFLOW_TRACKING_URI=http://mlflow-server:5000
       - MODEL_URI=models:/Truck_classification_Model/Production
       - AWS_ACCESS_KEY_ID=admin123
       - AWS_SECRET_ACCESS_KEY=password123
       - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
       - MLFLOW_S3_IGNORE_TLS=true
+      # Redis Configuration
+      - REDIS_HOST=redis_broker
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      # Output Configuration
+      - OUTPUT_DIR=/app/results
     volumes:
       - ./results:/app/results
-      - ./test_images:/app/test_images
+      - ../shared_data:/app/shared_memory:ro
     networks:
-      - mlflow-net
+      - truck_system_network
 
+# Network will be created by main compose.yml
 networks:
-  mlflow-net:
-    driver: bridge
+  truck_system_network:
+    name: truck_system_network
+    external: true
