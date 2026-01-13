@@ -204,12 +204,15 @@ with col_header2:
 st.markdown("---")
 
 # --- Sidebar: SQL Command Input ---
+if 'sql_command' not in st.session_state:
+    st.session_state.sql_command = ""
 with st.sidebar:
     st.subheader("🔧 Manual SQL Command")
     sql_command = st.text_area(
         "Enter SQL Command",
         placeholder="INSERT INTO vehicle_transactions ...\nor\nUPDATE vehicle_classes ...",
-        height=150
+        height=150,
+        key="sql_input"
     )
     
     if st.button("▶️ Execute SQL", type="secondary"):
@@ -441,9 +444,9 @@ else:
                                 VALUES (:cam_id, :cid, :entry, :xray, :img)
                             """), {
                                 "cam_id": camera_id.strip(),
-                                "cid": class_options[selected_class_name],
-                                "entry": selected_class['entry_fee'],
-                                "xray": selected_class['xray_fee'],
+                                "cid": int(class_options[selected_class_name]),
+                                "entry": float(selected_class['entry_fee']),
+                                "xray": float(selected_class['xray_fee']),
                                 "img": img_path
                             })
                             conn.commit()
