@@ -1,15 +1,16 @@
+import datetime
+import glob
+import json
+import os
+import signal
+import sys
+import threading
+import time
+from zoneinfo import ZoneInfo
+
 import cv2
 import numpy as np
-import os
 import redis
-import json
-import time
-import sys
-import signal
-import datetime
-import threading
-import glob
-from zoneinfo import ZoneInfo
 
 # =============================================================================
 # CONFIGURATION & CONSTANTS
@@ -26,14 +27,15 @@ REDIS_DB = int(os.getenv("REDIS_DB", 0))
 REDIS_QUEUE_LIMIT = 100  # Threshold to stop pushing jobs if the consumer is slow
 
 # Image Processing & Storage Settings
-TARGET_SIZE = (640, 640) # Target dimensions (Width, Height)
-PROCESS_FPS = 1.0        # Frame capture rate (Frames Per Second)
-JPG_QUALITY = 80         # JPEG compression quality (0-100)
-RETENTION_SECONDS = 3600 # File retention period (1 hour)
-THAI_TZ = ZoneInfo("Asia/Bangkok") # Timezone Setting
+TARGET_SIZE = (640, 640)  # Target dimensions (Width, Height)
+PROCESS_FPS = 1.0  # Frame capture rate (Frames Per Second)
+JPG_QUALITY = 80  # JPEG compression quality (0-100)
+RETENTION_SECONDS = 3600  # File retention period (1 hour)
+THAI_TZ = ZoneInfo("Asia/Bangkok")  # Timezone Setting
 
 # Global flag for the main loop
 RUNNING = True
+
 
 # =============================================================================
 # SIGNAL HANDLING
@@ -46,9 +48,11 @@ def handle_signal(signum, frame):
     print(f"\n🛑 Received signal {signum}. Stopping services...")
     RUNNING = False
 
+
 # Register signal handlers
 signal.signal(signal.SIGINT, handle_signal)
 signal.signal(signal.SIGTERM, handle_signal)
+
 
 # =============================================================================
 # UTILITY FUNCTIONS
@@ -57,33 +61,34 @@ def resize_with_padding(image, target_size):
     """
     Resizes an image to the target size while maintaining the aspect ratio.
     Adds padding (letterboxing) to fit the exact dimensions.
-    
+
     Args:
         image (numpy.ndarray): Source image.
         target_size (tuple): (width, height).
-    
+
     Returns:
         numpy.ndarray: Resized and padded image.
     """
     h, w = image.shape[:2]
     target_w, target_h = target_size
-    
+
     # Calculate scaling factor
     scale = min(target_w / w, target_h / h)
     nw, nh = int(w * scale), int(h * scale)
-    
+
     # Resize image
     resized_image = cv2.resize(image, (nw, nh))
-    
+
     # Create a blank canvas (black background)
     new_image = np.full((target_h, target_w, 3), 0, dtype=np.uint8)
-    
+
     # Center the image on the canvas
     y_offset = (target_h - nh) // 2
     x_offset = (target_w - nw) // 2
-    new_image[y_offset:y_offset+nh, x_offset:x_offset+nw] = resized_image
-    
+    new_image[y_offset : y_offset + nh, x_offset : x_offset + nw] = resized_image
+
     return new_image
+
 
 # =============================================================================
 # THREADED VIDEO CAPTURE CLASS
@@ -94,19 +99,22 @@ class RTSPStreamLoader:
     This prevents the main processing loop from being blocked by network latency
     or decoding delays.
     """
+
     def __init__(self, src):
         self.src = src
         self.stream = cv2.VideoCapture(src)
-        
+
         # Enforce TCP transport to reduce artifacts/packet loss on unstable networks
         os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
-        
+
         # Limit buffer size to always get the latest frame
         self.stream.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        
+
         self.grabbed, self.frame = self.stream.read()
         self.started = False
         self.read_lock = threading.Lock()
+
+        self.last_read_time = time.time()
 
     def start(self):
         """Starts the frame update thread."""
@@ -126,7 +134,9 @@ class RTSPStreamLoader:
             with self.read_lock:
                 self.grabbed = grabbed
                 self.frame = frame
-            
+
+                if grabbed:
+                    self.last_read_time = time.time()
             # If stream fails, wait briefly before retrying logic in main loop
             if not grabbed:
                 time.sleep(0.5)
@@ -142,6 +152,13 @@ class RTSPStreamLoader:
         if self.thread.is_alive():
             self.thread.join()
         self.stream.release()
+
+    def is_stale(self, timeout=10.0):
+        """
+        คืนค่า True ถ้าไม่มีภาพใหม่มานานกว่า timeout วินาที
+        """
+        return (time.time() - self.last_read_time) > timeout
+
 
 # =============================================================================
 # BACKGROUND MAINTENANCE
@@ -163,10 +180,11 @@ def cleanup_worker(folder_path, retention_sec):
                     os.remove(f)
 
             # Check every 60 seconds
-            time.sleep(60) 
+            time.sleep(60)
         except Exception as e:
             print(f"⚠️ Cleanup Error: {e}")
             time.sleep(60)
+
 
 # =============================================================================
 # MAIN EXECUTION LOOP
@@ -181,7 +199,9 @@ def main():
     r = None
     while RUNNING:
         try:
-            r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, socket_connect_timeout=2)
+            r = redis.Redis(
+                host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, socket_connect_timeout=2
+            )
             r.ping()
             print(f"🟢 Connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
             break
@@ -194,29 +214,49 @@ def main():
     os.makedirs(save_dir, exist_ok=True)
 
     # 4. Start Cleanup Thread
-    cleaner_thread = threading.Thread(target=cleanup_worker, args=(save_dir, RETENTION_SECONDS))
+    cleaner_thread = threading.Thread(
+        target=cleanup_worker, args=(save_dir, RETENTION_SECONDS)
+    )
     cleaner_thread.daemon = True
     cleaner_thread.start()
 
     # 5. Start RTSP Stream
     print(f"📡 Connecting to Camera: {CAMERA_ID}...")
     video_stream = RTSPStreamLoader(RTSP_URL).start()
-    
+
     # Allow time for buffer to fill
     time.sleep(2.0)
 
     last_process_time = 0
-    process_interval = 1.0 / PROCESS_FPS 
+    process_interval = 1.0 / PROCESS_FPS
 
     print("🚀 Service Started. Processing frames...")
+
+    STREAM_TIMEOUT = 10.0
 
     # --- MAIN LOOP ---
     while RUNNING:
         current_time = time.time()
-        
+
+        if video_stream.is_stale(timeout=STREAM_TIMEOUT):
+            print("⚠️ Stream stale detected. Reconnecting...")
+            video_stream.stop()
+            time.sleep(2)
+
+            try:
+                video_stream = RTSPStreamLoader(RTSP_URL).start()
+                time.sleep(2)
+                video_stream.last_read_time = time.time()
+                print("✅ Reconnected to stream successfully.")
+            except Exception as e:
+                print(f"🔥 Reconnection Error: {e}")
+                time.sleep(5)
+
+            continue
+
         # A. FPS Throttling
         if current_time - last_process_time < process_interval:
-            time.sleep(0.01) # Short sleep to reduce CPU usage
+            time.sleep(0.01)  # Short sleep to reduce CPU usage
             continue
 
         # B. Frame Retrieval (Non-blocking)
@@ -226,7 +266,7 @@ def main():
 
         # Handle stream loss / Reconnection
         if not grabbed or frame is None:
-            print(f"⚠️ Frame lost or Camera disconnected. Reconnecting in 5s...")
+            print("⚠️ Frame lost or Camera disconnected. Reconnecting in 5s...")
             video_stream.stop()
             time.sleep(5)
             video_stream = RTSPStreamLoader(RTSP_URL).start()
@@ -236,7 +276,7 @@ def main():
         try:
             # C. Image Processing
             processed_frame = resize_with_padding(frame, TARGET_SIZE)
-            
+
             # Generate Filename
             timestamp_str = capture_time.strftime("%Y%m%d_%H%M%S_%f")
             file_name = f"{timestamp_str}.npy"
@@ -246,27 +286,33 @@ def main():
             np.save(full_path, processed_frame)
             # D. Redis Push (Flow Control)
             # Check queue size to prevent backpressure
-            q_len = r.llen('video_jobs')
-            
+            q_len = r.llen("video_jobs")
+
             if q_len < REDIS_QUEUE_LIMIT:
                 message = {
                     "camera_id": CAMERA_ID,
                     "status": "pending",
-                    "image_path": full_path, 
-                    "timestamp": current_time
+                    "image_path": full_path,
+                    "timestamp": current_time,
                 }
-                r.rpush('video_jobs', json.dumps(message))
-                
+                r.rpush("video_jobs", json.dumps(message))
+
                 # Update process time only on success
-                last_process_time = current_time 
-                
+                last_process_time = current_time
+
                 # Optional: Logging every 10 seconds
                 if int(current_time) % 10 == 0:
-                      print(f"✅ [{CAMERA_ID}] Pushed {file_name} (Queue: {q_len})", flush=True)
+                    print(
+                        f"✅ [{CAMERA_ID}] Pushed {file_name} (Queue: {q_len})",
+                        flush=True,
+                    )
             else:
-                print(f"⚠️ Redis Queue Full ({q_len}/{REDIS_QUEUE_LIMIT}). Dropping frame...", flush=True)
+                print(
+                    f"⚠️ Redis Queue Full ({q_len}/{REDIS_QUEUE_LIMIT}). Dropping frame...",
+                    flush=True,
+                )
                 # Skip this frame interval
-                last_process_time = current_time 
+                last_process_time = current_time
 
         except Exception as e:
             print(f"🔥 Processing Error: {e}")
@@ -275,6 +321,7 @@ def main():
     # Cleanup before exit
     video_stream.stop()
     print("👋 Service Stopped Gracefully.")
+
 
 if __name__ == "__main__":
     main()
