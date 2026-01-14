@@ -383,10 +383,10 @@ def render_entry_tab(df_classes):
         # Camera Selection
         with col1:
             # สร้างตัวเลือก Camera ID 1-10 + Add New
-            camera_options = [str(i) for i in range(1, 11)] + ["Add New"]
+            camera_options = [str(i) for i in range(1, 4)] + ["➕ Add New"]
             camera_selection = st.selectbox("📷 Camera ID", camera_options, key="camera_select")
             
-            if camera_selection == "Add New":
+            if camera_selection == "➕ Add New":
                 camera_id = st.text_input("🆕 New Camera ID", placeholder="e.g., CAM001 or 11", key="new_camera")
             else:
                 camera_id = camera_selection
