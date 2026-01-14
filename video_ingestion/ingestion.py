@@ -530,15 +530,14 @@ def _push_job_to_redis(redis_client, lua_script, camera_id, file_path, timestamp
     """
     try:
         # Build job metadata
-        job_metadata = json.dumps(
-            {
-                "camera_id": camera_id,
-                "file_path": file_path,
-                "timestamp": timestamp.isoformat(),
-            }
-        )
-        # Double JSON encoding for consistency with original design
-        serialized_job = json.dumps(job_metadata)
+        job_payload = {
+            "camera_id": camera_id,
+            "file_path": file_path,
+            "timestamp": timestamp.isoformat(),
+        }
+
+        # Serialize job to JSON string
+        serialized_job = json.dumps(job_payload)
 
         # Execute Lua script atomically: returns 1 if pushed, 0 if queue full
         result = lua_script(
