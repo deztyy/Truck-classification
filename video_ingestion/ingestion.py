@@ -90,6 +90,28 @@ def resize_with_padding(image, target_size):
     return new_image
 
 
+def get_redis_client():
+    """
+    Creates and returns a Redis client instance.
+    Retries until a connection is established.
+    """
+    r = None
+    while RUNNING:
+        try:
+            r = redis.Redis(
+                host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, socket_connect_timeout=2
+            )
+            r.ping()
+            print(f"🟢 Connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
+            return r
+        except redis.ConnectionError:
+            print("🔴 Redis not ready. Retrying in 5s...")
+            time.sleep(5)
+        except Exception as e:
+            print(f"🔥 Redis Connection Error: {e}")
+            time.sleep(5)
+
+
 # =============================================================================
 # THREADED VIDEO CAPTURE CLASS
 # =============================================================================
@@ -196,18 +218,7 @@ def main():
         sys.exit(1)
 
     # 2. Redis Connection Setup
-    r = None
-    while RUNNING:
-        try:
-            r = redis.Redis(
-                host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, socket_connect_timeout=2
-            )
-            r.ping()
-            print(f"🟢 Connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
-            break
-        except redis.ConnectionError:
-            print("🔴 Redis not ready. Retrying in 5s...")
-            time.sleep(5)
+    r = get_redis_client()
 
     # 3. Directory Setup
     save_dir = os.path.join(OUTPUT_FOLDER, CAMERA_ID)
@@ -286,37 +297,32 @@ def main():
             np.save(full_path, processed_frame)
             # D. Redis Push (Flow Control)
             # Check queue size to prevent backpressure
-            q_len = r.llen("video_jobs")
+            try:
+                q_len = r.llen("video_jobs")
+                if q_len < REDIS_QUEUE_LIMIT:
+                    job_data = {
+                        "camera_id": CAMERA_ID,
+                        "file_path": full_path,
+                        "timestamp": capture_time.isoformat(),
+                    }
+                    r.rpush("video_jobs", json.dumps(job_data))
 
-            if q_len < REDIS_QUEUE_LIMIT:
-                message = {
-                    "camera_id": CAMERA_ID,
-                    "status": "pending",
-                    "image_path": full_path,
-                    "timestamp": current_time,
-                }
-                r.rpush("video_jobs", json.dumps(message))
-
-                # Update process time only on success
-                last_process_time = current_time
-
-                # Optional: Logging every 10 seconds
-                if int(current_time) % 10 == 0:
+                    last_process_time = current_time
+                    if int(current_time) % 10 == 0:
+                        print(
+                            f"📤 Pushed job to Redis. Queue Length: {q_len} | File: {file_name}"
+                        )
+                else:
                     print(
-                        f"✅ [{CAMERA_ID}] Pushed {file_name} (Queue: {q_len})",
-                        flush=True,
+                        f"⚠️ Redis queue full ({q_len} jobs). Skipping push to prevent overload."
                     )
-            else:
-                print(
-                    f"⚠️ Redis Queue Full ({q_len}/{REDIS_QUEUE_LIMIT}). Dropping frame...",
-                    flush=True,
-                )
-                # Skip this frame interval
-                last_process_time = current_time
+            except (redis.ConnectionError, redis.TimeoutError) as re:
+                print(f"🔥 Redis Error: {re}. Retrying connection...")
+                r = get_redis_client()
 
         except Exception as e:
             print(f"🔥 Processing Error: {e}")
-            time.sleep(1)
+            continue
 
     # Cleanup before exit
     video_stream.stop()
