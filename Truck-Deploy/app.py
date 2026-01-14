@@ -6,13 +6,55 @@ import onnxruntime as ort
 from datetime import datetime
 import time
 import sys
+import redis
+import json
+import signal
+import threading
 
+# =============================================================================
+# CONFIGURATION & CONSTANTS
+# =============================================================================
+# Model Settings
 Model_uri = os.getenv("MODEL_URI", "models:/Truck_classification_Model/Production")
 Mlflow_uri = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow-server:5000")
 
-mlflow.set_tracking_uri(Mlflow_uri)
+# Redis Connection Settings
+REDIS_HOST = os.getenv("REDIS_HOST", "redis_broker")
+REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+REDIS_DB = int(os.getenv("REDIS_DB", 0))
 
+# Output Settings
+OUTPUT_DIR = os.getenv("OUTPUT_DIR", "./results")
+
+# Global flag for graceful shutdown
+RUNNING = True
+
+# =============================================================================
+# SIGNAL HANDLING
+# =============================================================================
+def handle_signal(signum, frame):
+    """Handles system signals for graceful shutdown."""
+    global RUNNING
+    print(f"\n🛑 Received signal {signum}. Stopping consumer...")
+    RUNNING = False
+
+signal.signal(signal.SIGINT, handle_signal)
+signal.signal(signal.SIGTERM, handle_signal)
+
+# =============================================================================
+# PREPROCESSING & POSTPROCESSING
+# =============================================================================
 def preprocess_frame(frame_bgr, input_size=(640, 640)):
+    """
+    Preprocesses a BGR frame for ONNX model inference.
+    
+    Args:
+        frame_bgr: OpenCV BGR image
+        input_size: Target input size (width, height)
+    
+    Returns:
+        Preprocessed tensor ready for inference
+    """
     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     frame_resized = cv2.resize(frame_rgb, input_size)
     frame_norm = frame_resized.astype(np.float32) / 255.0
@@ -20,27 +62,16 @@ def preprocess_frame(frame_bgr, input_size=(640, 640)):
     frame_chw = np.expand_dims(frame_chw, axis=0)
     return frame_chw
 
-def load_image_as_opencv_frame(image_path):
-    frame_bgr = cv2.imread(image_path)
-    if frame_bgr is None:
-        raise ValueError(f"Cannot read image: {image_path}")
-    return frame_bgr
-
-def run_single_image_inference(session, image_path):
-    frame_bgr = load_image_as_opencv_frame(image_path)
-    input_tensor = preprocess_frame(frame_bgr)
-    input_name = session.get_inputs()[0].name
-    outputs = session.run(None, {input_name: input_tensor})
-    return outputs
-
-def sigmoid(x):
-    return 1 / (1 + np.exp(-x))
-
-def softmax(x):
-    e_x = np.exp(x - np.max(x))
-    return e_x / e_x.sum(axis=-1, keepdims=True)
-
 def postprocess_classification(outputs):
+    """
+    Extracts class ID and confidence from model output.
+    
+    Args:
+        outputs: Raw model output
+    
+    Returns:
+        Tuple of (class_id, confidence)
+    """
     output = outputs[0] 
     if len(output.shape) == 3:
         output = output[0]
@@ -50,6 +81,9 @@ def postprocess_classification(outputs):
     confidence = float(class_probs[max_indices])
     return class_id, confidence
 
+# =============================================================================
+# VEHICLE CLASSIFICATION DATA
+# =============================================================================
 VEHICLE_CLASSES = {
     0: {"name": "car", "entry_fee": 0.00, "xray_fee": 0.00},
     1: {"name": "other", "entry_fee": 0.00, "xray_fee": 0.00},
@@ -65,7 +99,23 @@ VEHICLE_CLASSES = {
     11: {"name": "truck_head", "entry_fee": 100.00, "xray_fee": 50.00},
 }
 
-def save_result_as_text(camera_id, class_id, confidence, image_path, output_dir="./results"):
+# =============================================================================
+# RESULT SAVING
+# =============================================================================
+def save_result_as_text(camera_id, processing_time, class_id, confidence, image_path, output_dir="./results"):
+    """
+    Saves classification results to a text file.
+    
+    Args:
+        camera_id: Camera identifier
+        class_id: Predicted class ID
+        confidence: Prediction confidence
+        image_path: Path to source image
+        output_dir: Directory to save results
+    
+    Returns:
+        Path to saved result file
+    """
     os.makedirs(output_dir, exist_ok=True)
     vehicle = VEHICLE_CLASSES[class_id]
     total_fee = vehicle["entry_fee"] + vehicle["xray_fee"]
@@ -75,6 +125,7 @@ def save_result_as_text(camera_id, class_id, confidence, image_path, output_dir=
 
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(f"Camera ID: {camera_id}\n")
+        f.write(f"Total Job Time: {processing_time:.4f}s\n")
         f.write(f"Class ID: {class_id}\n")
         f.write(f"Class Name: {vehicle['name']}\n")
         f.write(f"Confidence: {confidence:.4f}\n")
@@ -86,36 +137,172 @@ def save_result_as_text(camera_id, class_id, confidence, image_path, output_dir=
 
     return file_path
 
-if __name__ == "__main__":
+# =============================================================================
+# INFERENCE FUNCTION
+# =============================================================================
+def run_inference_on_npy(session, npy_path):
+    """
+    Loads a .npy file and runs inference.
+    
+    Args:
+        session: ONNX Runtime session
+        npy_path: Path to .npy file
+    
+    Returns:
+        Model output
+    """
+    # Load the numpy array (BGR format from ingestion.py)
+    frame_bgr = np.load(npy_path)
+    
+    # Preprocess for model
+    input_tensor = preprocess_frame(frame_bgr)
+    
+    # Run inference
+    input_name = session.get_inputs()[0].name
+    outputs = session.run(None, {input_name: input_tensor})
+    
+    return outputs
 
+# =============================================================================
+# REDIS CONSUMER
+# =============================================================================
+def process_redis_queue(session, redis_client):
+    """
+    Main consumer loop that processes jobs from Redis queue.
+    
+    Args:
+        session: ONNX Runtime session
+        redis_client: Redis connection
+    """
+    print("🚀 Starting Redis consumer...")
+    processed_count = 0
+    
+    while RUNNING:
+        try:
+            # Blocking pop with 1-second timeout (BLPOP)
+            result = redis_client.blpop('video_jobs', timeout=1)
+            
+            if result is None:
+                # No job available, continue loop
+                continue
+
+            job_start_time = time.perf_counter()
+            
+            # Parse the job
+            _, job_data = result
+            job = json.loads(job_data)
+            
+            camera_id = job.get("camera_id")
+            image_path = job.get("image_path")
+            timestamp = job.get("timestamp")
+            
+            print(f"📥 Processing job from {camera_id}: {image_path}")
+            
+            # Check if file exists
+            if not os.path.exists(image_path):
+                print(f"⚠️ File not found: {image_path}")
+                continue
+            
+            # Run inference
+            start_time = time.time()
+            outputs = run_inference_on_npy(session, image_path)
+            class_id, confidence = postprocess_classification(outputs)
+            inference_time = time.time() - start_time
+
+            total_processing_time = time.perf_counter() - job_start_time
+            
+            # Save results
+            result_path = save_result_as_text(
+                camera_id=camera_id,
+                class_id=class_id,
+                confidence=confidence,
+                image_path=image_path,
+                processing_time=total_processing_time,
+                output_dir=OUTPUT_DIR
+            )
+            
+            processed_count += 1
+
+            print(f"✅ [{camera_id}] Processed in {total_processing_time:.3f}s | Total: {processed_count}")
+            
+            # SAFETY OVERLOAD TRIGGER (Optional)
+            if total_processing_time > 1.5:  # If a job takes too long (e.g., > 1.5s)
+                print(f"🚨 WARNING: High latency detected ({total_processing_time:.2f}s). Worker may be nearing capacity.")
+            
+            print(f"✅ [{camera_id}] Class: {VEHICLE_CLASSES[class_id]['name']} "
+                  f"(Confidence: {confidence:.4f}, Time: {inference_time:.3f}s) "
+                  f"| Total processed: {processed_count}")
+            
+            # Optional: Delete the .npy file after processing to save space
+            # os.remove(image_path)
+            
+        except json.JSONDecodeError as e:
+            print(f"❌ Invalid JSON in queue: {e}")
+        except Exception as e:
+            print(f"🔥 Processing error: {e}")
+            time.sleep(1)  # Brief pause before retrying
+    
+    print(f"👋 Consumer stopped. Total processed: {processed_count}")
+
+# =============================================================================
+# MAIN EXECUTION
+# =============================================================================
+def main():
+    print("=" * 60)
+    print("🚛 Truck Classification Consumer Service")
+    print("=" * 60)
+    
+    # 1. Setup MLflow
+    print(f"📡 Connecting to MLflow: {Mlflow_uri}")
+    mlflow.set_tracking_uri(Mlflow_uri)
+    
+    # 2. Download and load model
+    print(f"📦 Downloading model: {Model_uri}")
     local_path = mlflow.artifacts.download_artifacts(artifact_uri=Model_uri)
     onnx_path = os.path.join(local_path, "model.onnx")
-    session = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
     
-    test_image = "test_images/frame_41134.jpg"
-    camera_id = "CAM_01"
-
-    if not os.path.exists(test_image):
-        print(f"✗ Test image not found: {test_image}")
+    if not os.path.exists(onnx_path):
+        print(f"❌ Model not found at: {onnx_path}")
         sys.exit(1)
-
-    outputs = run_single_image_inference(session, test_image)
-    print(f"Output shape: {outputs[0].shape}")
     
-    class_id, confidence = postprocess_classification(outputs)
+    print(f"🧠 Loading ONNX model...")
+    session = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+    print(f"✅ Model loaded successfully")
     
-    if class_id is None:
-        print("No vehicle detected")
+    # 3. Connect to Redis
+    print(f"🔌 Connecting to Redis at {REDIS_HOST}:{REDIS_PORT}")
+    redis_client = None
+    
+    while RUNNING:
+        try:
+            redis_client = redis.Redis(
+                host=REDIS_HOST, 
+                port=REDIS_PORT, 
+                db=REDIS_DB,
+                socket_connect_timeout=5,
+                decode_responses=False  # Keep binary for consistency
+            )
+            redis_client.ping()
+            print(f"✅ Connected to Redis")
+            break
+        except redis.ConnectionError as e:
+            print(f"🔴 Redis connection failed: {e}. Retrying in 5s...")
+            time.sleep(5)
+    
+    if not RUNNING:
+        print("🛑 Shutdown requested before Redis connection")
         sys.exit(0)
+    
+    # 4. Create output directory
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    
+    # 5. Start processing
+    print("=" * 60)
+    process_redis_queue(session, redis_client)
+    
+    # 6. Cleanup
+    redis_client.close()
+    print("✨ Service terminated gracefully")
 
-    result_path = save_result_as_text(
-        camera_id=camera_id,
-        class_id=class_id,
-        confidence=confidence,
-        image_path=test_image,
-    )
-
-    print(f"\n✓ Inference completed successfully!")
-    print(f"Class: {VEHICLE_CLASSES[class_id]['name']} (ID: {class_id})")
-    print(f"Confidence: {confidence:.4f}")
-    print(f"Result saved to: {result_path}")
+if __name__ == "__main__":
+    main()

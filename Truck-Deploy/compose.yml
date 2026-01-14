@@ -1,0 +1,110 @@
+# =============================================================================
+# TRUCK CLASSIFICATION INFERENCE SUBSYSTEM
+# Handles ML model deployment and inference processing
+# =============================================================================
+
+services:
+  minio:
+    image: minio/minio
+    container_name: mlflow_minio
+    ports:
+      - "${MINIO_PORT_API:-9000}:9000"
+      - "${MINIO_PORT_CONSOLE:-9001}:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - ./minio_data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - truck_system_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  create-bucket:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - truck_system_network
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET_NAME: ${MINIO_BUCKET_NAME:-mlflow-bucket}
+    entrypoint: >
+      /bin/sh -c "
+      until (/usr/bin/mc alias set myminio http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD) do sleep 1; done;
+      /usr/bin/mc mb myminio/$$MINIO_BUCKET_NAME --ignore-existing;
+      /usr/bin/mc anonymous set download myminio/$$MINIO_BUCKET_NAME;
+      exit 0;
+      "
+
+  mlflow-server:
+    image: ghcr.io/mlflow/mlflow:latest
+    container_name: mlflow_registry
+    ports:
+      - "${MLFLOW_PORT:-5000}:5000"
+    environment:
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - MLFLOW_S3_ENDPOINT_URL=${MLFLOW_S3_ENDPOINT_URL}
+      - MLFLOW_S3_IGNORE_TLS=${MLFLOW_S3_IGNORE_TLS:-true}
+    depends_on:
+      create-bucket:
+        condition: service_completed_successfully
+    volumes:
+      - ./mlflow_db:/mlflow_db
+    networks:
+      - truck_system_network
+    command: >
+      mlflow server 
+      --host 0.0.0.0 
+      --port 5000
+      --backend-store-uri ${MLFLOW_BACKEND_STORE:-sqlite:////mlflow_db/mlflow.db}
+      --default-artifact-root ${MLFLOW_ARTIFACT_ROOT:-s3://mlflow-bucket/}
+      --artifacts-destination ${MLFLOW_ARTIFACT_ROOT:-s3://mlflow-bucket/}
+      --serve-artifacts
+      --allowed-hosts "*"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  truck-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: truck_inference_worker
+    restart: always
+    depends_on:
+      mlflow-server:
+        condition: service_healthy
+      redis_broker:
+        condition: service_started
+    environment:
+      - MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI}
+      - MODEL_URI=${MODEL_URI}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - MLFLOW_S3_ENDPOINT_URL=${MLFLOW_S3_ENDPOINT_URL}
+      - MLFLOW_S3_IGNORE_TLS=${MLFLOW_S3_IGNORE_TLS:-true}
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_DB=${REDIS_DB:-0}
+      - OUTPUT_DIR=${OUTPUT_DIR:-/app/results}
+    volumes:
+      - ./results:/app/results
+      - ../shared_data:/app/shared_memory:ro
+    networks:
+      - truck_system_network
+
+networks:
+  truck_system_network:
+    name: ${NETWORK_NAME:-truck_system_network}
+    external: true
