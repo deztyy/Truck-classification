@@ -126,12 +126,12 @@ def init_database():
     """Initialize database tables if not exist"""
     try:
         with engine.connect() as conn:
+            # Set timezone to Bangkok for this session
+            conn.execute(text("SET TIME ZONE 'Asia/Bangkok'"))
             result = conn.execute(text("""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
                     WHERE table_name = 'vehicle_classes'
-                    conn.execute(text("SET TIME ZONE 'Asia/Bangkok'"))
-
                 );
             """))
             
