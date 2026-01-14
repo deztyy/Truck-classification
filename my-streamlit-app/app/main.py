@@ -382,12 +382,12 @@ def render_entry_tab(df_classes):
         
         # Camera Selection
         with col1:
-            existing_cameras = get_existing_cameras()
-            camera_options = existing_cameras + ["➕ Add New Camera"]
+            # สร้างตัวเลือก Camera ID 1-10 + Add New
+            camera_options = [str(i) for i in range(1, 4)] + ["➕ Add New"]
             camera_selection = st.selectbox("📷 Camera ID", camera_options, key="camera_select")
             
-            if camera_selection == "➕ Add New Camera":
-                camera_id = st.text_input("🆕 New Camera ID", placeholder="e.g., CAM001", key="new_camera")
+            if camera_selection == "➕ Add New":
+                camera_id = st.text_input("🆕 New Camera ID", placeholder="Enter Your New Camera", key="new_camera")
             else:
                 camera_id = camera_selection
         
@@ -422,7 +422,7 @@ def render_entry_tab(df_classes):
                 st.image(img_path, caption=selected_class_name, use_container_width=True)
             
             # Camera Statistics
-            if camera_id and camera_id != "➕ Add New Camera":
+            if camera_id and camera_id != "Add New":
                 try:
                     camera_stats = pd.read_sql(text("""
                         SELECT COUNT(*) as total_count, SUM(c.total_fee) as total_fees
@@ -448,7 +448,7 @@ def render_entry_tab(df_classes):
         col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
         with col_btn2:
             if st.button("💾 Save Transaction", use_container_width=True, type="primary"):
-                if camera_id and camera_id.strip() and camera_id != "➕ Add New Camera":
+                if camera_id and camera_id.strip() and camera_id != "Add New":
                     if selected_class_name:
                         try:
                             selected_class = df_classes[df_classes['class_name'] == selected_class_name].iloc[0]
