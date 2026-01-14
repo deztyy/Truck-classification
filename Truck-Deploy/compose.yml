@@ -26,6 +26,7 @@ services:
 
   create-bucket:
     image: minio/mc
+    # container_name: minio_bucket_creator
     depends_on:
       minio:
         condition: service_healthy
@@ -82,6 +83,12 @@ services:
       dockerfile: Dockerfile
     container_name: truck_inference_worker
     restart: always
+    # deploy:
+    #   replicas: 3 # 🚀 Start 3 workers automatically
+    #   resources:
+    #     limits:
+    #       cpus: '1.0' # 🛡️ Prevent one worker from eating all CPU
+    #       memory: 1G
     depends_on:
       mlflow-server:
         condition: service_healthy
