@@ -9,6 +9,7 @@ import signal
 import datetime
 import threading
 import glob
+from zoneinfo import ZoneInfo
 
 # =============================================================================
 # CONFIGURATION & CONSTANTS
@@ -29,6 +30,7 @@ TARGET_SIZE = (640, 640) # Target dimensions (Width, Height)
 PROCESS_FPS = 1.0        # Frame capture rate (Frames Per Second)
 JPG_QUALITY = 80         # JPEG compression quality (0-100)
 RETENTION_SECONDS = 3600 # File retention period (1 hour)
+THAI_TZ = ZoneInfo("Asia/Bangkok") # Timezone Setting
 
 # Global flag for the main loop
 RUNNING = True
@@ -220,6 +222,8 @@ def main():
         # B. Frame Retrieval (Non-blocking)
         grabbed, frame = video_stream.read()
 
+        capture_time = datetime.datetime.now(THAI_TZ)
+
         # Handle stream loss / Reconnection
         if not grabbed or frame is None:
             print(f"⚠️ Frame lost or Camera disconnected. Reconnecting in 5s...")
@@ -234,7 +238,7 @@ def main():
             processed_frame = resize_with_padding(frame, TARGET_SIZE)
             
             # Generate Filename
-            timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            timestamp_str = capture_time.strftime("%Y%m%d_%H%M%S_%f")
             file_name = f"{timestamp_str}.npy"
             full_path = os.path.join(save_dir, file_name)
 
