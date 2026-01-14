@@ -382,7 +382,7 @@ def render_entry_tab(df_classes):
         
         # Camera Selection
         with col1:
-            # สร้างตัวเลือก Camera ID 1-10 + Add New
+            # สร้างตัวเลือก Camera ID 1-3 + Add New
             camera_options = [str(i) for i in range(1, 4)] + ["➕ Add New"]
             camera_selection = st.selectbox("📷 Camera ID", camera_options, key="camera_select")
             
