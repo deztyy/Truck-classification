@@ -10,6 +10,7 @@ import redis
 import json
 import signal
 import threading
+from zoneinfo import ZoneInfo
 
 # =============================================================================
 # CONFIGURATION & CONSTANTS
@@ -25,6 +26,8 @@ REDIS_DB = int(os.getenv("REDIS_DB", 0))
 
 # Output Settings
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "./results")
+
+THAI_TZ = ZoneInfo("Asia/Bangkok")
 
 # Global flag for graceful shutdown
 RUNNING = True
@@ -103,24 +106,16 @@ VEHICLE_CLASSES = {
 # RESULT SAVING
 # =============================================================================
 def save_result_as_text(camera_id, processing_time, class_id, confidence, image_path, output_dir="./results"):
-    """
-    Saves classification results to a text file.
+    # Change datetime.datetime.now to just datetime.now
+    capture_time = datetime.now(THAI_TZ) 
     
-    Args:
-        camera_id: Camera identifier
-        class_id: Predicted class ID
-        confidence: Prediction confidence
-        image_path: Path to source image
-        output_dir: Directory to save results
-    
-    Returns:
-        Path to saved result file
-    """
     os.makedirs(output_dir, exist_ok=True)
     vehicle = VEHICLE_CLASSES[class_id]
     total_fee = vehicle["entry_fee"] + vehicle["xray_fee"]
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    filename = datetime.now().strftime("%Y%m%d_%H%M%S") + ".txt"
+    
+    # This is now consistent
+    timestamp = capture_time.strftime("%Y%m%d_%H%M%S_%f")
+    filename = capture_time.strftime("%Y%m%d_%H%M%S_%f") + ".txt"
     file_path = os.path.join(output_dir, filename)
 
     with open(file_path, "w", encoding="utf-8") as f:
