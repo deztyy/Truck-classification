@@ -130,6 +130,8 @@ def init_database():
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
                     WHERE table_name = 'vehicle_classes'
+                    conn.execute(text("SET TIME ZONE 'Asia/Bangkok'"))
+
                 );
             """))
             
@@ -152,7 +154,7 @@ def init_database():
                         applied_xray_fee NUMERIC(10, 2),
                         image_path TEXT,
                         total_applied_fee NUMERIC(10, 2),
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        created_at TIMESTAMP DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Bangkok'),
                         FOREIGN KEY (class_id) REFERENCES vehicle_classes(class_id)
                     );
                 """))
