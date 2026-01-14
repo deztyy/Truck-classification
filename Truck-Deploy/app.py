@@ -102,7 +102,7 @@ VEHICLE_CLASSES = {
 # =============================================================================
 # RESULT SAVING
 # =============================================================================
-def save_result_as_text(camera_id, class_id, confidence, image_path, output_dir="./results"):
+def save_result_as_text(camera_id, processing_time, class_id, confidence, image_path, output_dir="./results"):
     """
     Saves classification results to a text file.
     
@@ -125,6 +125,7 @@ def save_result_as_text(camera_id, class_id, confidence, image_path, output_dir=
 
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(f"Camera ID: {camera_id}\n")
+        f.write(f"Total Job Time: {processing_time:.4f}s\n")
         f.write(f"Class ID: {class_id}\n")
         f.write(f"Class Name: {vehicle['name']}\n")
         f.write(f"Confidence: {confidence:.4f}\n")
@@ -184,6 +185,8 @@ def process_redis_queue(session, redis_client):
             if result is None:
                 # No job available, continue loop
                 continue
+
+            job_start_time = time.perf_counter()
             
             # Parse the job
             _, job_data = result
@@ -205,6 +208,8 @@ def process_redis_queue(session, redis_client):
             outputs = run_inference_on_npy(session, image_path)
             class_id, confidence = postprocess_classification(outputs)
             inference_time = time.time() - start_time
+
+            total_processing_time = time.perf_counter() - job_start_time
             
             # Save results
             result_path = save_result_as_text(
@@ -212,10 +217,17 @@ def process_redis_queue(session, redis_client):
                 class_id=class_id,
                 confidence=confidence,
                 image_path=image_path,
+                processing_time=total_processing_time,
                 output_dir=OUTPUT_DIR
             )
             
             processed_count += 1
+
+            print(f"✅ [{camera_id}] Processed in {total_processing_time:.3f}s | Total: {processed_count}")
+            
+            # SAFETY OVERLOAD TRIGGER (Optional)
+            if total_processing_time > 1.5:  # If a job takes too long (e.g., > 1.5s)
+                print(f"🚨 WARNING: High latency detected ({total_processing_time:.2f}s). Worker may be nearing capacity.")
             
             print(f"✅ [{camera_id}] Class: {VEHICLE_CLASSES[class_id]['name']} "
                   f"(Confidence: {confidence:.4f}, Time: {inference_time:.3f}s) "
