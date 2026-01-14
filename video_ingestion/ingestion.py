@@ -36,6 +36,19 @@ THAI_TZ = ZoneInfo("Asia/Bangkok")  # Timezone Setting
 # Global flag for the main loop
 RUNNING = True
 
+LUA_RPUSH_LIMIT_SCRIPT = """
+local queue_key = KEYS[1]
+local limit = tonumber(ARGV[1])
+local value = ARGV[2]
+
+if redis.call('LLEN', queue_key) >= limit then
+    return 0
+else
+    redis.call('RPUSH', queue_key, value)
+    return 1
+end
+"""
+
 
 # =============================================================================
 # SIGNAL HANDLING
@@ -220,6 +233,8 @@ def main():
     # 2. Redis Connection Setup
     r = get_redis_client()
 
+    push_limit_script = r.register_script(LUA_RPUSH_LIMIT_SCRIPT)
+
     # 3. Directory Setup
     save_dir = os.path.join(OUTPUT_FOLDER, CAMERA_ID)
     os.makedirs(save_dir, exist_ok=True)
@@ -298,27 +313,33 @@ def main():
             # D. Redis Push (Flow Control)
             # Check queue size to prevent backpressure
             try:
-                q_len = r.llen("video_jobs")
-                if q_len < REDIS_QUEUE_LIMIT:
-                    job_data = {
+                message = json.dumps(
+                    {
                         "camera_id": CAMERA_ID,
                         "file_path": full_path,
                         "timestamp": capture_time.isoformat(),
                     }
-                    r.rpush("video_jobs", json.dumps(job_data))
+                )
+                json_playload = json.dumps(message)
 
+                result = push_limit_script(
+                    keys=["video_jobs"], args=[REDIS_QUEUE_LIMIT, json_playload]
+                )
+                if result != 1:
                     last_process_time = current_time
                     if int(current_time) % 10 == 0:
-                        print(
-                            f"📤 Pushed job to Redis. Queue Length: {q_len} | File: {file_name}"
-                        )
+                        print(f"✅ [{CAMERA_ID}] Pushed (Queue: {result})", flush=True)
                 else:
                     print(
-                        f"⚠️ Redis queue full ({q_len} jobs). Skipping push to prevent overload."
+                        f"⚠️ [{CAMERA_ID}] Redis queue full. Skipping push to prevent overload.",
+                        flush=True,
                     )
-            except (redis.ConnectionError, redis.TimeoutError) as re:
-                print(f"🔥 Redis Error: {re}. Retrying connection...")
+                    last_process_time = current_time
+
+            except (redis.ConnectionError, redis.TimeoutError) as redis_err:
+                print(f"🔥 Redis Error: {redis_err}. Retrying connection...")
                 r = get_redis_client()
+                push_limit_script = r.register_script(LUA_RPUSH_LIMIT_SCRIPT)
 
         except Exception as e:
             print(f"🔥 Processing Error: {e}")
