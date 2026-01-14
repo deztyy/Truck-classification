@@ -383,11 +383,11 @@ def render_entry_tab(df_classes):
         # Camera Selection
         with col1:
             # สร้างตัวเลือก Camera ID 1-10 + Add New
-            camera_options = [str(i) for i in range(1, 4)] + ["➕ Add New"]
+            camera_options = [str(i) for i in range(1, 11)] + ["Add New"]
             camera_selection = st.selectbox("📷 Camera ID", camera_options, key="camera_select")
             
-            if camera_selection == "➕ Add New":
-                camera_id = st.text_input("🆕 New Camera ID", placeholder="Enter Your New Camera", key="new_camera")
+            if camera_selection == "Add New":
+                camera_id = st.text_input("🆕 New Camera ID", placeholder="e.g., CAM001 or 11", key="new_camera")
             else:
                 camera_id = camera_selection
         
@@ -453,17 +453,21 @@ def render_entry_tab(df_classes):
                         try:
                             selected_class = df_classes[df_classes['class_name'] == selected_class_name].iloc[0]
                             
+                            # Get current Thailand time
+                            current_time_thailand = datetime.now(THAILAND_TZ)
+                            
                             with engine.connect() as conn:
                                 conn.execute(text("""
                                     INSERT INTO vehicle_transactions 
-                                    (camera_id, class_id, applied_entry_fee, applied_xray_fee, image_path) 
-                                    VALUES (:cam_id, :cid, :entry, :xray, :img)
+                                    (camera_id, class_id, applied_entry_fee, applied_xray_fee, image_path, created_at) 
+                                    VALUES (:cam_id, :cid, :entry, :xray, :img, :created_at)
                                 """), {
                                     "cam_id": camera_id.strip(),
                                     "cid": int(class_options[selected_class_name]),
                                     "entry": float(selected_class['entry_fee']),
                                     "xray": float(selected_class['xray_fee']),
-                                    "img": img_path if os.path.exists(img_path) else None
+                                    "img": img_path if os.path.exists(img_path) else None,
+                                    "created_at": current_time_thailand
                                 })
                                 conn.commit()
                             
