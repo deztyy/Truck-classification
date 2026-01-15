@@ -8,7 +8,7 @@ import streamlit.components.v1 as components
 
 # ==================== CONFIGURATION ====================
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'Admin1234')
-DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://user:password@db:5432/mydb')
+DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://user:password@db:5429/mydb')
 THAILAND_TZ = pytz.timezone('Asia/Bangkok')
 
 # ==================== CUSTOM CSS ====================
