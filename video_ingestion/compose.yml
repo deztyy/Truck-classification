@@ -90,49 +90,49 @@ services:
     networks:
       - truck_system_network
 
-  cam_02:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: worker_cam_02
-    restart: always
-    depends_on:
-      redis_broker:
-        condition: service_healthy
-    environment:
-      - REDIS_HOST=${REDIS_HOST}
-      - REDIS_PORT=${REDIS_PORT:-6379}
-      - OUTPUT_FOLDER=${OUTPUT_FOLDER}
-      - CAMERA_ID=${CAM_02_ID}
-      - RTSP_URL=${CAM_02_RTSP_URL}
-      - PROCESS_FPS=${PROCESS_FPS:-1.0}
-      - RETENTION_SECONDS=${RETENTION_SECONDS:-3600}
-    volumes:
-      - ../shared_data:/app/shared_memory
-    networks:
-      - truck_system_network
+  # cam_02:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: worker_cam_02
+  #   restart: always
+  #   depends_on:
+  #     redis_broker:
+  #       condition: service_healthy
+  #   environment:
+  #     - REDIS_HOST=${REDIS_HOST}
+  #     - REDIS_PORT=${REDIS_PORT:-6379}
+  #     - OUTPUT_FOLDER=${OUTPUT_FOLDER}
+  #     - CAMERA_ID=${CAM_02_ID}
+  #     - RTSP_URL=${CAM_02_RTSP_URL}
+  #     - PROCESS_FPS=${PROCESS_FPS:-1.0}
+  #     - RETENTION_SECONDS=${RETENTION_SECONDS:-3600}
+  #   volumes:
+  #     - ../shared_data:/app/shared_memory
+  #   networks:
+  #     - truck_system_network
 
-  cam_03:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: worker_cam_03
-    restart: always
-    depends_on:
-      redis_broker:
-        condition: service_healthy
-    environment:
-      - REDIS_HOST=${REDIS_HOST}
-      - REDIS_PORT=${REDIS_PORT:-6379}
-      - OUTPUT_FOLDER=${OUTPUT_FOLDER}
-      - CAMERA_ID=${CAM_03_ID}
-      - RTSP_URL=${CAM_03_RTSP_URL}
-      - PROCESS_FPS=${PROCESS_FPS:-1.0}
-      - RETENTION_SECONDS=${RETENTION_SECONDS:-3600}
-    volumes:
-      - ../shared_data:/app/shared_memory
-    networks:
-      - truck_system_network
+  # cam_03:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: worker_cam_03
+  #   restart: always
+  #   depends_on:
+  #     redis_broker:
+  #       condition: service_healthy
+  #   environment:
+  #     - REDIS_HOST=${REDIS_HOST}
+  #     - REDIS_PORT=${REDIS_PORT:-6379}
+  #     - OUTPUT_FOLDER=${OUTPUT_FOLDER}
+  #     - CAMERA_ID=${CAM_03_ID}
+  #     - RTSP_URL=${CAM_03_RTSP_URL}
+  #     - PROCESS_FPS=${PROCESS_FPS:-1.0}
+  #     - RETENTION_SECONDS=${RETENTION_SECONDS:-3600}
+  #   volumes:
+  #     - ../shared_data:/app/shared_memory
+  #   networks:
+  #     - truck_system_network
 
 networks:
   truck_system_network:

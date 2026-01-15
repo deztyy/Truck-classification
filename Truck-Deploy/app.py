@@ -16,13 +16,13 @@ from sqlalchemy import create_engine, text
 from pathlib import Path
 import glob
 
-# ByteTrack imports (install: pip install lap)
+# ByteTrack imports
 from dataclasses import dataclass
 from typing import List, Tuple
 import lap
 
 # =============================================================================
-# BYTETRACK IMPLEMENTATION
+# BYTETRACK IMPLEMENTATION (FIXED)
 # =============================================================================
 @dataclass
 class Detection:
@@ -35,49 +35,81 @@ class STrack:
     count = 0
     
     def __init__(self, bbox, score, class_id):
-        self.bbox = bbox
+        self.bbox = bbox.astype(np.float32)
         self.score = score
         self.class_id = class_id
         self.track_id = None
         self.is_activated = False
         self.tracklet_len = 0
         self.frame_id = 0
+        self.state = 'tracked'  # tracked, lost, removed
         
+        # Initialize Kalman state
         self._tlwh = self._bbox_to_tlwh(bbox)
         self.mean, self.covariance = self._initiate_kalman(self._tlwh)
         
     @staticmethod
     def _bbox_to_tlwh(bbox):
-        return np.array([bbox[0], bbox[1], bbox[2]-bbox[0], bbox[3]-bbox[1]])
+        """Convert [x1,y1,x2,y2] to [x,y,w,h]"""
+        return np.array([bbox[0], bbox[1], bbox[2]-bbox[0], bbox[3]-bbox[1]], dtype=np.float32)
+    
+    @staticmethod
+    def _tlwh_to_bbox(tlwh):
+        """Convert [x,y,w,h] to [x1,y1,x2,y2]"""
+        return np.array([tlwh[0], tlwh[1], tlwh[0]+tlwh[2], tlwh[1]+tlwh[3]], dtype=np.float32)
     
     def _initiate_kalman(self, tlwh):
-        mean = np.zeros(8)
+        """Initialize Kalman filter state"""
+        # State: [x, y, w, h, vx, vy, vw, vh]
+        mean = np.zeros(8, dtype=np.float32)
         mean[:4] = tlwh
-        covariance = np.eye(8)
+        
+        # Covariance matrix
+        std_weight = [2.0, 2.0, 10.0, 10.0, 10.0, 10.0, 10000.0, 10000.0]
+        covariance = np.diag(np.square(std_weight)).astype(np.float32)
+        
         return mean, covariance
     
     def predict(self):
-        self.mean[4:] = self.mean[:4] - self.mean[4:8]
+        """Predict next state using simple motion model"""
+        # Simple constant velocity model
+        self.mean[:4] = self.mean[:4] + self.mean[4:8]
         
+        # Update bbox from predicted position
+        self.bbox = self._tlwh_to_bbox(self.mean[:4])
+    
     def update(self, new_track):
+        """Update track with new detection"""
         self.bbox = new_track.bbox
         self.score = new_track.score
         self.class_id = new_track.class_id
+        
         self._tlwh = self._bbox_to_tlwh(new_track.bbox)
+        
+        # Update Kalman state
+        # Calculate velocity
+        velocity = self._tlwh - self.mean[:4]
         self.mean[:4] = self._tlwh
+        self.mean[4:8] = velocity
+        
         self.tracklet_len += 1
+        self.state = 'tracked'
         
     def activate(self, frame_id):
+        """Activate a new track"""
         self.track_id = self.next_id()
         self.tracklet_len = 0
         self.frame_id = frame_id
         self.is_activated = True
+        self.state = 'tracked'
         
     def re_activate(self, new_track, frame_id):
+        """Reactivate a lost track"""
         self.update(new_track)
         self.tracklet_len = 0
         self.frame_id = frame_id
         self.is_activated = True
+        self.state = 'tracked'
         
     @classmethod
     def next_id(cls):
@@ -85,7 +117,7 @@ class STrack:
         return cls.count
 
 class ByteTracker:
-    """ByteTrack multi-object tracker"""
+    """ByteTrack multi-object tracker (FIXED)"""
     
     def __init__(self, track_thresh=0.5, track_buffer=30, match_thresh=0.8):
         self.track_thresh = track_thresh
@@ -102,21 +134,25 @@ class ByteTracker:
         """Update tracks with new detections"""
         self.frame_id += 1
         
+        # Split detections by confidence
         det_high = [d for d in detections if d.score >= self.track_thresh]
-        det_low = [d for d in detections if d.score < self.track_thresh]
+        det_low = [d for d in detections if d.score < self.track_thresh and d.score >= 0.1]
         
+        # Convert to STrack objects
         detections_high = [STrack(d.bbox, d.score, d.class_id) for d in det_high]
         detections_low = [STrack(d.bbox, d.score, d.class_id) for d in det_low]
         
-        for track in self.tracked_stracks:
+        # Predict current locations of existing tracks
+        for track in self.tracked_stracks + self.lost_stracks:
             track.predict()
         
+        # First association: tracked tracks with high confidence detections
         tracked_stracks = []
         unmatched_tracks = []
         
         if len(self.tracked_stracks) > 0 and len(detections_high) > 0:
             matches, u_track, u_detection = self._match(
-                self.tracked_stracks, detections_high
+                self.tracked_stracks, detections_high, thresh=self.match_thresh
             )
             
             for itracked, idet in matches:
@@ -126,11 +162,12 @@ class ByteTracker:
                 tracked_stracks.append(track)
                 
             unmatched_tracks = [self.tracked_stracks[i] for i in u_track]
-            unmatched_detections = [detections_high[i] for i in u_detection]
+            unmatched_detections_high = [detections_high[i] for i in u_detection]
         else:
             unmatched_tracks = self.tracked_stracks
-            unmatched_detections = detections_high
+            unmatched_detections_high = detections_high
         
+        # Second association: remaining tracks with low confidence detections
         if len(unmatched_tracks) > 0 and len(detections_low) > 0:
             matches, u_track, u_detection = self._match(
                 unmatched_tracks, detections_low, thresh=0.5
@@ -143,45 +180,80 @@ class ByteTracker:
                 tracked_stracks.append(track)
                 
             unmatched_tracks = [unmatched_tracks[i] for i in u_track]
-        else:
-            unmatched_detections += detections_low
         
+        # Third association: lost tracks with remaining high confidence detections
+        if len(self.lost_stracks) > 0 and len(unmatched_detections_high) > 0:
+            matches, u_lost, u_detection = self._match(
+                self.lost_stracks, unmatched_detections_high, thresh=0.5
+            )
+            
+            for ilost, idet in matches:
+                track = self.lost_stracks[ilost]
+                det = unmatched_detections_high[idet]
+                track.re_activate(det, self.frame_id)
+                tracked_stracks.append(track)
+                
+            self.lost_stracks = [self.lost_stracks[i] for i in u_lost]
+            unmatched_detections_high = [unmatched_detections_high[i] for i in u_detection]
+        
+        # Handle unmatched tracks
         for track in unmatched_tracks:
-            if track.frame_id < self.frame_id - self.track_buffer:
-                self.removed_stracks.append(track)
-            else:
+            track.state = 'lost'
+            if self.frame_id - track.frame_id <= self.track_buffer:
                 self.lost_stracks.append(track)
+            else:
+                self.removed_stracks.append(track)
         
-        for det in unmatched_detections:
+        # Initialize new tracks from unmatched high confidence detections
+        for det in unmatched_detections_high:
             if det.score >= self.track_thresh:
                 det.activate(self.frame_id)
                 tracked_stracks.append(det)
         
+        # Update lost tracks age
+        self.lost_stracks = [
+            t for t in self.lost_stracks 
+            if self.frame_id - t.frame_id <= self.track_buffer
+        ]
+        
+        # Remove old lost tracks
+        for track in self.lost_stracks:
+            if self.frame_id - track.frame_id > self.track_buffer:
+                self.removed_stracks.append(track)
+        
         self.tracked_stracks = tracked_stracks
         
-        return [t for t in self.tracked_stracks if t.is_activated]
+        # Return only active tracks
+        return [t for t in self.tracked_stracks if t.is_activated and t.state == 'tracked']
     
     def _match(self, tracks, detections, thresh=None):
+        """Match tracks to detections using IoU"""
         if thresh is None:
             thresh = self.match_thresh
             
         if len(tracks) == 0 or len(detections) == 0:
             return [], list(range(len(tracks))), list(range(len(detections)))
         
-        iou_matrix = np.zeros((len(tracks), len(detections)))
+        # Compute IoU matrix
+        iou_matrix = np.zeros((len(tracks), len(detections)), dtype=np.float32)
         for i, track in enumerate(tracks):
             for j, det in enumerate(detections):
                 iou_matrix[i, j] = self._iou(track.bbox, det.bbox)
         
+        # Use linear assignment
         if iou_matrix.max() > 0:
             cost_matrix = 1 - iou_matrix
-            indices = lap.lapjv(cost_matrix, extend_cost=True)[1]
+            
+            # Use lap for linear assignment
+            # lap.lapjv returns (cost, x, y) where x is row->col assignment
+            cost, x, y = lap.lapjv(cost_matrix, extend_cost=True)
             
             matches = []
             unmatched_tracks = []
             unmatched_detections = list(range(len(detections)))
             
-            for i, j in enumerate(indices):
+            # x contains the assignment for each row (track)
+            for i, j in enumerate(x):
                 if j >= 0 and iou_matrix[i, j] >= thresh:
                     matches.append([i, j])
                     if j in unmatched_detections:
@@ -195,16 +267,23 @@ class ByteTracker:
     
     @staticmethod
     def _iou(bbox1, bbox2):
+        """Calculate IoU between two bboxes"""
         x1 = max(bbox1[0], bbox2[0])
         y1 = max(bbox1[1], bbox2[1])
         x2 = min(bbox1[2], bbox2[2])
         y2 = min(bbox1[3], bbox2[3])
         
         inter_area = max(0, x2 - x1) * max(0, y2 - y1)
+        
         bbox1_area = (bbox1[2] - bbox1[0]) * (bbox1[3] - bbox1[1])
         bbox2_area = (bbox2[2] - bbox2[0]) * (bbox2[3] - bbox2[1])
         
-        iou = inter_area / (bbox1_area + bbox2_area - inter_area + 1e-6)
+        union_area = bbox1_area + bbox2_area - inter_area
+        
+        if union_area == 0:
+            return 0.0
+        
+        iou = inter_area / union_area
         return iou
 
 # =============================================================================
@@ -219,13 +298,11 @@ REDIS_DB = int(os.getenv("REDIS_DB", 0))
 
 DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://user:password@db:5432/mydb')
 
-# Image storage settings
 IMAGE_STORAGE_DIR = os.getenv("IMAGE_STORAGE_DIR", "./vehicle_images")
 IMAGE_RETENTION_DAYS = int(os.getenv("IMAGE_RETENTION_DAYS", 15))
 
-# Batch insert settings
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", 50))
-BATCH_TIMEOUT = int(os.getenv("BATCH_TIMEOUT", 5))  # seconds
+BATCH_TIMEOUT = int(os.getenv("BATCH_TIMEOUT", 5))
 
 THAI_TZ = ZoneInfo("Asia/Bangkok")
 
@@ -276,7 +353,6 @@ def cleanup_old_files():
         cutoff_date = datetime.now(THAI_TZ) - timedelta(days=IMAGE_RETENTION_DAYS)
         deleted_count = 0
         
-        # Search for jpg and npy files
         for pattern in ['*.jpg', '*.npy']:
             for file_path in glob.glob(os.path.join(IMAGE_STORAGE_DIR, '**', pattern), recursive=True):
                 try:
@@ -296,17 +372,18 @@ def schedule_cleanup():
     """Run cleanup every hour"""
     while RUNNING:
         cleanup_old_files()
-        time.sleep(3600)  # Run every hour
+        time.sleep(3600)
 
 # =============================================================================
 # IMAGE CONVERSION
 # =============================================================================
-def convert_npy_to_jpg(npy_path, output_dir=IMAGE_STORAGE_DIR, quality=85):
+def convert_npy_to_jpg(npy_array, frame_index, output_dir=IMAGE_STORAGE_DIR, quality=85):
     """
-    Convert .npy file to .jpg and return the new path
+    Convert numpy array to .jpg and return the new path
     
     Args:
-        npy_path: Path to .npy file
+        npy_array: Numpy array (frame in BGR format)
+        frame_index: Index of frame in batch
         output_dir: Directory to save jpg files
         quality: JPEG quality (1-100)
     
@@ -314,31 +391,19 @@ def convert_npy_to_jpg(npy_path, output_dir=IMAGE_STORAGE_DIR, quality=85):
         Path to saved .jpg file
     """
     try:
-        # Load BGR image
-        frame_bgr = np.load(npy_path)
-        
-        # Create output directory structure: IMAGE_STORAGE_DIR/YYYY-MM-DD/
         date_str = datetime.now(THAI_TZ).strftime("%Y-%m-%d")
         day_dir = os.path.join(output_dir, date_str)
         os.makedirs(day_dir, exist_ok=True)
         
-        # Generate filename
         timestamp = datetime.now(THAI_TZ).strftime("%Y%m%d_%H%M%S_%f")
-        jpg_filename = f"{timestamp}.jpg"
+        jpg_filename = f"{timestamp}_f{frame_index}.jpg"
         jpg_path = os.path.join(day_dir, jpg_filename)
         
-        # Save as JPEG
-        cv2.imwrite(jpg_path, frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
-        
-        # Delete original .npy file to save space
-        try:
-            os.remove(npy_path)
-        except:
-            pass
+        cv2.imwrite(jpg_path, npy_array, [cv2.IMWRITE_JPEG_QUALITY, quality])
         
         return jpg_path
     except Exception as e:
-        print(f"❌ Error converting {npy_path} to jpg: {e}")
+        print(f"❌ Error converting frame to jpg: {e}")
         return None
 
 # =============================================================================
@@ -375,7 +440,6 @@ def init_database(engine):
                 );
             """))
             
-            # Create index for faster queries
             conn.execute(text("""
                 CREATE INDEX IF NOT EXISTS idx_camera_created 
                 ON vehicle_transactions(camera_id, created_at DESC);
@@ -386,7 +450,6 @@ def init_database(engine):
                 ON vehicle_transactions(track_id);
             """))
             
-            # Insert vehicle classes
             for class_id, info in VEHICLE_CLASSES.items():
                 conn.execute(text("""
                     INSERT INTO vehicle_classes (class_id, class_name, entry_fee, xray_fee, total_fee)
@@ -406,20 +469,13 @@ def init_database(engine):
         print(f"❌ Database initialization error: {e}")
 
 def batch_insert_to_database(engine, batch_data):
-    """
-    Batch insert multiple records to database
-    
-    Args:
-        engine: SQLAlchemy engine
-        batch_data: List of dicts with transaction data
-    """
+    """Batch insert multiple records to database"""
     if not batch_data:
         return
     
     with db_lock:
         try:
             with engine.connect() as conn:
-                # Use executemany for batch insert
                 conn.execute(text("""
                     INSERT INTO vehicle_transactions 
                     (camera_id, track_id, class_id, applied_entry_fee, applied_xray_fee, 
@@ -439,7 +495,7 @@ def add_to_batch(camera_id, track_id, class_id, confidence, image_path):
     
     track_key = f"{camera_id}_{track_id}"
     if track_key in saved_tracks:
-        return  # Already saved
+        return
     
     vehicle = VEHICLE_CLASSES[class_id]
     total_fee = vehicle["entry_fee"] + vehicle["xray_fee"]
@@ -476,8 +532,10 @@ def flush_batch_if_needed(engine, force=False):
             batch_to_insert = batch_buffer.copy()
             batch_buffer = []
             last_batch_time = time.time()
+        else:
+            batch_to_insert = []
     
-    if should_flush and batch_to_insert:
+    if batch_to_insert:
         batch_insert_to_database(engine, batch_to_insert)
 
 # =============================================================================
@@ -516,7 +574,7 @@ def postprocess_yolo_detection(outputs, conf_thresh=0.3, img_shape=(640, 640)):
         y2 = max(0, min(y_center + h / 2, img_shape[0]))
         
         detections.append(Detection(
-            bbox=np.array([x1, y1, x2, y2]),
+            bbox=np.array([x1, y1, x2, y2], dtype=np.float32),
             score=float(conf),
             class_id=int(class_id)
         ))
@@ -526,21 +584,37 @@ def postprocess_yolo_detection(outputs, conf_thresh=0.3, img_shape=(640, 640)):
 # =============================================================================
 # INFERENCE FUNCTION
 # =============================================================================
-def run_inference_on_npy(session, npy_path):
-    """Load .npy file and run inference"""
-    frame_bgr = np.load(npy_path)
-    input_tensor = preprocess_frame(frame_bgr)
-    input_name = session.get_inputs()[0].name
-    outputs = session.run(None, {input_name: input_tensor})
-    return outputs, frame_bgr.shape[:2]
+def run_inference_batch(session, frames_batch):
+    """
+    Run inference on a batch of frames
+    
+    Args:
+        session: ONNX runtime session
+        frames_batch: numpy array of shape (batch_size, H, W, 3)
+    
+    Returns:
+        List of detections for each frame
+    """
+    all_detections = []
+    
+    for frame_bgr in frames_batch:
+        input_tensor = preprocess_frame(frame_bgr)
+        input_name = session.get_inputs()[0].name
+        outputs = session.run(None, {input_name: input_tensor})
+        
+        detections = postprocess_yolo_detection(outputs, conf_thresh=0.3)
+        all_detections.append(detections)
+    
+    return all_detections
 
 # =============================================================================
-# REDIS CONSUMER WITH BYTETRACK
+# REDIS CONSUMER WITH BYTETRACK (FIXED FOR BATCH PROCESSING)
 # =============================================================================
 def process_redis_queue(session, redis_client, engine):
     """Main consumer loop with ByteTrack and batch processing"""
     print("🚀 Starting Redis consumer with ByteTrack + Batch Insert...")
     
+    # One tracker per camera
     trackers = defaultdict(lambda: ByteTracker(
         track_thresh=0.5,
         track_buffer=30,
@@ -554,7 +628,6 @@ def process_redis_queue(session, redis_client, engine):
             result = redis_client.blpop('video_jobs', timeout=1)
             
             if result is None:
-                # Check if we need to flush batch on timeout
                 flush_batch_if_needed(engine)
                 continue
             
@@ -562,73 +635,65 @@ def process_redis_queue(session, redis_client, engine):
             
             _, job_data = result
             
-            # Handle both bytes and string
             if isinstance(job_data, bytes):
                 job_data = job_data.decode('utf-8')
             
             try:
-                # Double decode because ingestion.py does double JSON encoding
-                job_outer = json.loads(job_data)  # First decode
-                
-                # If it's a string, decode again (double encoded)
-                if isinstance(job_outer, str):
-                    job = json.loads(job_outer)  # Second decode
-                else:
-                    job = job_outer
-                    
+                job = json.loads(job_data)
             except json.JSONDecodeError as e:
                 print(f"❌ Invalid JSON in queue: {e}")
-                print(f"📝 Raw data: {job_data[:200]}...")  # Show first 200 chars
                 continue
             
-            # Validate job structure
             if not isinstance(job, dict):
                 print(f"❌ Job is not a dict, got {type(job)}: {job}")
                 continue
             
             camera_id = job.get("camera_id")
-            # Handle both 'file_path' (from ingestion.py) and 'image_path'
-            npy_path = job.get("file_path") or job.get("image_path")
+            batch_path = job.get("file_path")
             
-            if not os.path.exists(npy_path):
-                print(f"⚠️ File not found: {npy_path}")
+            if not batch_path or not os.path.exists(batch_path):
+                print(f"⚠️ File not found: {batch_path}")
                 continue
             
-            # Convert .npy to .jpg
-            jpg_path = convert_npy_to_jpg(npy_path)
-            if not jpg_path:
-                print(f"⚠️ Failed to convert {npy_path}")
-                continue
+            # Load batch of frames
+            frames_batch = np.load(batch_path)  # Shape: (30, 640, 640, 3)
+            print(f"📦 Loaded batch: {frames_batch.shape} from {os.path.basename(batch_path)}")
             
-            # Run inference
-            outputs, img_shape = run_inference_on_npy(session, npy_path) if os.path.exists(npy_path) else (None, None)
+            # Run inference on all frames
+            all_detections = run_inference_batch(session, frames_batch)
             
-            if outputs is None:
-                # If npy was already deleted, load from jpg
-                frame_bgr = cv2.imread(jpg_path)
-                input_tensor = preprocess_frame(frame_bgr)
-                input_name = session.get_inputs()[0].name
-                outputs = session.run(None, {input_name: input_tensor})
-                img_shape = frame_bgr.shape[:2]
-            
-            # Get detections
-            detections = postprocess_yolo_detection(outputs, conf_thresh=0.3, img_shape=img_shape)
-            
-            # Update tracker
+            # Get tracker for this camera
             tracker = trackers[camera_id]
-            online_tracks = tracker.update(detections)
             
-            # Process tracked objects
-            for track in online_tracks:
-                if track.score >= 0.5 and track.class_id < len(VEHICLE_CLASSES):
-                    # Add to batch buffer
-                    add_to_batch(
-                        camera_id=camera_id,
-                        track_id=track.track_id,
-                        class_id=track.class_id,
-                        confidence=track.score,
-                        image_path=jpg_path
-                    )
+            # Process each frame in sequence
+            for frame_idx, (frame_bgr, detections) in enumerate(zip(frames_batch, all_detections)):
+                
+                # Update tracker with detections from this frame
+                online_tracks = tracker.update(detections)
+                
+                # Save best track from this frame
+                if online_tracks:
+                    # Find track with highest confidence
+                    best_track = max(online_tracks, key=lambda t: t.score)
+                    
+                    if best_track.score >= 0.5 and best_track.class_id < len(VEHICLE_CLASSES):
+                        # Convert frame to jpg and save
+                        jpg_path = convert_npy_to_jpg(frame_bgr, frame_idx)
+                        
+                        if jpg_path:
+                            add_to_batch(
+                                camera_id=camera_id,
+                                track_id=best_track.track_id,
+                                class_id=best_track.class_id,
+                                confidence=best_track.score,
+                                image_path=jpg_path
+                            )
+            
+            # Delete batch file after processing
+            try:
+                os.remove(batch_path)
+            except:
+                pass
             
             # Flush batch if needed
             flush_batch_if_needed(engine)
@@ -636,19 +701,15 @@ def process_redis_queue(session, redis_client, engine):
             total_time = time.perf_counter() - job_start_time
             processed_count += 1
             
-            print(f"✅ [{camera_id}] Processed in {total_time:.3f}s | "
-                  f"Detections: {len(detections)} | Tracks: {len(online_tracks)} | "
-                  f"Total: {processed_count}")
+            print(f"✅ [{camera_id}] Processed batch in {total_time:.3f}s | "
+                  f"Frames: {len(frames_batch)} | Total batches: {processed_count}")
             
-        except json.JSONDecodeError as e:
-            print(f"❌ Invalid JSON: {e}")
         except Exception as e:
             print(f"🔥 Processing error: {e}")
             import traceback
             traceback.print_exc()
             time.sleep(1)
     
-    # Final flush on shutdown
     print("🔄 Flushing remaining batch records...")
     flush_batch_if_needed(engine, force=True)
     
@@ -662,21 +723,17 @@ def main():
     print("🚛 Truck Classification with ByteTrack + Batch Insert")
     print("=" * 60)
     
-    # 1. Create image storage directory
     os.makedirs(IMAGE_STORAGE_DIR, exist_ok=True)
     print(f"📁 Image storage: {IMAGE_STORAGE_DIR}")
     print(f"🗑️ Retention: {IMAGE_RETENTION_DAYS} days")
     
-    # 2. Connect to database
     print(f"🗄️ Connecting to database...")
     engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_size=10)
     init_database(engine)
     
-    # 3. Setup MLflow
     print(f"📡 Connecting to MLflow: {Mlflow_uri}")
     mlflow.set_tracking_uri(Mlflow_uri)
     
-    # 4. Download and load model
     print(f"📦 Downloading model: {Model_uri}")
     local_path = mlflow.artifacts.download_artifacts(artifact_uri=Model_uri)
     onnx_path = os.path.join(local_path, "model.onnx")
@@ -689,7 +746,6 @@ def main():
     session = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
     print(f"✅ Model loaded successfully")
     
-    # 5. Connect to Redis
     print(f"🔌 Connecting to Redis at {REDIS_HOST}:{REDIS_PORT}")
     redis_client = None
     
@@ -713,18 +769,15 @@ def main():
         print("🛑 Shutdown requested")
         sys.exit(0)
     
-    # 6. Start cleanup thread
     cleanup_thread = threading.Thread(target=schedule_cleanup, daemon=True)
     cleanup_thread.start()
     print(f"🧹 Cleanup thread started (runs every hour)")
     
-    # 7. Start processing
     print("=" * 60)
     print(f"⚙️ Batch settings: Size={BATCH_SIZE}, Timeout={BATCH_TIMEOUT}s")
     print("=" * 60)
     process_redis_queue(session, redis_client, engine)
     
-    # 8. Cleanup
     redis_client.close()
     engine.dispose()
     print("✨ Service terminated gracefully")
