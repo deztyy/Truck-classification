@@ -490,29 +490,104 @@ def render_current_vehicle_tab(df_classes):
     """Render current vehicle display tab (User Mode)"""
     st.markdown("### 🚗 Current Vehicle")
     
-    # Auto-refresh every 10 seconds
+    # Enhanced CSS
     st.markdown("""
     <style>
-        .current-vehicle-card {
+        .vehicle-main-card {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 3rem 2rem;
+            border-radius: 20px;
+            margin: 1.5rem 0;
+            box-shadow: 0 10px 40px rgba(102, 126, 234, 0.4);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .vehicle-main-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="40" fill="rgba(255,255,255,0.03)"/></svg>');
+            opacity: 0.5;
+        }
+        
+        .vehicle-title {
+            text-align: center;
+            color: white;
+            font-size: 2em;
+            font-weight: 800;
+            margin-bottom: 2rem;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+            position: relative;
+            z-index: 1;
+        }
+        
+        .vehicle-info-box {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
             padding: 2rem;
             border-radius: 15px;
-            margin: 1rem 0;
-            box-shadow: 0 8px 32px rgba(102, 126, 234, 0.3);
+            margin: 1rem;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            position: relative;
+            z-index: 1;
         }
-        .vehicle-info {
-            color: white;
-            font-size: 1.2em;
-            margin: 0.5rem 0;
-        }
-        .vehicle-label {
+        
+        .info-label {
+            color: rgba(255, 255, 255, 0.8);
+            font-size: 0.9em;
             font-weight: 600;
-            opacity: 0.9;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 0.5rem;
         }
-        .vehicle-value {
-            font-weight: 700;
-            font-size: 1.3em;
+        
+        .info-value {
             color: #ffd700;
+            font-size: 2em;
+            font-weight: 800;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+            word-break: break-word;
+        }
+        
+        .refresh-badge {
+            background: rgba(255, 255, 255, 0.15);
+            color: white;
+            padding: 0.8rem 1.5rem;
+            border-radius: 50px;
+            font-size: 0.9em;
+            font-weight: 600;
+            display: inline-block;
+            margin-top: 1rem;
+        }
+        
+        .no-vehicle-container {
+            text-align: center;
+            padding: 4rem 2rem;
+            background: rgba(102, 126, 234, 0.05);
+            border-radius: 20px;
+            border: 2px dashed rgba(102, 126, 234, 0.3);
+        }
+        
+        .no-vehicle-icon {
+            font-size: 5em;
+            margin-bottom: 1rem;
+            opacity: 0.5;
+        }
+        
+        .no-vehicle-text {
+            color: #667eea;
+            font-size: 1.8em;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+        
+        .no-vehicle-subtext {
+            color: #999;
+            font-size: 1.1em;
         }
     </style>
     """, unsafe_allow_html=True)
@@ -536,61 +611,77 @@ def render_current_vehicle_tab(df_classes):
         if not df_latest.empty:
             vehicle = df_latest.iloc[0]
             
-            # Display current vehicle in a card
-            with st.container(border=True):
-                st.markdown('<div class="current-vehicle-card">', unsafe_allow_html=True)
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.markdown(f"""
-                    <div class="vehicle-info">
-                        <span class="vehicle-label">📷 Camera ID:</span><br>
-                        <span class="vehicle-value">{vehicle['camera_id']}</span>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    st.markdown(f"""
-                    <div class="vehicle-info" style="margin-top: 1.5rem;">
-                        <span class="vehicle-label">🚙 Vehicle Type:</span><br>
-                        <span class="vehicle-value">{vehicle['vehicle_type']}</span>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                with col2:
-                    st.markdown(f"""
-                    <div class="vehicle-info">
-                        <span class="vehicle-label">💰 Total Fee:</span><br>
-                        <span class="vehicle-value">{vehicle['total_applied_fee']:.2f} ฿</span>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    timestamp = pd.to_datetime(vehicle['created_at'])
-                    formatted_time = timestamp.strftime('%d/%m/%Y %H:%M:%S')
-                    
-                    st.markdown(f"""
-                    <div class="vehicle-info" style="margin-top: 1.5rem;">
-                        <span class="vehicle-label">⏰ Timestamp:</span><br>
-                        <span class="vehicle-value">{formatted_time}</span>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                st.markdown('</div>', unsafe_allow_html=True)
+            # Format timestamp
+            timestamp = pd.to_datetime(vehicle['created_at'])
+            formatted_time = timestamp.strftime('%d/%m/%Y %H:%M:%S')
             
-            # Info message
-            st.info("🔄 Page will refresh every 10 seconds to show the latest vehicle")
+            # Main vehicle card
+            st.markdown("""
+            <div class="vehicle-main-card">
+                <div class="vehicle-title">🚗 Latest Vehicle Entry</div>
+            </div>
+            """, unsafe_allow_html=True)
             
-        else:
-            with st.container(border=True):
-                st.markdown("""
-                <div style="text-align: center; padding: 3rem;">
-                    <h2 style="color: #667eea;">🚗 No Vehicles Yet</h2>
-                    <p style="color: #999; font-size: 1.1em;">Waiting for the first vehicle to enter...</p>
+            # Info grid using Streamlit columns
+            col1, col2 = st.columns(2, gap="large")
+            
+            with col1:
+                st.markdown(f"""
+                <div class="vehicle-info-box">
+                    <div class="info-label">📷 Camera ID</div>
+                    <div class="info-value">{vehicle['camera_id']}</div>
                 </div>
                 """, unsafe_allow_html=True)
+                
+                st.markdown(f"""
+                <div class="vehicle-info-box">
+                    <div class="info-label">🚙 Vehicle Type</div>
+                    <div class="info-value">{vehicle['vehicle_type']}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col2:
+                # Check if total_applied_fee is None or 0
+                total_fee = vehicle['total_applied_fee'] if vehicle['total_applied_fee'] is not None else 0.0
+                
+                st.markdown(f"""
+                <div class="vehicle-info-box">
+                    <div class="info-label">💰 Total Fee</div>
+                    <div class="info-value">{total_fee:.2f} ฿</div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.markdown(f"""
+                <div class="vehicle-info-box">
+                    <div class="info-label">⏰ Timestamp</div>
+                    <div class="info-value" style="font-size: 1.4em;">{formatted_time}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Refresh info
+            st.markdown("""
+            <div style="text-align: center; margin-top: 2rem;">
+                <span class="refresh-badge">🔄 Auto-refresh in 10 seconds</span>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        else:
+            # No vehicle message
+            st.markdown("""
+            <div class="no-vehicle-container">
+                <div class="no-vehicle-icon">🚗💨</div>
+                <div class="no-vehicle-text">No Vehicles Yet</div>
+                <div class="no-vehicle-subtext">Waiting for the first vehicle to enter...</div>
+                <div style="margin-top: 2rem;">
+                    <span class="refresh-badge">🔄 Checking every 10 seconds</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
     
     except Exception as e:
         st.error(f"❌ Error loading current vehicle: {e}")
+        import traceback
+        st.code(traceback.format_exc())
     
     # Auto-refresh after 10 seconds
     import time
