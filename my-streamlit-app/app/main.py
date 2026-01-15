@@ -578,17 +578,8 @@ def render_current_vehicle_tab(df_classes):
             
             if (timeLeft <= 0) {
                 clearInterval(countdown);
-                // Trigger Streamlit rerun by dispatching a custom event
-                window.parent.postMessage({
-                    type: 'streamlit:setComponentValue',
-                    key: 'auto_refresh_trigger',
-                    value: Date.now()
-                }, '*');
-                
-                // Fallback: reload the page if Streamlit doesn't respond
-                setTimeout(function() {
-                    window.location.reload();
-                }, 500);
+                // Reload the page
+                window.location.reload();
             }
         }, 1000);
     </script>
@@ -693,9 +684,9 @@ def render_master_data_tab(df_classes):
             column_config={
                 "class_id": "ID",
                 "class_name": "Vehicle Type",
-                "entry_fee": st.column_config.NumberColumn("Entry Fee (฿)", format="%.2f"),
-                "xray_fee": st.column_config.NumberColumn("X-Ray Fee (฿)", format="%.2f"),
-                "total_fee": st.column_config.NumberColumn("Total Fee (฿)", format="%.2f")
+                "entry_fee": st.column_config.NumberColumn("Entry Fee (฿)", format="%.0f ฿"),
+                "xray_fee": st.column_config.NumberColumn("X-Ray Fee (฿)", format="%.0f ฿"),
+                "total_fee": st.column_config.NumberColumn("Total Fee (฿)", format="%.0f ฿")
             }
         )
     else:
