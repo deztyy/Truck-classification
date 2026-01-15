@@ -8,7 +8,7 @@ import streamlit.components.v1 as components
 
 # ==================== CONFIGURATION ====================
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'Admin1234')
-DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://user:password@db:5429/mydb')
+DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://user:password@db:5432/mydb')
 THAILAND_TZ = pytz.timezone('Asia/Bangkok')
 
 # ==================== CUSTOM CSS ====================
@@ -668,6 +668,22 @@ def render_transaction_history(df_classes):
                     st.metric("Total", f"{row['total_applied_fee']:.0f} ฿")
                 
                 st.markdown(f"**🕐 Time:** {row['created_at']}")
+                
+                # Delete Button (Admin Only)
+                if st.session_state.user_role == "admin":
+                    st.markdown("---")
+                    col_d1, col_d2, col_d3 = st.columns([2, 1, 2])
+                    with col_d2:
+                        if st.button(f"🗑️ Delete", key=f"del_{row['id']}", type="secondary", use_container_width=True):
+                            try:
+                                with engine.connect() as conn:
+                                    conn.execute(text("DELETE FROM vehicle_transactions WHERE id = :id"), 
+                                               {"id": row['id']})
+                                    conn.commit()
+                                st.success("✅ Deleted!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Error: {e}")
     else:
         st.info(f"📭 No transactions found for {date_filter.strftime('%d %B %Y')}")
 
@@ -731,26 +747,6 @@ def render_master_data_tab(df_classes):
             except Exception as e:
                 st.error(f"❌ Error: {e}")
     
-    if not df_classes.empty:
-        st.markdown("---")
-        st.markdown("#### 🗑️ Delete Vehicle Class")
-        
-        col_del1, col_del2 = st.columns([2, 1])
-        with col_del1:
-            class_to_delete = st.selectbox("Select class to delete", 
-                                          options=df_classes['class_name'].tolist())
-        with col_del2:
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("🗑️ Delete", use_container_width=True, type="secondary"):
-                try:
-                    with engine.connect() as conn:
-                        conn.execute(text("DELETE FROM vehicle_classes WHERE class_name = :name"), 
-                                   {"name": class_to_delete})
-                        conn.commit()
-                    st.success(f"✅ Deleted: {class_to_delete}")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ Error: {e}")
 
 # ==================== ANALYTICS TAB ====================
 def render_analytics_tab():
