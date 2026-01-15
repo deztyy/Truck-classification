@@ -461,13 +461,14 @@ def render_entry_tab(df_classes):
                             with engine.connect() as conn:
                                 conn.execute(text("""
                                     INSERT INTO vehicle_transactions 
-                                    (camera_id, class_id, applied_entry_fee, applied_xray_fee, image_path, created_at) 
-                                    VALUES (:cam_id, :cid, :entry, :xray, :img, :created_at)
+                                    (camera_id, class_id, applied_entry_fee, applied_xray_fee, total_applied_fee, image_path, created_at) 
+                                    VALUES (:cam_id, :cid, :entry, :xray, :total, :img, :created_at)
                                 """), {
                                     "cam_id": camera_id.strip(),
                                     "cid": int(class_options[selected_class_name]),
                                     "entry": float(selected_class['entry_fee']),
                                     "xray": float(selected_class['xray_fee']),
+                                    "total": float(selected_class["entry_fee"]) + float(selected_class["xray_fee"]),
                                     "img": img_path if os.path.exists(img_path) else None,
                                     "created_at": current_time_thailand
                                 })
@@ -482,6 +483,119 @@ def render_entry_tab(df_classes):
                         st.error("⚠️ Please select vehicle type")
                 else:
                     st.error("⚠️ Please enter Camera ID")
+
+
+# ==================== CURRENT VEHICLE TAB (USER MODE) ====================
+def render_current_vehicle_tab(df_classes):
+    """Render current vehicle display tab (User Mode)"""
+    st.markdown("### 🚗 Current Vehicle")
+    
+    # Auto-refresh every 10 seconds
+    st.markdown("""
+    <style>
+        .current-vehicle-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 2rem;
+            border-radius: 15px;
+            margin: 1rem 0;
+            box-shadow: 0 8px 32px rgba(102, 126, 234, 0.3);
+        }
+        .vehicle-info {
+            color: white;
+            font-size: 1.2em;
+            margin: 0.5rem 0;
+        }
+        .vehicle-label {
+            font-weight: 600;
+            opacity: 0.9;
+        }
+        .vehicle-value {
+            font-weight: 700;
+            font-size: 1.3em;
+            color: #ffd700;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # Get latest vehicle transaction
+    try:
+        query = """
+            SELECT 
+                t.camera_id,
+                c.class_name as vehicle_type,
+                t.total_applied_fee,
+                t.created_at
+            FROM vehicle_transactions t
+            JOIN vehicle_classes c ON t.class_id = c.class_id
+            ORDER BY t.created_at DESC
+            LIMIT 1
+        """
+        
+        df_latest = pd.read_sql(text(query), engine)
+        
+        if not df_latest.empty:
+            vehicle = df_latest.iloc[0]
+            
+            # Display current vehicle in a card
+            with st.container(border=True):
+                st.markdown('<div class="current-vehicle-card">', unsafe_allow_html=True)
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown(f"""
+                    <div class="vehicle-info">
+                        <span class="vehicle-label">📷 Camera ID:</span><br>
+                        <span class="vehicle-value">{vehicle['camera_id']}</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    st.markdown(f"""
+                    <div class="vehicle-info" style="margin-top: 1.5rem;">
+                        <span class="vehicle-label">🚙 Vehicle Type:</span><br>
+                        <span class="vehicle-value">{vehicle['vehicle_type']}</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with col2:
+                    st.markdown(f"""
+                    <div class="vehicle-info">
+                        <span class="vehicle-label">💰 Total Fee:</span><br>
+                        <span class="vehicle-value">{vehicle['total_applied_fee']:.2f} ฿</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    timestamp = pd.to_datetime(vehicle['created_at'])
+                    formatted_time = timestamp.strftime('%d/%m/%Y %H:%M:%S')
+                    
+                    st.markdown(f"""
+                    <div class="vehicle-info" style="margin-top: 1.5rem;">
+                        <span class="vehicle-label">⏰ Timestamp:</span><br>
+                        <span class="vehicle-value">{formatted_time}</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Info message
+            st.info("🔄 Page will refresh every 10 seconds to show the latest vehicle")
+            
+        else:
+            with st.container(border=True):
+                st.markdown("""
+                <div style="text-align: center; padding: 3rem;">
+                    <h2 style="color: #667eea;">🚗 No Vehicles Yet</h2>
+                    <p style="color: #999; font-size: 1.1em;">Waiting for the first vehicle to enter...</p>
+                </div>
+                """, unsafe_allow_html=True)
+    
+    except Exception as e:
+        st.error(f"❌ Error loading current vehicle: {e}")
+    
+    # Auto-refresh after 10 seconds
+    import time
+    time.sleep(10)
+    st.rerun()
 
 # ==================== TRANSACTION HISTORY ====================
 def render_transaction_history(df_classes):
@@ -840,10 +954,10 @@ def main():
         with tab3:
             render_analytics_tab()
     else:
-        tab1, tab2 = st.tabs(["📝 Entry", "📊 Analytics"])
+        tab1, tab2 = st.tabs(["🚗 Current Vehicle", "📊 Analytics"])
         
         with tab1:
-            render_entry_tab(df_classes)
+            render_current_vehicle_tab(df_classes)
             render_transaction_history(df_classes)
         
         with tab2:
