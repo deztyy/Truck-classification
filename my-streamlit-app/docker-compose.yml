@@ -10,10 +10,12 @@ services:
       POSTGRES_PASSWORD: password
       POSTGRES_DB: mydb
     ports:
-      - "5429:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - truck_system_network
 
   # Streamlit Web App Service
   web:
@@ -25,6 +27,13 @@ services:
       - db
     environment:
       - DATABASE_URL=postgresql://user:password@db:5432/mydb
+    networks:
+      - truck_system_network
 
 volumes:
   postgres_data:
+
+networks:
+  truck_system_network:
+    name: ${NETWORK_NAME:-truck_system_network}
+    external: true
