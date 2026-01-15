@@ -763,7 +763,15 @@ def render_analytics_tab():
     
     try:
         query = """
-            SELECT t.*, c.class_name, t.total_applied_fee
+            SELECT 
+                t.id,
+                t.camera_id,
+                t.class_id,
+                t.applied_entry_fee,
+                t.applied_xray_fee,
+                t.total_applied_fee,
+                t.created_at,
+                c.class_name
             FROM vehicle_transactions t
             JOIN vehicle_classes c ON t.class_id = c.class_id
             WHERE DATE(t.created_at) BETWEEN :start_date AND :end_date
@@ -793,12 +801,12 @@ def render_analytics_tab():
             with col_c1:
                 st.markdown("#### 🚗 Transactions by Vehicle Type")
                 vehicle_counts = df_analytics['class_name'].value_counts()
-                st.bar_chart(vehicle_counts)
+                st.bar_chart(vehicle_counts.to_frame("count"))
             
             with col_c2:
                 st.markdown("#### 💰 Revenue by Vehicle Type")
                 revenue_by_type = df_analytics.groupby('class_name')['total_applied_fee'].sum().sort_values(ascending=False)
-                st.bar_chart(revenue_by_type)
+                st.bar_chart(revenue_by_type.to_frame("revenue"))
         else:
             st.info(f"📭 No data found between {start_date} and {end_date}")
     
