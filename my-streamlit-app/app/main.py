@@ -161,16 +161,69 @@ def init_database():
     except Exception as e:
         st.error(f"Error initializing database: {e}")
 
+
+# ==================== SESSION PERSISTENCE ====================
+def inject_session_persistence():
+    """Inject JavaScript for localStorage session management"""
+    st.markdown("""
+    <script>
+        (function() {
+            // Save session to localStorage
+            window.saveSession = function(role) {
+                localStorage.setItem('vehicle_user_role', role);
+                console.log('💾 Session saved:', role);
+            };
+            
+            // Clear session from localStorage
+            window.clearSession = function() {
+                localStorage.removeItem('vehicle_user_role');
+                console.log('🗑️ Session cleared');
+            };
+            
+            // Restore session from localStorage - run immediately
+            const savedRole = localStorage.getItem('vehicle_user_role');
+            console.log('🔍 Checking localStorage:', savedRole);
+            
+            if (savedRole && !window.location.search.includes('restore_session')) {
+                console.log('🔄 Restoring session:', savedRole);
+                window.location.href = window.location.pathname + '?restore_session=' + savedRole;
+            }
+        })();
+    </script>
+    """, unsafe_allow_html=True)
+
 # ==================== AUTHENTICATION ====================
 def check_authentication():
     """Check and initialize authentication state"""
+    # Restore session from localStorage
+    query_params = st.query_params
+    if 'restore_session' in query_params:
+        role = query_params.get('restore_session')
+        if isinstance(role, list):
+            role = role[0]
+        if role in ['user', 'admin']:
+            st.session_state.user_role = role
+            st.query_params.clear()
+            st.rerun()
+    
     if 'user_role' not in st.session_state:
         st.session_state.user_role = None
     if 'show_password_input' not in st.session_state:
         st.session_state.show_password_input = False
+    
+    # Inject session persistence if not logged in
+    if st.session_state.user_role is None:
+        inject_session_persistence()
 
 def switch_mode():
     """Switch between user modes"""
+    # Clear localStorage
+    st.markdown("""
+        <script>
+            localStorage.removeItem('vehicle_user_role');
+            console.log('🗑️ Session cleared');
+        </script>
+    """, unsafe_allow_html=True)
     st.session_state.user_role = None
     st.session_state.show_password_input = False
     st.rerun()
@@ -214,6 +267,13 @@ def render_login_page():
         st.markdown('</div>', unsafe_allow_html=True)
         
         if st.button("👤 User Mode", use_container_width=True, type="primary", key="user_btn"):
+            # Save to localStorage BEFORE setting session state
+            st.markdown("""
+                <script>
+                    localStorage.setItem('vehicle_user_role', 'user');
+                    console.log('💾 User mode saved to localStorage');
+                </script>
+            """, unsafe_allow_html=True)
             st.session_state.user_role = "user"
             st.success("✅ เข้าสู่โหมด User")
             st.rerun()
@@ -231,6 +291,13 @@ def render_login_page():
             with col_ok:
                 if st.button("✅ ยืนยัน", use_container_width=True, type="primary", key="confirm_btn"):
                     if password == ADMIN_PASSWORD:
+                        # Save to localStorage BEFORE setting session state
+                        st.markdown("""
+                            <script>
+                                localStorage.setItem('vehicle_user_role', 'admin');
+                                console.log('💾 Admin mode saved to localStorage');
+                            </script>
+                        """, unsafe_allow_html=True)
                         st.session_state.user_role = "admin"
                         st.session_state.show_password_input = False
                         st.success("✅ เข้าสู่โหมด Admin")
@@ -421,93 +488,69 @@ def render_entry_tab(df_classes):
 
 # ==================== CURRENT VEHICLE TAB (USER MODE) ====================
 def render_current_vehicle_tab(df_classes):
-    """Render current vehicle display tab with auto-refresh"""
+    """Render current vehicle display tab with auto-refresh (no page reload)"""
     import time
-    
-    # Use query params to track refresh without losing session state
-    query_params = st.query_params
-    
-    # Initialize last refresh time
-    if 'last_vehicle_refresh' not in st.session_state:
-        st.session_state.last_vehicle_refresh = time.time()
-        st.session_state.vehicle_refresh_count = 0
-    
-    # Check URL param for refresh trigger
-    if 'refresh' in query_params:
-        refresh_count = int(query_params.get('refresh', ['0'])[0] if isinstance(query_params.get('refresh'), list) else query_params.get('refresh', '0'))
-        if refresh_count != st.session_state.vehicle_refresh_count:
-            st.session_state.last_vehicle_refresh = time.time()
-            st.session_state.vehicle_refresh_count = refresh_count
-            # Clear the query param
-            st.query_params.clear()
-    
-    # Calculate time remaining
-    current_time = time.time()
-    time_elapsed = int(current_time - st.session_state.last_vehicle_refresh)
-    time_remaining = max(0, 10 - time_elapsed)
     
     st.markdown("### 🚗 Current Vehicle")
     
-    # Create HTML with embedded JavaScript for auto-refresh
-    # This JavaScript will update URL param to trigger Streamlit rerun
-    refresh_script = f"""
-    <script>
-        let countdown = {time_remaining};
-        let countdownElement = null;
-        
-        function updateCountdown() {{
-            countdownElement = document.getElementById('countdown-value');
-            if (countdownElement) {{
-                countdownElement.textContent = countdown;
-            }}
-            
-            countdown--;
-            
-            if (countdown < 0) {{
-                // Update URL parameter to trigger refresh
-                const currentCount = {st.session_state.vehicle_refresh_count};
-                window.parent.location.href = window.parent.location.pathname + '?refresh=' + (currentCount + 1);
-            }}
-        }}
-        
-        // Update every second
-        setInterval(updateCountdown, 1000);
-    </script>
-    """
+    # Create placeholder for dynamic content
+    vehicle_placeholder = st.empty()
+    countdown_placeholder = st.empty()
+    
+    # Initialize refresh counter in session state
+    if 'vehicle_refresh_count' not in st.session_state:
+        st.session_state.vehicle_refresh_count = 0
     
     # Get current vehicle data
-    try:
-        query = """
-            SELECT 
-                t.camera_id,
-                c.class_name as vehicle_type,
-                t.total_applied_fee,
-                t.created_at
-            FROM vehicle_transactions t
-            JOIN vehicle_classes c ON t.class_id = c.class_id
-            ORDER BY t.created_at DESC
-            LIMIT 1
-        """
-        
-        df_latest = pd.read_sql(text(query), engine)
-        
-        if not df_latest.empty:
-            vehicle = df_latest.iloc[0]
-            timestamp = pd.to_datetime(vehicle['created_at'])
-            formatted_time = timestamp.strftime('%d/%m/%Y %H:%M:%S')
-            total_fee = vehicle['total_applied_fee'] if vehicle['total_applied_fee'] is not None else 0.0
+    def get_vehicle_data():
+        try:
+            query = """
+                SELECT 
+                    t.camera_id,
+                    c.class_name as vehicle_type,
+                    t.total_applied_fee,
+                    t.created_at
+                FROM vehicle_transactions t
+                JOIN vehicle_classes c ON t.class_id = c.class_id
+                ORDER BY t.created_at DESC
+                LIMIT 1
+            """
+            df_latest = pd.read_sql(text(query), engine)
             
-            # Display vehicle info
-            st.markdown("""
-            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                 padding: 3rem 2rem; border-radius: 20px; margin-bottom: 2rem;
-                 box-shadow: 0 10px 40px rgba(102, 126, 234, 0.4);">
-                <div style="text-align: center; color: white; font-size: 2em; font-weight: 800;">
-                    🚗 Latest Vehicle Entry
-                </div>
+            if not df_latest.empty:
+                vehicle = df_latest.iloc[0]
+                timestamp = pd.to_datetime(vehicle['created_at'])
+                formatted_time = timestamp.strftime('%d/%m/%Y %H:%M:%S')
+                total_fee = vehicle['total_applied_fee'] if vehicle['total_applied_fee'] is not None else 0.0
+                
+                return {
+                    'camera_id': vehicle['camera_id'],
+                    'vehicle_type': vehicle['vehicle_type'],
+                    'total_fee': total_fee,
+                    'timestamp': formatted_time,
+                    'exists': True
+                }
+            else:
+                return {'exists': False}
+        except Exception as e:
+            st.error(f"❌ Error: {e}")
+            return {'exists': False}
+    
+    # Display vehicle data
+    vehicle_data = get_vehicle_data()
+    
+    with vehicle_placeholder.container():
+        st.markdown("""
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+             padding: 3rem 2rem; border-radius: 20px; margin-bottom: 2rem;
+             box-shadow: 0 10px 40px rgba(102, 126, 234, 0.4);">
+            <div style="text-align: center; color: white; font-size: 2em; font-weight: 800;">
+                🚗 Latest Vehicle Entry
             </div>
-            """, unsafe_allow_html=True)
-            
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if vehicle_data['exists']:
             col1, col2 = st.columns(2, gap="large")
             
             with col1:
@@ -520,7 +563,7 @@ def render_current_vehicle_tab(df_classes):
                     </div>
                     <div style="color: #ffd700; font-size: 2em; font-weight: 800;
                          text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">
-                        {vehicle['camera_id']}
+                        {vehicle_data['camera_id']}
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -535,7 +578,7 @@ def render_current_vehicle_tab(df_classes):
                     </div>
                     <div style="color: #ffd700; font-size: 2em; font-weight: 800;
                          text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">
-                        {vehicle['vehicle_type']}
+                        {vehicle_data['vehicle_type']}
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -550,7 +593,7 @@ def render_current_vehicle_tab(df_classes):
                     </div>
                     <div style="color: #ffd700; font-size: 2em; font-weight: 800;
                          text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">
-                        {total_fee:.2f} ฿
+                        {vehicle_data['total_fee']:.2f} ฿
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -565,7 +608,7 @@ def render_current_vehicle_tab(df_classes):
                     </div>
                     <div style="color: #ffd700; font-size: 1.4em; font-weight: 800;
                          text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">
-                        {formatted_time}
+                        {vehicle_data['timestamp']}
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -584,29 +627,19 @@ def render_current_vehicle_tab(df_classes):
             </div>
             """, unsafe_allow_html=True)
     
-    except Exception as e:
-        st.error(f"❌ Error loading current vehicle: {e}")
+    # Auto-refresh using rerun (keeps session state intact)
+    with countdown_placeholder.container():
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col2:
+            if st.button("🔄 Refresh Now", use_container_width=True, type="primary", key=f"refresh_{st.session_state.vehicle_refresh_count}"):
+                st.session_state.vehicle_refresh_count += 1
+                st.rerun()
     
-    # Display countdown
-    st.markdown(f"""
-    <div style="text-align: center; margin-top: 2rem;">
-        <span style="background: rgba(255, 255, 255, 0.15); color: white; 
-              padding: 0.8rem 1.5rem; border-radius: 50px; font-size: 0.9em; 
-              font-weight: 600; display: inline-block;">
-            🔄 Auto-refresh in <span id="countdown-value">{time_remaining}</span> seconds
-        </span>
-    </div>
-    {refresh_script}
-    """, unsafe_allow_html=True)
-    
-    # Manual refresh button
-    col_r1, col_r2, col_r3 = st.columns([1, 1, 1])
-    with col_r2:
-        if st.button("🔄 Refresh Now", use_container_width=True, type="primary", key="manual_vehicle_refresh"):
-            st.session_state.last_vehicle_refresh = time.time()
-            st.rerun()
+    # Auto-refresh every 10 seconds using st.rerun()
+    time.sleep(10)
+    st.session_state.vehicle_refresh_count += 1
+    st.rerun()
 
-# ==================== TRANSACTION HISTORY ====================
 def render_transaction_history(df_classes):
     """Render transaction history section"""
     st.markdown("---")
