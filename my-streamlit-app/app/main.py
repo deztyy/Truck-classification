@@ -421,66 +421,154 @@ def render_entry_tab(df_classes):
 
 # ==================== CURRENT VEHICLE TAB (USER MODE) ====================
 def render_current_vehicle_tab(df_classes):
-    """Render current vehicle display tab"""
-    import time
-    
-    # Initialize auto-refresh timer in session state
-    if 'last_refresh_time' not in st.session_state:
-        st.session_state.last_refresh_time = time.time()
-    
+    """Render current vehicle display tab with iframe auto-refresh"""
     st.markdown("### 🚗 Current Vehicle")
     
-    st.markdown("""
-    <style>
-        .vehicle-main-card {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding: 3rem 2rem;
-            border-radius: 20px;
-            margin: 1.5rem 0;
-            box-shadow: 0 10px 40px rgba(102, 126, 234, 0.4);
-        }
-        .vehicle-title {
-            text-align: center;
-            color: white;
-            font-size: 2em;
-            font-weight: 800;
-        }
-        .vehicle-info-box {
-            background: rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(10px);
-            padding: 2rem;
-            border-radius: 15px;
-            margin: 1rem;
-            border: 1px solid rgba(255, 255, 255, 0.2);
-        }
-        .info-label {
-            color: rgba(255, 255, 255, 0.8);
-            font-size: 0.9em;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-bottom: 0.5rem;
-        }
-        .info-value {
-            color: #ffd700;
-            font-size: 2em;
-            font-weight: 800;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-            word-break: break-word;
-        }
-        .countdown-badge {
-            background: rgba(255, 255, 255, 0.15);
-            color: white;
-            padding: 0.8rem 1.5rem;
-            border-radius: 50px;
-            font-size: 0.9em;
-            font-weight: 600;
-            display: inline-block;
-            margin-top: 1rem;
-        }
-    </style>
-    """, unsafe_allow_html=True)
+    # Create a unique session ID for this component
+    import hashlib
+    session_id = hashlib.md5(str(id(st.session_state)).encode()).hexdigest()[:8]
     
+    # Inline vehicle display with auto-refresh via JavaScript polling
+    vehicle_html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <style>
+            body {{
+                margin: 0;
+                padding: 20px;
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                background-color: #0e1117;
+            }}
+            .vehicle-main-card {{
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                padding: 3rem 2rem;
+                border-radius: 20px;
+                margin-bottom: 2rem;
+                box-shadow: 0 10px 40px rgba(102, 126, 234, 0.4);
+            }}
+            .vehicle-title {{
+                text-align: center;
+                color: white;
+                font-size: 2em;
+                font-weight: 800;
+                margin: 0;
+            }}
+            .vehicle-content {{
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 2rem;
+                margin-top: 1rem;
+            }}
+            .vehicle-info-box {{
+                background: rgba(255, 255, 255, 0.1);
+                backdrop-filter: blur(10px);
+                padding: 2rem;
+                border-radius: 15px;
+                border: 1px solid rgba(255, 255, 255, 0.2);
+            }}
+            .info-label {{
+                color: rgba(255, 255, 255, 0.8);
+                font-size: 0.9em;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+                margin-bottom: 0.5rem;
+            }}
+            .info-value {{
+                color: #ffd700;
+                font-size: 2em;
+                font-weight: 800;
+                text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+                word-break: break-word;
+                min-height: 1.2em;
+            }}
+            .info-value.small {{
+                font-size: 1.4em;
+            }}
+            .countdown-container {{
+                text-align: center;
+                margin-top: 1rem;
+            }}
+            .countdown-badge {{
+                background: rgba(255, 255, 255, 0.15);
+                color: white;
+                padding: 0.8rem 1.5rem;
+                border-radius: 50px;
+                font-size: 0.9em;
+                font-weight: 600;
+                display: inline-block;
+            }}
+            .no-vehicle {{
+                text-align: center;
+                padding: 4rem 2rem;
+                background: rgba(102, 126, 234, 0.05);
+                border-radius: 20px;
+                border: 2px dashed rgba(102, 126, 234, 0.3);
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="vehicle-main-card">
+            <div class="vehicle-title">🚗 Latest Vehicle Entry</div>
+        </div>
+        
+        <div class="vehicle-content">
+            <div class="vehicle-info-box">
+                <div class="info-label">📷 CAMERA ID</div>
+                <div class="info-value" id="camera-id">Loading...</div>
+            </div>
+            <div class="vehicle-info-box">
+                <div class="info-label">💰 TOTAL FEE</div>
+                <div class="info-value" id="total-fee">Loading...</div>
+            </div>
+            <div class="vehicle-info-box">
+                <div class="info-label">🚙 VEHICLE TYPE</div>
+                <div class="info-value" id="vehicle-type">Loading...</div>
+            </div>
+            <div class="vehicle-info-box">
+                <div class="info-label">⏰ TIMESTAMP</div>
+                <div class="info-value small" id="timestamp">Loading...</div>
+            </div>
+        </div>
+        
+        <div class="countdown-container">
+            <span class="countdown-badge">
+                🔄 Auto-refresh in <span id="countdown">10</span> seconds
+            </span>
+        </div>
+        
+        <script>
+            let countdown = 10;
+            
+            function refreshPage() {{
+                // Reload the entire parent page (Streamlit app)
+                if (window.parent) {{
+                    window.parent.location.reload();
+                }} else {{
+                    window.location.reload();
+                }}
+            }}
+            
+            function updateCountdown() {{
+                countdown--;
+                document.getElementById('countdown').textContent = countdown;
+                
+                if (countdown <= 0) {{
+                    countdown = 10;
+                    refreshPage();
+                }}
+            }}
+            
+            // Start countdown
+            setInterval(updateCountdown, 1000);
+        </script>
+    </body>
+    </html>
+    """
+    
+    # Get current vehicle data
     try:
         query = """
             SELECT 
@@ -500,96 +588,26 @@ def render_current_vehicle_tab(df_classes):
             vehicle = df_latest.iloc[0]
             timestamp = pd.to_datetime(vehicle['created_at'])
             formatted_time = timestamp.strftime('%d/%m/%Y %H:%M:%S')
+            total_fee = vehicle['total_applied_fee'] if vehicle['total_applied_fee'] is not None else 0.0
             
-            st.markdown("""
-            <div class="vehicle-main-card">
-                <div class="vehicle-title">🚗 Latest Vehicle Entry</div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            col1, col2 = st.columns(2, gap="large")
-            
-            with col1:
-                st.markdown(f"""
-                <div class="vehicle-info-box">
-                    <div class="info-label">📷 Camera ID</div>
-                    <div class="info-value">{vehicle['camera_id']}</div>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                st.markdown(f"""
-                <div class="vehicle-info-box">
-                    <div class="info-label">🚙 Vehicle Type</div>
-                    <div class="info-value">{vehicle['vehicle_type']}</div>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            with col2:
-                total_fee = vehicle['total_applied_fee'] if vehicle['total_applied_fee'] is not None else 0.0
-                
-                st.markdown(f"""
-                <div class="vehicle-info-box">
-                    <div class="info-label">💰 Total Fee</div>
-                    <div class="info-value">{total_fee:.2f} ฿</div>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                st.markdown(f"""
-                <div class="vehicle-info-box">
-                    <div class="info-label">⏰ Timestamp</div>
-                    <div class="info-value" style="font-size: 1.4em;">{formatted_time}</div>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            # Calculate time elapsed since last refresh
-            time_elapsed = int(time.time() - st.session_state.last_refresh_time)
-            time_remaining = max(0, 10 - time_elapsed)
-            
-            # Auto-refresh countdown
-            st.markdown(f"""
-            <div style="text-align: center; margin-top: 2rem;">
-                <span class="countdown-badge">🔄 Auto-refresh in {time_remaining} seconds</span>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            col_r1, col_r2, col_r3 = st.columns([1, 1, 1])
-            with col_r2:
-                if st.button("🔄 Refresh Now", use_container_width=True, type="primary", key="manual_refresh"):
-                    st.session_state.last_refresh_time = time.time()
-                    st.rerun()
-            
-            # Auto-refresh after 10 seconds
-            if time_elapsed >= 10:
-                st.session_state.last_refresh_time = time.time()
-                time.sleep(0.1)  # Small delay to ensure state is saved
-                st.rerun()
-            
+            # Inject data into HTML
+            vehicle_html = vehicle_html.replace('id="camera-id">Loading...', f'id="camera-id">{vehicle["camera_id"]}')
+            vehicle_html = vehicle_html.replace('id="total-fee">Loading...', f'id="total-fee">{total_fee:.2f} ฿')
+            vehicle_html = vehicle_html.replace('id="vehicle-type">Loading...', f'id="vehicle-type">{vehicle["vehicle_type"]}')
+            vehicle_html = vehicle_html.replace('id="timestamp">Loading...', f'id="timestamp">{formatted_time}')
         else:
-            # Calculate time elapsed since last refresh
-            time_elapsed = int(time.time() - st.session_state.last_refresh_time)
-            time_remaining = max(0, 10 - time_elapsed)
-            
-            st.markdown(f"""
-            <div style="text-align: center; padding: 4rem 2rem; background: rgba(102, 126, 234, 0.05); 
-                 border-radius: 20px; border: 2px dashed rgba(102, 126, 234, 0.3);">
-                <div style="font-size: 5em; opacity: 0.5;">🚗💨</div>
-                <div style="color: #667eea; font-size: 1.8em; font-weight: 700;">No Vehicles Yet</div>
-                <div style="color: #999; font-size: 1.1em;">Waiting for the first vehicle to enter...</div>
-                <div style="margin-top: 2rem;">
-                    <span class="countdown-badge">🔄 Checking in {time_remaining} seconds</span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Auto-refresh after 10 seconds
-            if time_elapsed >= 10:
-                st.session_state.last_refresh_time = time.time()
-                time.sleep(0.1)
-                st.rerun()
+            # No vehicle found
+            vehicle_html = vehicle_html.replace('id="camera-id">Loading...', 'id="camera-id">-')
+            vehicle_html = vehicle_html.replace('id="total-fee">Loading...', 'id="total-fee">0.00 ฿')
+            vehicle_html = vehicle_html.replace('id="vehicle-type">Loading...', 'id="vehicle-type">No Vehicle')
+            vehicle_html = vehicle_html.replace('id="timestamp">Loading...', 'id="timestamp">-')
     
     except Exception as e:
         st.error(f"❌ Error loading current vehicle: {e}")
-
+        vehicle_html = vehicle_html.replace('Loading...', 'Error')
+    
+    # Render the HTML in an iframe
+    components.html(vehicle_html, height=600, scrolling=False)
 
 # ==================== TRANSACTION HISTORY ====================
 def render_transaction_history(df_classes):
