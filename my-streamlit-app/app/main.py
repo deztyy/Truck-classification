@@ -636,9 +636,14 @@ def render_current_vehicle_tab(df_classes):
                 st.rerun()
     
     # Auto-refresh every 10 seconds using st.rerun()
-    time.sleep(10)
-    st.session_state.vehicle_refresh_count += 1
-    st.rerun()
+    # Only auto-refresh if still on Current Vehicle tab
+    if 'current_tab' not in st.session_state:
+        st.session_state.current_tab = 'current_vehicle'
+    
+    if st.session_state.current_tab == 'current_vehicle':
+        time.sleep(10)
+        st.session_state.vehicle_refresh_count += 1
+        st.rerun()
 
 def render_transaction_history(df_classes):
     """Render transaction history section"""
@@ -903,10 +908,12 @@ def main():
         tab1, tab2 = st.tabs(["🚗 Current Vehicle", "📊 Analytics"])
         
         with tab1:
+            st.session_state.current_tab = 'current_vehicle'
             render_current_vehicle_tab(df_classes)
             render_transaction_history(df_classes)
         
         with tab2:
+            st.session_state.current_tab = 'analytics'
             render_analytics_tab()
 
 if __name__ == "__main__":
