@@ -1,6 +1,5 @@
 # =============================================================================
-# TRUCK CLASSIFICATION INFERENCE SUBSYSTEM
-# Handles ML model deployment and inference processing
+# TRUCK CLASSIFICATION INFERENCE SUBSYSTEM - FAST STARTUP VERSION
 # =============================================================================
 
 services:
@@ -19,29 +18,42 @@ services:
     networks:
       - truck_system_network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live || exit 1"]
+      interval: 3s
+      timeout: 2s
+      retries: 3
+      start_period: 5s
 
   create-bucket:
     image: minio/mc
-    # container_name: minio_bucket_creator
-    depends_on:
-      minio:
-        condition: service_healthy
+    # depends_on:
+    #   minio:
+    #     condition: service_healthy
     networks:
       - truck_system_network
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       MINIO_BUCKET_NAME: ${MINIO_BUCKET_NAME:-mlflow-bucket}
+    # Faster script with better error handling
     entrypoint: >
       /bin/sh -c "
-      until (/usr/bin/mc alias set myminio http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD) do sleep 1; done;
-      /usr/bin/mc mb myminio/$$MINIO_BUCKET_NAME --ignore-existing;
-      /usr/bin/mc anonymous set download myminio/$$MINIO_BUCKET_NAME;
-      exit 0;
+      MAX_RETRIES=10;
+      RETRY=0;
+      until [ $$RETRY -eq $$MAX_RETRIES ]; do
+        if /usr/bin/mc alias set myminio http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD 2>/dev/null; then
+          echo 'MinIO connected';
+          /usr/bin/mc mb myminio/$$MINIO_BUCKET_NAME --ignore-existing 2>/dev/null || true;
+          /usr/bin/mc anonymous set download myminio/$$MINIO_BUCKET_NAME 2>/dev/null || true;
+          echo 'Bucket ready';
+          exit 0;
+        fi;
+        RETRY=$$((RETRY+1));
+        echo 'Retry' $$RETRY'/10...';
+        sleep 1;
+      done;
+      echo 'Failed after' $$MAX_RETRIES 'attempts';
+      exit 1;
       "
 
   mlflow-server:
@@ -72,10 +84,10 @@ services:
       --allowed-hosts "*"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
 
   truck-worker:
     build:
@@ -83,12 +95,6 @@ services:
       dockerfile: Dockerfile
     container_name: truck_inference_worker
     restart: always
-    # deploy:
-    #   replicas: 3 # 🚀 Start 3 workers automatically
-    #   resources:
-    #     limits:
-    #       cpus: '1.0' # 🛡️ Prevent one worker from eating all CPU
-    #       memory: 1G
     depends_on:
       mlflow-server:
         condition: service_healthy

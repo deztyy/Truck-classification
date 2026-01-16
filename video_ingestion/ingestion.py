@@ -15,7 +15,7 @@ import numpy as np
 import redis
 
 # =============================================================================
-# LOGGING CONFIGURATION
+# LOGGING CONFIGURATION (OPTIMIZED)
 # =============================================================================
 def setup_logging(level=logging.INFO):
     log_dir = os.getenv("LOG_DIR", "/app/logs")
@@ -25,17 +25,19 @@ def setup_logging(level=logging.INFO):
     logger.setLevel(level)
 
     log_formatter = logging.Formatter(
-        fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
+        fmt="%(asctime)s | %(levelname)-8s | %(message)s",  # Simplified format
+        datefmt="%H:%M:%S",  # Shorter timestamp
     )
 
+    # Console handler - only show important messages
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(level)
+    console_handler.setLevel(logging.INFO)  # Hide DEBUG from console
     console_handler.setFormatter(log_formatter)
 
+    # File handler - keep all logs
     log_file_path = os.path.join(log_dir, "ingestion.log")
     file_handler = logging.FileHandler(log_file_path, mode="a")
-    file_handler.setLevel(level)
+    file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(log_formatter)
 
     logger.addHandler(console_handler)
@@ -78,9 +80,11 @@ INITIAL_BUFFER_FILL_SEC = 2.0
 MAX_WORKER_THREADS = 2
 WORKER_QUEUE_TIMEOUT_SEC = 10
 
+# Performance monitoring
+LOG_STATS_EVERY_N_BATCHES = 10  # Log stats every N batches instead of every batch
+
 RUNNING = True
 
-# Fixed Lua script - no double JSON encoding
 LUA_RPUSH_LIMIT_SCRIPT = """
 local queue_key = KEYS[1]
 local limit = tonumber(ARGV[1])
@@ -99,7 +103,7 @@ end
 # =============================================================================
 def handle_signal(signum, frame):
     global RUNNING
-    logger.info(f"Signal {signum} received. Initiating graceful shutdown...")
+    logger.info(f"Signal {signum} received. Shutting down...")
     RUNNING = False
 
 signal.signal(signal.SIGINT, handle_signal)
@@ -142,37 +146,21 @@ def get_redis_client():
                 port=REDIS_PORT,
                 db=REDIS_DB,
                 socket_connect_timeout=REDIS_CONNECT_TIMEOUT_SEC,
-                decode_responses=False  # Keep as bytes for consistency
+                decode_responses=False
             )
             redis_client.ping()
-            logger.info(
-                f"Redis connected successfully (attempt {connection_attempt}): "
-                f"{REDIS_HOST}:{REDIS_PORT}/db{REDIS_DB}"
-            )
+            logger.info(f"✅ Redis connected: {REDIS_HOST}:{REDIS_PORT}")
             return redis_client
 
-        except redis.ConnectionError as ce:
-            logger.warning(
-                f"Redis unavailable (attempt {connection_attempt}). "
-                f"Retrying in {REDIS_RETRY_INTERVAL_SEC}s... [Error: {ce}]"
-            )
-            time.sleep(REDIS_RETRY_INTERVAL_SEC)
-
-        except redis.TimeoutError as te:
-            logger.warning(
-                f"Redis timeout (attempt {connection_attempt}). "
-                f"Retrying in {REDIS_RETRY_INTERVAL_SEC}s... [Error: {te}]"
-            )
+        except (redis.ConnectionError, redis.TimeoutError) as e:
+            if connection_attempt == 1 or connection_attempt % 5 == 0:  # Log every 5th attempt
+                logger.warning(f"Redis connection failed (attempt {connection_attempt}), retrying...")
             time.sleep(REDIS_RETRY_INTERVAL_SEC)
 
         except Exception as e:
-            logger.error(
-                f"Unexpected Redis error (attempt {connection_attempt}): "
-                f"{type(e).__name__}: {e}"
-            )
+            logger.error(f"Unexpected Redis error: {e}")
             time.sleep(REDIS_RETRY_INTERVAL_SEC)
 
-    logger.info("Redis connection interrupted by shutdown signal")
     return None
 
 # =============================================================================
@@ -197,13 +185,11 @@ class RTSPStreamLoader:
 
     def start(self):
         if self.started:
-            logger.warning(f"Stream already started for {self.src}. Ignoring duplicate start() call.")
             return None
 
         self.started = True
         self.thread = threading.Thread(target=self.update, args=(), daemon=True)
         self.thread.start()
-        logger.debug(f"Reader thread started for {self.src}")
         return self
 
     def update(self):
@@ -227,20 +213,15 @@ class RTSPStreamLoader:
     def stop(self):
         self.started = False
         if self.thread and self.thread.is_alive():
-            logger.debug("Waiting for reader thread to exit...")
             self.thread.join(timeout=2)
         self.stream.release()
-        logger.debug(f"Stream closed: {self.src}")
 
     def is_stale(self, timeout=STREAM_STALE_TIMEOUT_SEC):
         time_since_last_read = time.time() - self.last_read_time
-        is_stale = time_since_last_read > timeout
-        if is_stale:
-            logger.debug(f"Stream stale: {time_since_last_read:.1f}s > {timeout}s threshold")
-        return is_stale
+        return time_since_last_read > timeout
 
 # =============================================================================
-# BACKGROUND I/O WORKER (FIXED - No Double JSON Encoding)
+# BACKGROUND I/O WORKER (OPTIMIZED LOGGING)
 # =============================================================================
 class BatchIOWorker:
     """Non-blocking batch processing worker"""
@@ -253,12 +234,12 @@ class BatchIOWorker:
         self.timeout = timeout
         self.lua_script = None
         self.redis_client = None
-        logger.info(f"BatchIOWorker initialized with {max_workers} workers")
+        self.batch_count = 0
+        logger.info(f"BatchIOWorker initialized ({max_workers} workers)")
 
     def set_redis_client(self, redis_client, lua_script):
         self.redis_client = redis_client
         self.lua_script = lua_script
-        logger.debug("Redis client configured for BatchIOWorker")
 
     def process_batch_async(self, processed_frames, batch_timestamps, save_dir, camera_id):
         try:
@@ -271,18 +252,17 @@ class BatchIOWorker:
             )
             return True
 
-        except RuntimeError as re:
-            logger.error(f"Failed to submit batch: executor not running. Likely during shutdown. [Error: {re}]")
+        except RuntimeError:
+            logger.error("Failed to submit batch: executor shutting down")
             return False
 
         except Exception as e:
-            logger.error(f"Unexpected error submitting batch: {type(e).__name__}: {e}")
+            logger.error(f"Batch submission error: {e}")
             return False
 
     def _process_batch_internal(self, processed_frames, batch_timestamps, save_dir, camera_id):
         try:
-            logger.debug(f"Worker processing batch: {len(processed_frames)} frames from {camera_id}")
-
+            self.batch_count += 1
             batch_array = np.stack(processed_frames, axis=0)
 
             first_timestamp = batch_timestamps[0]
@@ -292,24 +272,22 @@ class BatchIOWorker:
 
             np.save(batch_file_path, batch_array)
 
-            logger.info(
-                f"[{camera_id}] Batch saved: {os.path.basename(batch_file_path)} "
-                f"(shape: {batch_array.shape}, size: {batch_array.nbytes / (1024*1024):.1f}MB)"
-            )
+            # Only log every N batches to reduce spam
+            if self.batch_count % LOG_STATS_EVERY_N_BATCHES == 0:
+                logger.info(
+                    f"📦 [{camera_id}] Batches processed: {self.batch_count} | "
+                    f"Shape: {batch_array.shape} | "
+                    f"Size: {batch_array.nbytes / (1024*1024):.1f}MB"
+                )
 
             if self.redis_client and self.lua_script:
                 self._push_to_redis(camera_id, batch_file_path, first_timestamp)
-            else:
-                logger.warning(f"[{camera_id}] Redis not configured, skipping job enqueue")
 
         except Exception as e:
-            logger.error(
-                f"[{camera_id}] Background batch processing failed: {type(e).__name__}: {e}",
-                exc_info=True,
-            )
+            logger.error(f"[{camera_id}] Batch processing failed: {e}")
 
     def _push_to_redis(self, camera_id, file_path, timestamp):
-        """Push job to Redis - FIXED: Single JSON encoding only"""
+        """Push job to Redis"""
         try:
             job_payload = {
                 "camera_id": camera_id,
@@ -317,7 +295,6 @@ class BatchIOWorker:
                 "timestamp": timestamp.isoformat(),
             }
 
-            # FIXED: Only encode once
             serialized_job = json.dumps(job_payload)
 
             result = self.lua_script(
@@ -325,46 +302,27 @@ class BatchIOWorker:
                 args=[REDIS_QUEUE_LIMIT, serialized_job]
             )
 
-            if result == 1:
-                logger.info(
-                    f"[{camera_id}] Batch queued for processing. "
-                    f"File: {os.path.basename(file_path)}"
-                )
-            else:
-                logger.warning(
-                    f"[{camera_id}] Redis queue full ({REDIS_QUEUE_LIMIT}). "
-                    "Batch discarded (backpressure). Downstream worker may be slow or stuck."
-                )
+            if result == 0:
+                # Only log queue full warning occasionally
+                if self.batch_count % 5 == 0:
+                    logger.warning(f"⚠️ [{camera_id}] Redis queue full, batch discarded")
 
-        except (redis.ConnectionError, redis.TimeoutError) as network_err:
-            logger.error(
-                f"[{camera_id}] Redis push failed (network issue): "
-                f"{type(network_err).__name__}: {network_err}"
-            )
-
-        except json.JSONDecodeError as json_err:
-            logger.error(f"[{camera_id}] JSON serialization failed: {json_err}", exc_info=True)
+        except (redis.ConnectionError, redis.TimeoutError):
+            logger.error(f"[{camera_id}] Redis connection lost")
 
         except Exception as e:
-            logger.error(
-                f"[{camera_id}] Unexpected Redis error: {type(e).__name__}: {e}",
-                exc_info=True,
-            )
+            logger.error(f"[{camera_id}] Redis error: {e}")
 
     def shutdown(self, wait=True, timeout=5):
-        logger.info("Shutting down batch I/O worker...")
-        logger.debug(f"Waiting for {MAX_WORKER_THREADS} worker threads to finish (timeout: {timeout}s)")
+        logger.info("Shutting down batch worker...")
         self.executor.shutdown(wait=wait)
-        logger.info("Batch I/O worker shutdown complete")
+        logger.info(f"✅ Total batches processed: {self.batch_count}")
 
 # =============================================================================
-# BACKGROUND MAINTENANCE (File Retention)
+# BACKGROUND MAINTENANCE (OPTIMIZED)
 # =============================================================================
 def cleanup_worker(folder_path, retention_seconds):
-    logger.info(
-        f"Cleanup service started for {folder_path} "
-        f"(retention: {retention_seconds}s, scan interval: {CLEANUP_CHECK_INTERVAL_SEC}s)"
-    )
+    logger.info(f"🧹 Cleanup service started (retention: {retention_seconds}s)")
 
     cleanup_iteration = 0
     while RUNNING:
@@ -373,52 +331,37 @@ def cleanup_worker(folder_path, retention_seconds):
             now = time.time()
 
             batch_files = glob.glob(os.path.join(folder_path, "*.npy"))
-            files_checked = len(batch_files)
             files_deleted = 0
 
             for file_path in batch_files:
                 try:
-                    file_stat = os.stat(file_path)
-                    file_mod_time = file_stat.st_mtime
+                    file_mod_time = os.stat(file_path).st_mtime
                     file_age_seconds = now - file_mod_time
 
                     if file_age_seconds > retention_seconds:
-                        file_size_mb = file_stat.st_size / (1024 * 1024)
                         os.remove(file_path)
                         files_deleted += 1
-                        logger.debug(
-                            f"Deleted aged batch: {os.path.basename(file_path)} "
-                            f"(age: {file_age_seconds:.0f}s, size: {file_size_mb:.1f}MB)"
-                        )
 
-                except FileNotFoundError:
+                except (FileNotFoundError, OSError):
                     pass
 
-                except OSError as os_err:
-                    logger.warning(f"Cleanup: Could not delete {file_path}: {os_err}")
-
-            if files_deleted > 0 or cleanup_iteration % 5 == 0:
-                logger.info(
-                    f"Cleanup cycle #{cleanup_iteration}: "
-                    f"checked {files_checked} files, deleted {files_deleted}"
-                )
+            # Only log if files deleted or every 10th cycle
+            if files_deleted > 0:
+                logger.info(f"🧹 Cleanup: deleted {files_deleted} old files")
+            elif cleanup_iteration % 10 == 0:
+                logger.debug(f"Cleanup cycle #{cleanup_iteration}: {len(batch_files)} files checked")
 
             time.sleep(CLEANUP_CHECK_INTERVAL_SEC)
 
         except Exception as e:
-            logger.error(
-                f"Cleanup error (cycle #{cleanup_iteration}): {type(e).__name__}: {e}",
-                exc_info=True,
-            )
+            logger.error(f"Cleanup error: {e}")
             time.sleep(CLEANUP_CHECK_INTERVAL_SEC)
 
 # =============================================================================
 # STREAM RECOVERY HANDLERS
 # =============================================================================
 def _handle_stream_stale(video_stream):
-    logger.warning(
-        f"Stream stale detected (no frames for {STREAM_STALE_TIMEOUT_SEC}s). Reconnecting..."
-    )
+    logger.warning("⚠️ Stream stale, reconnecting...")
     video_stream.stop()
     time.sleep(STREAM_RECONNECT_DELAY_SEC)
 
@@ -426,20 +369,17 @@ def _handle_stream_stale(video_stream):
         new_stream = RTSPStreamLoader(RTSP_URL).start()
         time.sleep(STREAM_RECONNECT_DELAY_SEC)
         new_stream.last_read_time = time.time()
-        logger.info("Stream reconnected successfully")
+        logger.info("✅ Stream reconnected")
         return new_stream
 
     except Exception as e:
-        logger.error(f"Stream reconnection failed: {type(e).__name__}: {e}", exc_info=True)
+        logger.error(f"Reconnection failed: {e}")
         time.sleep(STREAM_RECONNECT_WAIT_DELAY_SEC)
         return None
 
 
 def _handle_frame_loss(video_stream):
-    logger.warning(
-        "Frame lost or camera disconnected. "
-        f"Reconnecting in {FRAME_LOSS_RECONNECT_DELAY_SEC}s..."
-    )
+    logger.warning("⚠️ Frame loss detected, reconnecting...")
     video_stream.stop()
     time.sleep(FRAME_LOSS_RECONNECT_DELAY_SEC)
     new_stream = RTSPStreamLoader(RTSP_URL).start()
@@ -449,66 +389,50 @@ def _handle_frame_loss(video_stream):
 # MAIN EXECUTION LOOP
 # =============================================================================
 def main():
-    logger.info("=" * 70)
-    logger.info("RTSP Video Ingestion Service - Starting")
-    logger.info("=" * 70)
+    logger.info("=" * 60)
+    logger.info("🚀 Video Ingestion Service Starting")
+    logger.info("=" * 60)
 
     if not RTSP_URL:
-        logger.error("CRITICAL: RTSP_URL environment variable not set")
-        logger.error("Cannot proceed without RTSP stream source URL")
+        logger.error("❌ RTSP_URL not set")
         sys.exit(1)
 
-    logger.info("Configuration loaded:")
-    logger.info(f"  - RTSP_URL: {RTSP_URL}")
-    logger.info(f"  - Camera ID: {CAMERA_ID}")
-    logger.info(f"  - Output Folder: {OUTPUT_FOLDER}")
-    logger.info(f"  - Batch Size: {BATCH_SIZE} frames @ {RAW_FPS} FPS (~1 second)")
-    logger.info(f"  - Target Size: {TARGET_SIZE}")
-    logger.info(f"  - Retention: {RETENTION_SECONDS}s")
+    logger.info(f"📹 Camera: {CAMERA_ID}")
+    logger.info(f"📦 Batch size: {BATCH_SIZE} frames")
+    logger.info(f"📏 Target size: {TARGET_SIZE}")
 
-    logger.info("Initializing Redis connection...")
     redis_client = get_redis_client()
     if redis_client is None:
-        logger.error("CRITICAL: Failed to connect to Redis after retries")
+        logger.error("❌ Redis connection failed")
         sys.exit(1)
+    
     lua_script = redis_client.register_script(LUA_RPUSH_LIMIT_SCRIPT)
-    logger.info("Redis connection established and Lua script registered")
 
-    logger.info(f"Starting batch I/O worker ({MAX_WORKER_THREADS} workers)...")
     batch_worker = BatchIOWorker(max_workers=MAX_WORKER_THREADS)
     batch_worker.set_redis_client(redis_client, lua_script)
 
     save_directory = os.path.join(OUTPUT_FOLDER, CAMERA_ID)
-    try:
-        os.makedirs(save_directory, exist_ok=True)
-        logger.info(f"Output directory ready: {save_directory}")
-    except OSError as e:
-        logger.error(f"CRITICAL: Cannot create output directory: {e}")
-        sys.exit(1)
+    os.makedirs(save_directory, exist_ok=True)
 
     cleaner_thread = threading.Thread(
         target=cleanup_worker,
         args=(save_directory, RETENTION_SECONDS),
         daemon=True,
-        name="cleanup-worker",
     )
     cleaner_thread.start()
-    logger.info("File cleanup daemon started")
 
-    logger.info(f"Connecting to RTSP stream: {CAMERA_ID}...")
+    logger.info(f"🔌 Connecting to stream...")
     video_stream = RTSPStreamLoader(RTSP_URL).start()
-
-    logger.info(f"Buffering stream for {INITIAL_BUFFER_FILL_SEC}s...")
     time.sleep(INITIAL_BUFFER_FILL_SEC)
 
     frame_batch = []
     batch_timestamps = []
 
-    logger.info("Service started. Buffering frames for batch processing...")
-    logger.info("=" * 70)
+    logger.info("✅ Service ready - processing frames")
+    logger.info("=" * 60)
 
     frame_count = 0
-    batch_count = 0
+    last_log_time = time.time()
 
     try:
         while RUNNING:
@@ -532,39 +456,33 @@ def main():
             frame_count += 1
 
             if len(frame_batch) >= BATCH_SIZE:
-                batch_count += 1
-
                 success = batch_worker.process_batch_async(
                     frame_batch, batch_timestamps, save_directory, CAMERA_ID
                 )
 
-                if success:
-                    logger.debug(
-                        f"Batch #{batch_count} submitted to worker pool "
-                        f"(Total frames: {frame_count})"
-                    )
-                else:
-                    logger.error(f"Failed to submit batch #{batch_count} to worker pool")
-
                 frame_batch = []
                 batch_timestamps = []
 
+            # Log FPS every 5 seconds instead of every batch
+            current_time = time.time()
+            if current_time - last_log_time >= 5.0:
+                fps = frame_count / (current_time - last_log_time)
+                logger.info(f"📊 FPS: {fps:.1f} | Total frames: {frame_count}")
+                last_log_time = current_time
+
     except KeyboardInterrupt:
-        logger.info("Keyboard interrupt received")
+        logger.info("⏹️ Keyboard interrupt")
     except Exception as e:
-        logger.error(f"Unexpected error in main loop: {type(e).__name__}: {e}")
+        logger.error(f"❌ Main loop error: {e}")
     finally:
         logger.info("=" * 60)
-        logger.info("Shutdown initiated")
+        logger.info("🛑 Shutting down")
         logger.info("=" * 60)
 
         video_stream.stop()
-        logger.info("RTSP stream closed")
-
         batch_worker.shutdown(wait=True, timeout=5)
 
-        logger.info(f"Final stats: {frame_count} frames, {batch_count} batches processed")
-        logger.info("Service stopped gracefully")
+        logger.info(f"✅ Graceful shutdown complete | Processed {frame_count} frames")
 
 
 if __name__ == "__main__":
