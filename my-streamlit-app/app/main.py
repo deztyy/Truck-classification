@@ -422,6 +422,12 @@ def render_entry_tab(df_classes):
 # ==================== CURRENT VEHICLE TAB (USER MODE) ====================
 def render_current_vehicle_tab(df_classes):
     """Render current vehicle display tab"""
+    import time
+    
+    # Initialize auto-refresh timer in session state
+    if 'last_refresh_time' not in st.session_state:
+        st.session_state.last_refresh_time = time.time()
+    
     st.markdown("### 🚗 Current Vehicle")
     
     st.markdown("""
@@ -535,57 +541,54 @@ def render_current_vehicle_tab(df_classes):
                 </div>
                 """, unsafe_allow_html=True)
             
-            # Auto-refresh countdown with manual refresh button
-            st.markdown("""
+            # Calculate time elapsed since last refresh
+            time_elapsed = int(time.time() - st.session_state.last_refresh_time)
+            time_remaining = max(0, 10 - time_elapsed)
+            
+            # Auto-refresh countdown
+            st.markdown(f"""
             <div style="text-align: center; margin-top: 2rem;">
-                <span class="countdown-badge">🔄 Auto-refresh in <span id="countdown">10</span> seconds</span>
+                <span class="countdown-badge">🔄 Auto-refresh in {time_remaining} seconds</span>
             </div>
             """, unsafe_allow_html=True)
             
             col_r1, col_r2, col_r3 = st.columns([1, 1, 1])
             with col_r2:
                 if st.button("🔄 Refresh Now", use_container_width=True, type="primary", key="manual_refresh"):
+                    st.session_state.last_refresh_time = time.time()
                     st.rerun()
             
+            # Auto-refresh after 10 seconds
+            if time_elapsed >= 10:
+                st.session_state.last_refresh_time = time.time()
+                time.sleep(0.1)  # Small delay to ensure state is saved
+                st.rerun()
+            
         else:
-            st.markdown("""
+            # Calculate time elapsed since last refresh
+            time_elapsed = int(time.time() - st.session_state.last_refresh_time)
+            time_remaining = max(0, 10 - time_elapsed)
+            
+            st.markdown(f"""
             <div style="text-align: center; padding: 4rem 2rem; background: rgba(102, 126, 234, 0.05); 
                  border-radius: 20px; border: 2px dashed rgba(102, 126, 234, 0.3);">
                 <div style="font-size: 5em; opacity: 0.5;">🚗💨</div>
                 <div style="color: #667eea; font-size: 1.8em; font-weight: 700;">No Vehicles Yet</div>
                 <div style="color: #999; font-size: 1.1em;">Waiting for the first vehicle to enter...</div>
                 <div style="margin-top: 2rem;">
-                    <span class="countdown-badge">🔄 Checking in <span id="countdown">10</span> seconds</span>
+                    <span class="countdown-badge">🔄 Checking in {time_remaining} seconds</span>
                 </div>
             </div>
             """, unsafe_allow_html=True)
+            
+            # Auto-refresh after 10 seconds
+            if time_elapsed >= 10:
+                st.session_state.last_refresh_time = time.time()
+                time.sleep(0.1)
+                st.rerun()
     
     except Exception as e:
         st.error(f"❌ Error loading current vehicle: {e}")
-    
-    # JavaScript auto-refresh timer
-    auto_refresh_script = """
-    <script>
-        // Auto-refresh countdown
-        let timeLeft = 10;
-        const countdownElement = document.getElementById('countdown');
-        
-        const countdown = setInterval(function() {
-            timeLeft--;
-            if (countdownElement) {
-                countdownElement.textContent = timeLeft;
-            }
-            
-            if (timeLeft <= 0) {
-                clearInterval(countdown);
-                // Reload the page
-                window.location.reload();
-            }
-        }, 1000);
-    </script>
-    """
-    
-    components.html(auto_refresh_script, height=0)
 
 
 # ==================== TRANSACTION HISTORY ====================
