@@ -421,151 +421,58 @@ def render_entry_tab(df_classes):
 
 # ==================== CURRENT VEHICLE TAB (USER MODE) ====================
 def render_current_vehicle_tab(df_classes):
-    """Render current vehicle display tab with iframe auto-refresh"""
+    """Render current vehicle display tab with auto-refresh"""
+    import time
+    
+    # Use query params to track refresh without losing session state
+    query_params = st.query_params
+    
+    # Initialize last refresh time
+    if 'last_vehicle_refresh' not in st.session_state:
+        st.session_state.last_vehicle_refresh = time.time()
+        st.session_state.vehicle_refresh_count = 0
+    
+    # Check URL param for refresh trigger
+    if 'refresh' in query_params:
+        refresh_count = int(query_params.get('refresh', ['0'])[0] if isinstance(query_params.get('refresh'), list) else query_params.get('refresh', '0'))
+        if refresh_count != st.session_state.vehicle_refresh_count:
+            st.session_state.last_vehicle_refresh = time.time()
+            st.session_state.vehicle_refresh_count = refresh_count
+            # Clear the query param
+            st.query_params.clear()
+    
+    # Calculate time remaining
+    current_time = time.time()
+    time_elapsed = int(current_time - st.session_state.last_vehicle_refresh)
+    time_remaining = max(0, 10 - time_elapsed)
+    
     st.markdown("### 🚗 Current Vehicle")
     
-    # Create a unique session ID for this component
-    import hashlib
-    session_id = hashlib.md5(str(id(st.session_state)).encode()).hexdigest()[:8]
-    
-    # Inline vehicle display with auto-refresh via JavaScript polling
-    vehicle_html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <style>
-            body {{
-                margin: 0;
-                padding: 20px;
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-                background-color: #0e1117;
-            }}
-            .vehicle-main-card {{
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                padding: 3rem 2rem;
-                border-radius: 20px;
-                margin-bottom: 2rem;
-                box-shadow: 0 10px 40px rgba(102, 126, 234, 0.4);
-            }}
-            .vehicle-title {{
-                text-align: center;
-                color: white;
-                font-size: 2em;
-                font-weight: 800;
-                margin: 0;
-            }}
-            .vehicle-content {{
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 2rem;
-                margin-top: 1rem;
-            }}
-            .vehicle-info-box {{
-                background: rgba(255, 255, 255, 0.1);
-                backdrop-filter: blur(10px);
-                padding: 2rem;
-                border-radius: 15px;
-                border: 1px solid rgba(255, 255, 255, 0.2);
-            }}
-            .info-label {{
-                color: rgba(255, 255, 255, 0.8);
-                font-size: 0.9em;
-                font-weight: 600;
-                text-transform: uppercase;
-                letter-spacing: 1px;
-                margin-bottom: 0.5rem;
-            }}
-            .info-value {{
-                color: #ffd700;
-                font-size: 2em;
-                font-weight: 800;
-                text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-                word-break: break-word;
-                min-height: 1.2em;
-            }}
-            .info-value.small {{
-                font-size: 1.4em;
-            }}
-            .countdown-container {{
-                text-align: center;
-                margin-top: 1rem;
-            }}
-            .countdown-badge {{
-                background: rgba(255, 255, 255, 0.15);
-                color: white;
-                padding: 0.8rem 1.5rem;
-                border-radius: 50px;
-                font-size: 0.9em;
-                font-weight: 600;
-                display: inline-block;
-            }}
-            .no-vehicle {{
-                text-align: center;
-                padding: 4rem 2rem;
-                background: rgba(102, 126, 234, 0.05);
-                border-radius: 20px;
-                border: 2px dashed rgba(102, 126, 234, 0.3);
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="vehicle-main-card">
-            <div class="vehicle-title">🚗 Latest Vehicle Entry</div>
-        </div>
+    # Create HTML with embedded JavaScript for auto-refresh
+    # This JavaScript will update URL param to trigger Streamlit rerun
+    refresh_script = f"""
+    <script>
+        let countdown = {time_remaining};
+        let countdownElement = null;
         
-        <div class="vehicle-content">
-            <div class="vehicle-info-box">
-                <div class="info-label">📷 CAMERA ID</div>
-                <div class="info-value" id="camera-id">Loading...</div>
-            </div>
-            <div class="vehicle-info-box">
-                <div class="info-label">💰 TOTAL FEE</div>
-                <div class="info-value" id="total-fee">Loading...</div>
-            </div>
-            <div class="vehicle-info-box">
-                <div class="info-label">🚙 VEHICLE TYPE</div>
-                <div class="info-value" id="vehicle-type">Loading...</div>
-            </div>
-            <div class="vehicle-info-box">
-                <div class="info-label">⏰ TIMESTAMP</div>
-                <div class="info-value small" id="timestamp">Loading...</div>
-            </div>
-        </div>
-        
-        <div class="countdown-container">
-            <span class="countdown-badge">
-                🔄 Auto-refresh in <span id="countdown">10</span> seconds
-            </span>
-        </div>
-        
-        <script>
-            let countdown = 10;
-            
-            function refreshPage() {{
-                // Reload the entire parent page (Streamlit app)
-                if (window.parent) {{
-                    window.parent.location.reload();
-                }} else {{
-                    window.location.reload();
-                }}
+        function updateCountdown() {{
+            countdownElement = document.getElementById('countdown-value');
+            if (countdownElement) {{
+                countdownElement.textContent = countdown;
             }}
             
-            function updateCountdown() {{
-                countdown--;
-                document.getElementById('countdown').textContent = countdown;
-                
-                if (countdown <= 0) {{
-                    countdown = 10;
-                    refreshPage();
-                }}
-            }}
+            countdown--;
             
-            // Start countdown
-            setInterval(updateCountdown, 1000);
-        </script>
-    </body>
-    </html>
+            if (countdown < 0) {{
+                // Update URL parameter to trigger refresh
+                const currentCount = {st.session_state.vehicle_refresh_count};
+                window.parent.location.href = window.parent.location.pathname + '?refresh=' + (currentCount + 1);
+            }}
+        }}
+        
+        // Update every second
+        setInterval(updateCountdown, 1000);
+    </script>
     """
     
     # Get current vehicle data
@@ -590,24 +497,114 @@ def render_current_vehicle_tab(df_classes):
             formatted_time = timestamp.strftime('%d/%m/%Y %H:%M:%S')
             total_fee = vehicle['total_applied_fee'] if vehicle['total_applied_fee'] is not None else 0.0
             
-            # Inject data into HTML
-            vehicle_html = vehicle_html.replace('id="camera-id">Loading...', f'id="camera-id">{vehicle["camera_id"]}')
-            vehicle_html = vehicle_html.replace('id="total-fee">Loading...', f'id="total-fee">{total_fee:.2f} ฿')
-            vehicle_html = vehicle_html.replace('id="vehicle-type">Loading...', f'id="vehicle-type">{vehicle["vehicle_type"]}')
-            vehicle_html = vehicle_html.replace('id="timestamp">Loading...', f'id="timestamp">{formatted_time}')
+            # Display vehicle info
+            st.markdown("""
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                 padding: 3rem 2rem; border-radius: 20px; margin-bottom: 2rem;
+                 box-shadow: 0 10px 40px rgba(102, 126, 234, 0.4);">
+                <div style="text-align: center; color: white; font-size: 2em; font-weight: 800;">
+                    🚗 Latest Vehicle Entry
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            col1, col2 = st.columns(2, gap="large")
+            
+            with col1:
+                st.markdown(f"""
+                <div style="background: rgba(255, 255, 255, 0.1); backdrop-filter: blur(10px);
+                     padding: 2rem; border-radius: 15px; border: 1px solid rgba(255, 255, 255, 0.2);">
+                    <div style="color: rgba(255, 255, 255, 0.8); font-size: 0.9em; font-weight: 600;
+                         text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem;">
+                        📷 Camera ID
+                    </div>
+                    <div style="color: #ffd700; font-size: 2em; font-weight: 800;
+                         text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">
+                        {vehicle['camera_id']}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.markdown(f"""
+                <div style="background: rgba(255, 255, 255, 0.1); backdrop-filter: blur(10px);
+                     padding: 2rem; border-radius: 15px; border: 1px solid rgba(255, 255, 255, 0.2);
+                     margin-top: 1rem;">
+                    <div style="color: rgba(255, 255, 255, 0.8); font-size: 0.9em; font-weight: 600;
+                         text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem;">
+                        🚙 Vehicle Type
+                    </div>
+                    <div style="color: #ffd700; font-size: 2em; font-weight: 800;
+                         text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">
+                        {vehicle['vehicle_type']}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col2:
+                st.markdown(f"""
+                <div style="background: rgba(255, 255, 255, 0.1); backdrop-filter: blur(10px);
+                     padding: 2rem; border-radius: 15px; border: 1px solid rgba(255, 255, 255, 0.2);">
+                    <div style="color: rgba(255, 255, 255, 0.8); font-size: 0.9em; font-weight: 600;
+                         text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem;">
+                        💰 Total Fee
+                    </div>
+                    <div style="color: #ffd700; font-size: 2em; font-weight: 800;
+                         text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">
+                        {total_fee:.2f} ฿
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.markdown(f"""
+                <div style="background: rgba(255, 255, 255, 0.1); backdrop-filter: blur(10px);
+                     padding: 2rem; border-radius: 15px; border: 1px solid rgba(255, 255, 255, 0.2);
+                     margin-top: 1rem;">
+                    <div style="color: rgba(255, 255, 255, 0.8); font-size: 0.9em; font-weight: 600;
+                         text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem;">
+                        ⏰ Timestamp
+                    </div>
+                    <div style="color: #ffd700; font-size: 1.4em; font-weight: 800;
+                         text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">
+                        {formatted_time}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
         else:
-            # No vehicle found
-            vehicle_html = vehicle_html.replace('id="camera-id">Loading...', 'id="camera-id">-')
-            vehicle_html = vehicle_html.replace('id="total-fee">Loading...', 'id="total-fee">0.00 ฿')
-            vehicle_html = vehicle_html.replace('id="vehicle-type">Loading...', 'id="vehicle-type">No Vehicle')
-            vehicle_html = vehicle_html.replace('id="timestamp">Loading...', 'id="timestamp">-')
+            st.markdown("""
+            <div style="text-align: center; padding: 4rem 2rem; 
+                 background: rgba(102, 126, 234, 0.05); border-radius: 20px; 
+                 border: 2px dashed rgba(102, 126, 234, 0.3);">
+                <div style="font-size: 5em; opacity: 0.5;">🚗💨</div>
+                <div style="color: #667eea; font-size: 1.8em; font-weight: 700;">
+                    No Vehicles Yet
+                </div>
+                <div style="color: #999; font-size: 1.1em;">
+                    Waiting for the first vehicle to enter...
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
     
     except Exception as e:
         st.error(f"❌ Error loading current vehicle: {e}")
-        vehicle_html = vehicle_html.replace('Loading...', 'Error')
     
-    # Render the HTML in an iframe
-    components.html(vehicle_html, height=600, scrolling=False)
+    # Display countdown
+    st.markdown(f"""
+    <div style="text-align: center; margin-top: 2rem;">
+        <span style="background: rgba(255, 255, 255, 0.15); color: white; 
+              padding: 0.8rem 1.5rem; border-radius: 50px; font-size: 0.9em; 
+              font-weight: 600; display: inline-block;">
+            🔄 Auto-refresh in <span id="countdown-value">{time_remaining}</span> seconds
+        </span>
+    </div>
+    {refresh_script}
+    """, unsafe_allow_html=True)
+    
+    # Manual refresh button
+    col_r1, col_r2, col_r3 = st.columns([1, 1, 1])
+    with col_r2:
+        if st.button("🔄 Refresh Now", use_container_width=True, type="primary", key="manual_vehicle_refresh"):
+            st.session_state.last_vehicle_refresh = time.time()
+            st.rerun()
 
 # ==================== TRANSACTION HISTORY ====================
 def render_transaction_history(df_classes):
