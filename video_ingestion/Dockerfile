@@ -1,18 +1,18 @@
+# Update base image
 FROM python:3.9-slim
 
 WORKDIR /app
 
-# --- เพิ่มบรรทัดนี้ เพื่อให้ Print Log ออกมาทันที ---
 ENV PYTHONUNBUFFERED=1
 
-# Install dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy Code
-COPY ingestion_video.py .
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.txt && \
+    pip uninstall -y setuptools wheel
 
-# Create dirs
+COPY ingestion.py .
+
 RUN mkdir -p /app/videos /app/shared_memory
 
-CMD ["python", "ingestion_video.py"]
+CMD ["python", "ingestion.py"]
