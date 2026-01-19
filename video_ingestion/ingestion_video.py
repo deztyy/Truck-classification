@@ -26,13 +26,17 @@ REDIS_DB = int(os.getenv("REDIS_DB", 0))
 REDIS_QUEUE_LIMIT = 100  # Threshold to stop pushing jobs if the consumer is slow
 
 # Image Processing & Storage Settings
-TARGET_SIZE = (640, 640) # Target dimensions (Width, Height)
-PROCESS_FPS = 1.0        # Frame capture rate (Frames Per Second)
-JPG_QUALITY = 80         # JPEG compression quality (0-100)
-RETENTION_SECONDS = 3600 # File retention period (1 hour)
+TARGET_SIZE = (640, 640)  # Target dimensions (Width, Height)
+PROCESS_FPS = 1.0         # Frame capture rate (Frames Per Second)
+JPG_QUALITY = 80          # JPEG compression quality (0-100)
+RETENTION_SECONDS = 3600  # File retention period (1 hour)
+BATCH_SIZE = 30           # Number of frames per batch
 
 # Global flag for the main loop
 RUNNING = True
+
+# Frame buffer for batching
+frame_buffer = []
 
 # =============================================================================
 # SIGNAL HANDLING
@@ -83,6 +87,59 @@ def resize_with_padding(image, target_size):
     new_image[y_offset:y_offset+nh, x_offset:x_offset+nw] = resized_image
     
     return new_image
+
+def save_and_push_batch(redis_client, save_dir, batch_frames, camera_id, queue_limit):
+    """
+    Saves a batch of frames to disk and pushes job to Redis.
+    
+    Args:
+        redis_client: Redis connection
+        save_dir: Directory to save batch file
+        batch_frames: List of processed frames
+        camera_id: Camera identifier
+        queue_limit: Maximum queue length before dropping
+    
+    Returns:
+        bool: True if successfully pushed, False otherwise
+    """
+    if not batch_frames:
+        return False
+    
+    try:
+        # Generate filename with timestamp
+        timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        file_name = f"{timestamp_str}.npy"
+        full_path = os.path.join(save_dir, file_name)
+        
+        # Convert list to numpy array and save
+        batch_array = np.array(batch_frames, dtype=np.uint8)
+        np.save(full_path, batch_array)
+        
+        # Check queue length
+        q_len = redis_client.llen('video_jobs')
+        
+        if q_len < queue_limit:
+            message = {
+                "camera_id": camera_id,
+                "file_path": full_path,
+                "timestamp": time.time()
+            }
+            redis_client.rpush('video_jobs', json.dumps(message))
+            
+            print(f"✅ [{camera_id}] Pushed {file_name} (Queue: {q_len}, Progress: {len(batch_frames)} frames)")
+            return True
+        else:
+            print(f"⚠️ Redis Queue Full ({q_len}/{queue_limit}). Dropping batch...")
+            # Delete the saved file since we're not processing it
+            try:
+                os.remove(full_path)
+            except:
+                pass
+            return False
+            
+    except Exception as e:
+        print(f"🔥 Batch save error: {e}")
+        return False
 
 # =============================================================================
 # THREADED VIDEO CAPTURE CLASS
@@ -196,6 +253,8 @@ def cleanup_worker(folder_path, retention_sec):
 # MAIN EXECUTION LOOP
 # =============================================================================
 def main():
+    global frame_buffer
+    
     # 1. Validation
     if not VIDEO_PATH:
         print("❌ Error: VIDEO_PATH environment variable is not set.")
@@ -240,7 +299,7 @@ def main():
     last_process_time = 0
     process_interval = 1.0 / PROCESS_FPS 
 
-    print("🚀 Service Started. Processing frames...")
+    print(f"🚀 Service Started. Processing frames in batches of {BATCH_SIZE}...")
 
     # --- MAIN LOOP ---
     while RUNNING:
@@ -248,7 +307,7 @@ def main():
         
         # A. FPS Throttling
         if current_time - last_process_time < process_interval:
-            time.sleep(0.01) # Short sleep to reduce CPU usage
+            time.sleep(0.01)  # Short sleep to reduce CPU usage
             continue
 
         # B. Frame Retrieval (Non-blocking)
@@ -257,7 +316,12 @@ def main():
         # Handle video end (when not looping)
         if not grabbed or frame is None:
             if not LOOP_VIDEO:
-                print(f"⏹️ Video playback completed. Exiting...")
+                print(f"⏹️ Video playback completed.")
+                # Save remaining frames in buffer before exiting
+                if frame_buffer:
+                    print(f"💾 Saving final batch of {len(frame_buffer)} frames...")
+                    save_and_push_batch(r, save_dir, frame_buffer, CAMERA_ID, REDIS_QUEUE_LIMIT)
+                    frame_buffer = []
                 break
             else:
                 print(f"⚠️ Frame read failed. Retrying...")
@@ -268,46 +332,41 @@ def main():
             # C. Image Processing
             processed_frame = resize_with_padding(frame, TARGET_SIZE)
             
-            # Generate Filename
-            timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            file_name = f"{timestamp_str}.npy"
-            full_path = os.path.join(save_dir, file_name)
-
-            # Save to Disk (NumPy)
-            np.save(full_path, processed_frame)
+            # Add to buffer
+            frame_buffer.append(processed_frame)
             
-            # D. Redis Push (Flow Control)
-            # Check queue size to prevent backpressure
-            q_len = r.llen('video_jobs')
-            
-            if q_len < REDIS_QUEUE_LIMIT:
-                message = {
-                    "camera_id": CAMERA_ID,
-                    "status": "pending",
-                    "image_path": full_path, 
-                    "timestamp": current_time
-                }
-                r.rpush('video_jobs', json.dumps(message))
+            # D. Save and Push When Batch is Full
+            if len(frame_buffer) >= BATCH_SIZE:
+                success = save_and_push_batch(r, save_dir, frame_buffer, CAMERA_ID, REDIS_QUEUE_LIMIT)
                 
-                # Update process time only on success
-                last_process_time = current_time 
+                # Clear buffer regardless of success
+                frame_buffer = []
                 
-                # Optional: Logging every 10 seconds with progress
-                if int(current_time) % 10 == 0:
-                    current_frame, total_frames = video_stream.get_progress()
-                    progress = (current_frame / total_frames * 100) if total_frames > 0 else 0
-                    print(f"✅ [{CAMERA_ID}] Pushed {file_name} (Queue: {q_len}, Progress: {progress:.1f}%)", flush=True)
+                # Update process time only after batch is handled
+                last_process_time = current_time
+                
+                # Show progress every batch
+                current_frame, total_frames = video_stream.get_progress()
+                progress = (current_frame / total_frames * 100) if total_frames > 0 else 0
+                print(f"📊 Progress: {progress:.1f}% ({current_frame}/{total_frames} frames)")
             else:
-                print(f"⚠️ Redis Queue Full ({q_len}/{REDIS_QUEUE_LIMIT}). Dropping frame...", flush=True)
-                # Skip this frame interval
-                last_process_time = current_time 
+                # Update time even if not pushing yet
+                last_process_time = current_time
 
         except Exception as e:
             print(f"🔥 Processing Error: {e}")
+            import traceback
+            traceback.print_exc()
             time.sleep(1)
 
     # Cleanup before exit
     video_stream.stop()
+    
+    # Save any remaining frames in buffer
+    if frame_buffer:
+        print(f"💾 Saving final batch of {len(frame_buffer)} frames...")
+        save_and_push_batch(r, save_dir, frame_buffer, CAMERA_ID, REDIS_QUEUE_LIMIT)
+    
     print("👋 Service Stopped Gracefully.")
 
 if __name__ == "__main__":

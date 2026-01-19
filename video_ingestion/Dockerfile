@@ -10,9 +10,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy Code
-COPY ingestion.py .
+COPY ingestion_video.py .
 
 # Create dirs
 RUN mkdir -p /app/videos /app/shared_memory
 
-CMD ["python", "ingestion.py"]
+CMD ["python", "ingestion_video.py"]

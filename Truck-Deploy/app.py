@@ -15,6 +15,7 @@ from collections import defaultdict
 from sqlalchemy import create_engine, text
 from pathlib import Path
 import glob
+from PIL import Image
 
 # ByteTrack imports
 from dataclasses import dataclass
@@ -382,7 +383,7 @@ def convert_npy_to_jpg(npy_array, frame_index, output_dir=IMAGE_STORAGE_DIR, qua
     Convert numpy array to .jpg and return the new path
     
     Args:
-        npy_array: Numpy array (frame in BGR format)
+        npy_array: Numpy array (frame in BGR format from OpenCV)
         frame_index: Index of frame in batch
         output_dir: Directory to save jpg files
         quality: JPEG quality (1-100)
@@ -391,19 +392,42 @@ def convert_npy_to_jpg(npy_array, frame_index, output_dir=IMAGE_STORAGE_DIR, qua
         Path to saved .jpg file
     """
     try:
+        # Create date-based directory structure
         date_str = datetime.now(THAI_TZ).strftime("%Y-%m-%d")
         day_dir = os.path.join(output_dir, date_str)
         os.makedirs(day_dir, exist_ok=True)
         
+        # Generate unique filename
         timestamp = datetime.now(THAI_TZ).strftime("%Y%m%d_%H%M%S_%f")
         jpg_filename = f"{timestamp}_f{frame_index}.jpg"
         jpg_path = os.path.join(day_dir, jpg_filename)
         
-        cv2.imwrite(jpg_path, npy_array, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        # Validate array shape
+        if npy_array.ndim != 3:
+            print(f"❌ Invalid array shape: {npy_array.shape}. Expected (H, W, C)")
+            return None
+        
+        # Ensure uint8 dtype
+        if npy_array.dtype != np.uint8:
+            npy_array = npy_array.astype(np.uint8)
+        
+        # Convert BGR (OpenCV) to RGB (PIL)
+        # OpenCV uses BGR, PIL uses RGB
+        if npy_array.shape[2] == 3:
+            frame_rgb = cv2.cvtColor(npy_array, cv2.COLOR_BGR2RGB)
+        else:
+            frame_rgb = npy_array
+        
+        # Convert to PIL Image and save
+        image = Image.fromarray(frame_rgb)
+        image.save(jpg_path, format="JPEG", quality=quality, optimize=True)
         
         return jpg_path
+        
     except Exception as e:
         print(f"❌ Error converting frame to jpg: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 # =============================================================================
@@ -610,18 +634,65 @@ def run_inference_batch(session, frames_batch):
 # =============================================================================
 # REDIS CONSUMER WITH BYTETRACK (FIXED FOR BATCH PROCESSING)
 # =============================================================================
-def process_redis_queue(session, redis_client, engine):
-    """Main consumer loop with ByteTrack and batch processing"""
-    print("🚀 Starting Redis consumer with ByteTrack + Batch Insert...")
+# Add this debugging section to process_redis_queue function
+# Replace the frame processing loop with this version:
+
+def process_redis_queue_realtime(session, redis_client, engine):
+    """Real-time saving with strong de-duplication"""
+    print("🚀 Starting Redis consumer with Real-time De-duplication...")
     
-    # One tracker per camera
+    # Relaxed tracker
     trackers = defaultdict(lambda: ByteTracker(
-        track_thresh=0.5,
-        track_buffer=30,
-        match_thresh=0.8
+        track_thresh=0.25,
+        track_buffer=90,
+        match_thresh=0.6
     ))
     
+    # Per-camera vehicle registry with spatial and class info
+    vehicle_registry = defaultdict(list)  # camera_id -> [{bbox, class_id, track_id, last_seen}]
+    
+    # Global frame counter
+    global_frame_id = defaultdict(int)
+    
+    # Strict de-duplication parameters
+    IOU_THRESHOLD = 0.4  # Lower = stricter
+    TIME_WINDOW = 150    # frames (5 seconds at 30fps)
+    
     processed_count = 0
+    
+    def bbox_iou(bbox1, bbox2):
+        x1 = max(bbox1[0], bbox2[0])
+        y1 = max(bbox1[1], bbox2[1])
+        x2 = min(bbox1[2], bbox2[2])
+        y2 = min(bbox1[3], bbox2[3])
+        
+        inter_area = max(0, x2 - x1) * max(0, y2 - y1)
+        bbox1_area = (bbox1[2] - bbox1[0]) * (bbox1[3] - bbox1[1])
+        bbox2_area = (bbox2[2] - bbox2[0]) * (bbox2[3] - bbox2[1])
+        union_area = bbox1_area + bbox2_area - inter_area
+        
+        return inter_area / union_area if union_area > 0 else 0.0
+    
+    def is_duplicate(camera_id, bbox, class_id, current_frame):
+        """Check if vehicle already registered"""
+        for vehicle in vehicle_registry[camera_id]:
+            # Must be same class
+            if vehicle['class_id'] != class_id:
+                continue
+            
+            # Check if within time window
+            if current_frame - vehicle['last_seen'] > TIME_WINDOW:
+                continue
+            
+            # Check spatial overlap
+            iou = bbox_iou(bbox, vehicle['bbox'])
+            if iou > IOU_THRESHOLD:
+                # Update last seen time
+                vehicle['last_seen'] = current_frame
+                vehicle['bbox'] = bbox  # Update position
+                return True, vehicle['db_track_id']
+        
+        return False, None
     
     while RUNNING:
         try:
@@ -645,7 +716,6 @@ def process_redis_queue(session, redis_client, engine):
                 continue
             
             if not isinstance(job, dict):
-                print(f"❌ Job is not a dict, got {type(job)}: {job}")
                 continue
             
             camera_id = job.get("camera_id")
@@ -655,54 +725,87 @@ def process_redis_queue(session, redis_client, engine):
                 print(f"⚠️ File not found: {batch_path}")
                 continue
             
-            # Load batch of frames
-            frames_batch = np.load(batch_path)  # Shape: (30, 640, 640, 3)
-            print(f"📦 Loaded batch: {frames_batch.shape} from {os.path.basename(batch_path)}")
-            
-            # Run inference on all frames
+            frames_batch = np.load(batch_path)
             all_detections = run_inference_batch(session, frames_batch)
             
-            # Get tracker for this camera
             tracker = trackers[camera_id]
+            new_vehicles_in_batch = 0
             
-            # Process each frame in sequence
+            # Process each frame
             for frame_idx, (frame_bgr, detections) in enumerate(zip(frames_batch, all_detections)):
+                global_frame_id[camera_id] += 1
+                current_frame = global_frame_id[camera_id]
                 
-                # Update tracker with detections from this frame
                 online_tracks = tracker.update(detections)
                 
-                # Save best track from this frame
-                if online_tracks:
-                    # Find track with highest confidence
-                    best_track = max(online_tracks, key=lambda t: t.score)
-                    
-                    if best_track.score >= 0.5 and best_track.class_id < len(VEHICLE_CLASSES):
-                        # Convert frame to jpg and save
+                for track in online_tracks:
+                    if track.score >= 0.4 and track.class_id < len(VEHICLE_CLASSES):
+                        
+                        # Check if this is a duplicate
+                        is_dup, existing_db_id = is_duplicate(
+                            camera_id, 
+                            track.bbox, 
+                            track.class_id, 
+                            current_frame
+                        )
+                        
+                        if is_dup:
+                            continue  # Skip duplicate
+                        
+                        # New unique vehicle - save immediately
                         jpg_path = convert_npy_to_jpg(frame_bgr, frame_idx)
                         
                         if jpg_path:
+                            # Use a unique DB track ID (based on camera + registry size)
+                            db_track_id = len(vehicle_registry[camera_id]) + 1
+                            
+                            vehicle_name = VEHICLE_CLASSES[track.class_id]['name']
+                            print(f"💾 NEW Vehicle #{db_track_id}: {vehicle_name} "
+                                  f"(tracker_id={track.track_id}, conf={track.score:.3f}, frame={current_frame})")
+                            
                             add_to_batch(
                                 camera_id=camera_id,
-                                track_id=best_track.track_id,
-                                class_id=best_track.class_id,
-                                confidence=best_track.score,
+                                track_id=db_track_id,  # Use our own ID
+                                class_id=track.class_id,
+                                confidence=track.score,
                                 image_path=jpg_path
                             )
+                            
+                            # Register this vehicle
+                            vehicle_registry[camera_id].append({
+                                'bbox': track.bbox.copy(),
+                                'class_id': track.class_id,
+                                'tracker_id': track.track_id,
+                                'db_track_id': db_track_id,
+                                'last_seen': current_frame,
+                                'first_seen': current_frame
+                            })
+                            
+                            new_vehicles_in_batch += 1
             
-            # Delete batch file after processing
+            # Cleanup old vehicles from registry (older than time window)
+            vehicle_registry[camera_id] = [
+                v for v in vehicle_registry[camera_id]
+                if global_frame_id[camera_id] - v['last_seen'] <= TIME_WINDOW
+            ]
+            
             try:
                 os.remove(batch_path)
             except:
                 pass
             
-            # Flush batch if needed
             flush_batch_if_needed(engine)
             
             total_time = time.perf_counter() - job_start_time
             processed_count += 1
             
-            print(f"✅ [{camera_id}] Processed batch in {total_time:.3f}s | "
-                  f"Frames: {len(frames_batch)} | Total batches: {processed_count}")
+            total_vehicles = len([v for v in vehicle_registry[camera_id] 
+                                 if global_frame_id[camera_id] - v['first_seen'] <= TIME_WINDOW * 2])
+            
+            print(f"✅ [{camera_id}] Batch done in {total_time:.3f}s | "
+                  f"New: {new_vehicles_in_batch} | "
+                  f"Total unique: {total_vehicles} | "
+                  f"Frame: {global_frame_id[camera_id]}")
             
         except Exception as e:
             print(f"🔥 Processing error: {e}")
@@ -713,8 +816,8 @@ def process_redis_queue(session, redis_client, engine):
     print("🔄 Flushing remaining batch records...")
     flush_batch_if_needed(engine, force=True)
     
-    print(f"👋 Consumer stopped. Total processed: {processed_count}")
-
+    print(f"👋 Consumer stopped. Total unique vehicles: "
+          f"{sum(len(v) for v in vehicle_registry.values())}")
 # =============================================================================
 # MAIN EXECUTION
 # =============================================================================
@@ -776,7 +879,7 @@ def main():
     print("=" * 60)
     print(f"⚙️ Batch settings: Size={BATCH_SIZE}, Timeout={BATCH_TIMEOUT}s")
     print("=" * 60)
-    process_redis_queue(session, redis_client, engine)
+    process_redis_queue_realtime(session, redis_client, engine)
     
     redis_client.close()
     engine.dispose()
