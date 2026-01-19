@@ -5,6 +5,7 @@ import os
 from datetime import datetime
 import pytz
 import streamlit.components.v1 as components
+import time
 
 # ==================== CONFIGURATION ====================
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'Admin1234')
@@ -93,6 +94,18 @@ def load_custom_css():
             border-radius: 15px;
             border: 1px solid rgba(255,255,255,0.1);
         }
+        
+        /* Admin Badge */
+        .admin-badge {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            font-weight: 600;
+            display: inline-block;
+            margin-left: 1rem;
+            font-size: 0.9em;
+        }
     </style>
     """, unsafe_allow_html=True)
 
@@ -161,396 +174,182 @@ def init_database():
     except Exception as e:
         st.error(f"Error initializing database: {e}")
 
-
-# ==================== SESSION PERSISTENCE ====================
-def inject_session_persistence():
-    """Inject JavaScript for localStorage session management"""
-    st.markdown("""
-    <script>
-        (function() {
-            // Save session to localStorage
-            window.saveSession = function(role) {
-                localStorage.setItem('vehicle_user_role', role);
-                console.log('💾 Session saved:', role);
-            };
-            
-            // Clear session from localStorage
-            window.clearSession = function() {
-                localStorage.removeItem('vehicle_user_role');
-                console.log('🗑️ Session cleared');
-            };
-            
-            // Restore session from localStorage - run immediately
-            const savedRole = localStorage.getItem('vehicle_user_role');
-            console.log('🔍 Checking localStorage:', savedRole);
-            
-            if (savedRole && !window.location.search.includes('restore_session')) {
-                console.log('🔄 Restoring session:', savedRole);
-                window.location.href = window.location.pathname + '?restore_session=' + savedRole;
-            }
-        })();
-    </script>
-    """, unsafe_allow_html=True)
-
 # ==================== AUTHENTICATION ====================
 def check_authentication():
     """Check and initialize authentication state"""
-    # Restore session from localStorage
-    query_params = st.query_params
-    if 'restore_session' in query_params:
-        role = query_params.get('restore_session')
-        if isinstance(role, list):
-            role = role[0]
-        if role in ['user', 'admin']:
-            st.session_state.user_role = role
-            st.query_params.clear()
-            st.rerun()
-    
-    if 'user_role' not in st.session_state:
-        st.session_state.user_role = None
-    if 'show_password_input' not in st.session_state:
-        st.session_state.show_password_input = False
-    
-    # Inject session persistence if not logged in
-    if st.session_state.user_role is None:
-        inject_session_persistence()
-
-def switch_mode():
-    """Switch between user modes"""
-    # Clear localStorage
-    st.markdown("""
-        <script>
-            localStorage.removeItem('vehicle_user_role');
-            console.log('🗑️ Session cleared');
-        </script>
-    """, unsafe_allow_html=True)
-    st.session_state.user_role = None
-    st.session_state.show_password_input = False
-    st.rerun()
-
-def render_login_page():
-    """Render login page"""
-    st.markdown("""
-    <style>
-        .stApp {
-            background-color: #0e1117;
-        }
-        .login-header {
-            text-align: center;
-            padding: 2rem 0;
-        }
-        .car-icon {
-            font-size: 5em;
-            margin-bottom: 1rem;
-        }
-        .login-title {
-            color: white;
-            font-size: 2.5em;
-            font-weight: 800;
-            margin: 1rem 0;
-        }
-        .login-subtitle {
-            color: #a0a0a0;
-            font-size: 1.3em;
-            margin-bottom: 2rem;
-        }
-    </style>
-    """, unsafe_allow_html=True)
-    
-    col1, col2, col3 = st.columns([1, 2, 1])
-    
-    with col2:
-        st.markdown('<div class="login-header">', unsafe_allow_html=True)
-        st.markdown('<div class="car-icon">🚗</div>', unsafe_allow_html=True)
-        st.markdown('<div class="login-title">Vehicle Entry System</div>', unsafe_allow_html=True)
-        st.markdown('<div class="login-subtitle">เลือกโหมดการใช้งาน</div>', unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-        if st.button("👤 User Mode", use_container_width=True, type="primary", key="user_btn"):
-            # Save to localStorage BEFORE setting session state
-            st.markdown("""
-                <script>
-                    localStorage.setItem('vehicle_user_role', 'user');
-                    console.log('💾 User mode saved to localStorage');
-                </script>
-            """, unsafe_allow_html=True)
-            st.session_state.user_role = "user"
-            st.success("✅ เข้าสู่โหมด User")
-            st.rerun()
-        
-        st.markdown("")
-        
-        if st.button("👑 Admin Mode", use_container_width=True, type="secondary", key="admin_btn"):
-            st.session_state.show_password_input = True
-        
-        if st.session_state.show_password_input:
-            st.markdown("---")
-            password = st.text_input("🔒 รหัส Admin", type="password", placeholder="ใส่รหัส Admin", key="password_input")
-            
-            col_ok, col_cancel = st.columns(2)
-            with col_ok:
-                if st.button("✅ ยืนยัน", use_container_width=True, type="primary", key="confirm_btn"):
-                    if password == ADMIN_PASSWORD:
-                        # Save to localStorage BEFORE setting session state
-                        st.markdown("""
-                            <script>
-                                localStorage.setItem('vehicle_user_role', 'admin');
-                                console.log('💾 Admin mode saved to localStorage');
-                            </script>
-                        """, unsafe_allow_html=True)
-                        st.session_state.user_role = "admin"
-                        st.session_state.show_password_input = False
-                        st.success("✅ เข้าสู่โหมด Admin")
-                        st.rerun()
-                    else:
-                        st.error("❌ รหัสผ่านไม่ถูกต้อง")
-            
-            with col_cancel:
-                if st.button("❌ ยกเลิก", use_container_width=True, key="cancel_btn"):
-                    st.session_state.show_password_input = False
-                    st.rerun()
-
-# ==================== HEADER COMPONENT ====================
-def render_header():
-    """Render header with live clock"""
-    load_custom_css()
-    now_thailand = datetime.now(THAILAND_TZ)
-    
-    col_header1, col_header2 = st.columns([1, 1])
-    
-    with col_header1:
-        st.markdown('<div class="main-header"><p class="header-title">🚗 Vehicle Entry System</p></div>', 
-                   unsafe_allow_html=True)
-        
-        col_role, col_switch = st.columns([0.7, 0.3])
-        with col_role:
-            role_emoji = "👑" if st.session_state.user_role == "admin" else "👤"
-            role_text = "Admin Mode" if st.session_state.user_role == "admin" else "User Mode"
-            st.markdown(f"### {role_emoji} {role_text}")
-        with col_switch:
-            if st.button("🔄 Switch", type="secondary", use_container_width=True):
-                switch_mode()
-    
-    with col_header2:
-        clock_html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <style>
-                body {{
-                    margin: 0;
-                    padding: 0;
-                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-                }}
-                .main-header {{
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    padding: 2rem;
-                    border-radius: 15px;
-                    box-shadow: 0 8px 32px rgba(102, 126, 234, 0.3);
-                }}
-                .datetime-box {{
-                    background: rgba(255,255,255,0.15);
-                    backdrop-filter: blur(10px);
-                    padding: 1rem;
-                    border-radius: 12px;
-                    text-align: center;
-                }}
-                .date-text {{
-                    color: white;
-                    font-size: 1.2em;
-                    font-weight: 600;
-                    margin-bottom: 8px;
-                }}
-                .time-text {{
-                    color: #ffd700;
-                    font-size: 2em;
-                    font-weight: 700;
-                    font-family: 'Courier New', monospace;
-                    text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="main-header">
-                <div class="datetime-box">
-                    <div class="date-text">📅 {now_thailand.strftime('%d %B %Y')}</div>
-                    <div class="time-text" id="live-clock">🕐 Loading...</div>
-                </div>
-            </div>
-            
-            <script>
-                function updateClock() {{
-                    const now = new Date();
-                    const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
-                    const thailandTime = new Date(utc + (3600000 * 7));
-                    
-                    const hours = String(thailandTime.getHours()).padStart(2, '0');
-                    const minutes = String(thailandTime.getMinutes()).padStart(2, '0');
-                    const seconds = String(thailandTime.getSeconds()).padStart(2, '0');
-                    
-                    document.getElementById('live-clock').textContent = '🕐 ' + hours + ':' + minutes + ':' + seconds;
-                }}
-                
-                setInterval(updateClock, 1000);
-                updateClock();
-            </script>
-        </body>
-        </html>
-        """
-        components.html(clock_html, height=140)
+    if 'is_admin' not in st.session_state:
+        st.session_state.is_admin = False
 
 # ==================== DATA LOADING ====================
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=5)
 def load_vehicle_classes():
     """Load vehicle classes from database"""
     try:
-        return pd.read_sql("SELECT * FROM vehicle_classes ORDER BY class_id", engine)
+        query = "SELECT class_id, class_name, entry_fee, xray_fee, total_fee FROM vehicle_classes ORDER BY class_id"
+        df = pd.read_sql(text(query), engine)
+        return df
     except Exception as e:
         st.error(f"Error loading vehicle classes: {e}")
         return pd.DataFrame()
 
-# ==================== VEHICLE ENTRY TAB (ADMIN) ====================
-def render_entry_tab(df_classes):
-    """Render vehicle entry tab"""
-    st.markdown("### 🚗 New Vehicle Entry")
+# ==================== HEADER ====================
+def render_header():
+    """Render animated header with real-time clock"""
+    load_custom_css()
     
-    with st.container(border=True):
-        st.markdown('<div class="form-container">', unsafe_allow_html=True)
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            camera_options = [str(i) for i in range(1, 4)] + ["➕ Add New"]
-            camera_selection = st.selectbox("📷 Camera ID", camera_options, key="camera_select")
+    now_thailand = datetime.now(THAILAND_TZ)
+    current_date = now_thailand.strftime('%d %B %Y')
+    
+    st.markdown(f"""
+    <div class="main-header">
+        <h1 class="header-title">🚗 Vehicle Entry System</h1>
+        <div class="datetime-box">
+            <div class="date-text">📅 {current_date}</div>
+            <div class="time-text" id="clock">🕐 Loading...</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Client-side clock without page refresh
+    components.html(
+        """
+        <script>
+            function updateClock() {
+                const now = new Date();
+                const options = { timeZone: 'Asia/Bangkok', hour12: false };
+                const timeString = now.toLocaleTimeString('en-GB', options);
+                
+                const clockElement = window.parent.document.getElementById('clock');
+                if (clockElement) {
+                    clockElement.textContent = '🕐 ' + timeString;
+                }
+            }
             
-            if camera_selection == "➕ Add New":
-                camera_id = st.text_input("🆕 New Camera ID", placeholder="e.g., CAM001", key="new_camera")
-            else:
-                camera_id = camera_selection
-        
-        with col2:
-            if not df_classes.empty:
-                class_options = {row['class_name']: row['class_id'] for _, row in df_classes.iterrows()}
-                selected_class_name = st.selectbox("🚙 Vehicle Type", list(class_options.keys()), key="vehicle_select")
-            else:
-                st.warning("⚠️ No vehicle classes available")
-                selected_class_name = None
-        
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-        if selected_class_name and not df_classes.empty:
-            selected_class = df_classes[df_classes['class_name'] == selected_class_name].iloc[0]
+            // Update immediately
+            updateClock();
             
-            st.markdown("---")
-            col_fee1, col_fee2, col_fee3 = st.columns(3)
-            
-            with col_fee1:
-                st.metric("💵 Entry Fee", f"{selected_class['entry_fee']:.0f} ฿")
-            with col_fee2:
-                st.metric("🔍 X-Ray Fee", f"{selected_class['xray_fee']:.0f} ฿")
-            with col_fee3:
-                st.metric("💰 Total Fee", f"{selected_class['total_fee']:.0f} ฿")
+            // Update every second
+            setInterval(updateClock, 1000);
+        </script>
+        """,
+        height=0
+    )
 
+# ==================== ENTRY TAB ====================
+def render_entry_tab(df_classes):
+    """Render vehicle entry form"""
+    st.markdown("### 📝 New Vehicle Entry")
+    
+    if df_classes.empty:
+        st.warning("⚠️ No vehicle classes available. Please add some in Master Data tab.")
+        return
+    
+    # Selection section (outside form for real-time update)
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Camera selection dropdown
+        camera_options = ["1", "2", "3", "➕ Add New"]
+        camera_selection = st.selectbox("📷 Camera ID", camera_options, key="camera_select")
+        
+        # Show text input if "Add New" is selected
+        if camera_selection == "➕ Add New":
+            camera_id = st.text_input("🆕 New Camera ID", placeholder="e.g., CAM-001", key="new_camera")
+        else:
+            camera_id = camera_selection
+    
+    with col2:
+        class_options = df_classes['class_name'].tolist()
+        selected_class = st.selectbox("🚗 Vehicle Type", class_options, key="vehicle_type_select")
+    
+    # Display fees (updates in real-time when vehicle type changes)
+    if selected_class:
+        class_data = df_classes[df_classes['class_name'] == selected_class].iloc[0]
+        
         st.markdown("---")
-        col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
-        with col_btn2:
-            if st.button("💾 Save Transaction", use_container_width=True, type="primary"):
-                if camera_id and camera_id.strip() and camera_id != "➕ Add New":
-                    if selected_class_name:
-                        try:
-                            selected_class = df_classes[df_classes['class_name'] == selected_class_name].iloc[0]
-                            current_time_thailand = datetime.now(THAILAND_TZ)
-                            
-                            with engine.connect() as conn:
-                                conn.execute(text("""
-                                    INSERT INTO vehicle_transactions 
-                                    (camera_id, class_id, applied_entry_fee, applied_xray_fee, total_applied_fee, created_at) 
-                                    VALUES (:cam_id, :cid, :entry, :xray, :total, :created_at)
-                                """), {
-                                    "cam_id": camera_id.strip(),
-                                    "cid": int(class_options[selected_class_name]),
-                                    "entry": float(selected_class['entry_fee']),
-                                    "xray": float(selected_class['xray_fee']),
-                                    "total": float(selected_class['entry_fee']) + float(selected_class['xray_fee']),
-                                    "created_at": current_time_thailand
-                                })
-                                conn.commit()
-                            
-                            st.success(f"✅ Saved successfully! Camera: {camera_id}")
-                            st.balloons()
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Error: {e}")
-                    else:
-                        st.error("⚠️ Please select vehicle type")
-                else:
-                    st.error("⚠️ Please enter Camera ID")
+        col_fee1, col_fee2, col_fee3 = st.columns(3)
+        
+        with col_fee1:
+            st.metric("💵 Entry Fee", f"{class_data['entry_fee']:.0f} ฿")
+        with col_fee2:
+            st.metric("🔍 X-Ray Fee", f"{class_data['xray_fee']:.0f} ฿")
+        with col_fee3:
+            st.metric("💰 Total Fee", f"{class_data['total_fee']:.0f} ฿")
+    
+    st.markdown("---")
+    
+    # Save button (outside form)
+    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1])
+    with col_btn2:
+        if st.button("✅ Save Entry", use_container_width=True, type="primary", key="save_entry_btn"):
+            # Validate camera ID
+            if camera_selection == "➕ Add New" and not camera_id.strip():
+                st.error("❌ Please enter Camera ID")
+            elif not camera_id or camera_id == "➕ Add New":
+                st.error("❌ Please select or enter Camera ID")
+            else:
+                try:
+                    class_data = df_classes[df_classes['class_name'] == selected_class].iloc[0]
+                    current_time_thailand = datetime.now(THAILAND_TZ)
+                    
+                    with engine.connect() as conn:
+                        conn.execute(text("""
+                            INSERT INTO vehicle_transactions 
+                            (camera_id, class_id, applied_entry_fee, applied_xray_fee, total_applied_fee, created_at)
+                            VALUES (:camera_id, :class_id, :entry, :xray, :total, :created_at)
+                        """), {
+                            "camera_id": camera_id.strip(),
+                            "class_id": int(class_data['class_id']),
+                            "entry": float(class_data['entry_fee']),
+                            "xray": float(class_data['xray_fee']),
+                            "total": float(class_data['total_fee']),
+                            "created_at": current_time_thailand
+                        })
+                        conn.commit()
+                    
+                    st.success(f"✅ Entry saved! Camera: {camera_id} | Vehicle: {selected_class} | Total: {class_data['total_fee']:.0f} ฿")
+                    st.balloons()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Error: {e}")
 
-# ==================== CURRENT VEHICLE TAB (USER MODE) ====================
+# ==================== CURRENT VEHICLE TAB ====================
 def render_current_vehicle_tab(df_classes):
-    """Render current vehicle display tab with auto-refresh (no page reload)"""
-    import time
+    """Render current vehicle display tab"""
     
     st.markdown("### 🚗 Current Vehicle")
     
-    # Create placeholder for dynamic content
-    vehicle_placeholder = st.empty()
-    countdown_placeholder = st.empty()
-    
-    # Initialize refresh counter in session state
-    if 'vehicle_refresh_count' not in st.session_state:
-        st.session_state.vehicle_refresh_count = 0
-    
     # Get current vehicle data
-    def get_vehicle_data():
-        try:
-            query = """
-                SELECT 
-                    t.camera_id,
-                    c.class_name as vehicle_type,
-                    t.total_applied_fee,
-                    t.created_at
-                FROM vehicle_transactions t
-                JOIN vehicle_classes c ON t.class_id = c.class_id
-                ORDER BY t.created_at DESC
-                LIMIT 1
-            """
-            df_latest = pd.read_sql(text(query), engine)
-            
-            if not df_latest.empty:
-                vehicle = df_latest.iloc[0]
-                timestamp = pd.to_datetime(vehicle['created_at'])
-                formatted_time = timestamp.strftime('%d/%m/%Y %H:%M:%S')
-                total_fee = vehicle['total_applied_fee'] if vehicle['total_applied_fee'] is not None else 0.0
-                
-                return {
-                    'camera_id': vehicle['camera_id'],
-                    'vehicle_type': vehicle['vehicle_type'],
-                    'total_fee': total_fee,
-                    'timestamp': formatted_time,
-                    'exists': True
-                }
-            else:
-                return {'exists': False}
-        except Exception as e:
-            st.error(f"❌ Error: {e}")
-            return {'exists': False}
-    
-    # Display vehicle data
-    vehicle_data = get_vehicle_data()
-    
-    with vehicle_placeholder.container():
-        st.markdown("""
-        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-             padding: 3rem 2rem; border-radius: 20px; margin-bottom: 2rem;
-             box-shadow: 0 10px 40px rgba(102, 126, 234, 0.4);">
-            <div style="text-align: center; color: white; font-size: 2em; font-weight: 800;">
-                🚗 Latest Vehicle Entry
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+    try:
+        query = """
+            SELECT 
+                t.camera_id,
+                c.class_name as vehicle_type,
+                t.total_applied_fee,
+                t.created_at
+            FROM vehicle_transactions t
+            JOIN vehicle_classes c ON t.class_id = c.class_id
+            ORDER BY t.created_at DESC
+            LIMIT 1
+        """
+        df_latest = pd.read_sql(text(query), engine)
         
-        if vehicle_data['exists']:
+        if not df_latest.empty:
+            vehicle = df_latest.iloc[0]
+            timestamp = pd.to_datetime(vehicle['created_at'])
+            formatted_time = timestamp.strftime('%d/%m/%Y %H:%M:%S')
+            total_fee = vehicle['total_applied_fee'] if vehicle['total_applied_fee'] is not None else 0.0
+            
+            st.markdown("""
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                 padding: 3rem 2rem; border-radius: 20px; margin-bottom: 2rem;
+                 box-shadow: 0 10px 40px rgba(102, 126, 234, 0.4);">
+                <div style="text-align: center; color: white; font-size: 2em; font-weight: 800;">
+                    🚗 Latest Vehicle Entry
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
             col1, col2 = st.columns(2, gap="large")
             
             with col1:
@@ -563,7 +362,7 @@ def render_current_vehicle_tab(df_classes):
                     </div>
                     <div style="color: #ffd700; font-size: 2em; font-weight: 800;
                          text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">
-                        {vehicle_data['camera_id']}
+                        {vehicle['camera_id']}
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -578,7 +377,7 @@ def render_current_vehicle_tab(df_classes):
                     </div>
                     <div style="color: #ffd700; font-size: 2em; font-weight: 800;
                          text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">
-                        {vehicle_data['vehicle_type']}
+                        {vehicle['vehicle_type']}
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -593,7 +392,7 @@ def render_current_vehicle_tab(df_classes):
                     </div>
                     <div style="color: #ffd700; font-size: 2em; font-weight: 800;
                          text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">
-                        {vehicle_data['total_fee']:.2f} ฿
+                        {total_fee:.2f} ฿
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -608,10 +407,18 @@ def render_current_vehicle_tab(df_classes):
                     </div>
                     <div style="color: #ffd700; font-size: 1.4em; font-weight: 800;
                          text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">
-                        {vehicle_data['timestamp']}
+                        {formatted_time}
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
+            
+            # Refresh button
+            st.markdown("---")
+            col1, col2, col3 = st.columns([1, 1, 1])
+            with col2:
+                if st.button("🔄 Refresh", use_container_width=True, type="primary"):
+                    st.rerun()
+                    
         else:
             st.markdown("""
             <div style="text-align: center; padding: 4rem 2rem; 
@@ -626,107 +433,72 @@ def render_current_vehicle_tab(df_classes):
                 </div>
             </div>
             """, unsafe_allow_html=True)
-    
-    # Auto-refresh using rerun (keeps session state intact)
-    with countdown_placeholder.container():
-        col1, col2, col3 = st.columns([1, 1, 1])
-        with col2:
-            if st.button("🔄 Refresh Now", use_container_width=True, type="primary", key=f"refresh_{st.session_state.vehicle_refresh_count}"):
-                st.session_state.vehicle_refresh_count += 1
-                st.rerun()
-    
-    # Auto-refresh every 10 seconds using st.rerun()
-    # Only auto-refresh if still on Current Vehicle tab
-    if 'current_tab' not in st.session_state:
-        st.session_state.current_tab = 'current_vehicle'
-    
-    if st.session_state.current_tab == 'current_vehicle':
-        time.sleep(10)
-        st.session_state.vehicle_refresh_count += 1
-        st.rerun()
+            
+    except Exception as e:
+        st.error(f"❌ Error: {e}")
 
+# ==================== TRANSACTION HISTORY ====================
 def render_transaction_history(df_classes):
-    """Render transaction history section"""
+    """Render transaction history"""
     st.markdown("---")
-    st.markdown("### 📋 Transaction History")
+    st.markdown("### 📜 Transaction History")
     
     now_thailand = datetime.now(THAILAND_TZ)
-    
-    with st.container(border=True):
-        st.markdown("#### 🔍 Filters")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            date_filter = st.date_input("📅 Date", value=now_thailand.date())
-        
-        with col2:
-            vehicle_types = ['All'] + list(df_classes['class_name'].values) if not df_classes.empty else ['All']
-            selected_vehicle = st.selectbox("🚗 Vehicle Type", options=vehicle_types)
+    date_filter = st.date_input("📅 Select Date", value=now_thailand.date())
     
     try:
         query = """
-            SELECT t.id, t.camera_id, c.class_name, t.total_applied_fee, t.created_at,
-                   t.applied_entry_fee, t.applied_xray_fee
+            SELECT 
+                t.id,
+                t.camera_id,
+                t.class_id,
+                t.applied_entry_fee,
+                t.applied_xray_fee,
+                t.total_applied_fee,
+                t.created_at,
+                c.class_name
             FROM vehicle_transactions t
             JOIN vehicle_classes c ON t.class_id = c.class_id
             WHERE DATE(t.created_at) = :date_filter
+            ORDER BY t.created_at DESC
         """
         
-        if selected_vehicle != 'All':
-            query += " AND c.class_name = :vehicle_type"
+        df_transactions = pd.read_sql(text(query), engine, params={"date_filter": date_filter})
         
-        query += " ORDER BY t.created_at DESC"
-        
-        params = {"date_filter": date_filter}
-        if selected_vehicle != 'All':
-            params["vehicle_type"] = selected_vehicle
-        
-        df_recent = pd.read_sql(text(query), engine, params=params)
-    except Exception as e:
-        st.error(f"Error: {e}")
-        df_recent = pd.DataFrame()
-    
-    if not df_recent.empty:
-        st.markdown("---")
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.metric("🚗 Total Entries", len(df_recent))
-        with col2:
-            st.metric("💰 Total Revenue", f"{df_recent['total_applied_fee'].sum():.0f} ฿")
-        with col3:
-            st.metric("📊 Average Fee", f"{df_recent['total_applied_fee'].mean():.0f} ฿")
-    
-    st.markdown("---")
-    
-    if not df_recent.empty:
-        st.markdown(f"**Showing {len(df_recent)} transactions**")
-        
-        for idx, row in df_recent.iterrows():
-            timestamp = pd.to_datetime(row['created_at']).strftime('%H:%M:%S')
+        if not df_transactions.empty:
+            col_m1, col_m2, col_m3 = st.columns(3)
+            with col_m1:
+                st.metric("📊 Total Transactions", len(df_transactions))
+            with col_m2:
+                st.metric("💰 Total Revenue", f"{df_transactions['total_applied_fee'].sum():.0f} ฿")
+            with col_m3:
+                st.metric("📈 Avg/Transaction", f"{df_transactions['total_applied_fee'].mean():.0f} ฿")
             
-            with st.expander(
-                f"📷 {row['camera_id']} | {row['class_name']} | {timestamp} | {row['total_applied_fee']:.0f} ฿",
-                expanded=False
-            ):
-                st.markdown(f"**🆔 ID:** #{row['id']}")
-                st.markdown(f"**📷 Camera:** {row['camera_id']}")
-                st.markdown(f"**🚗 Vehicle:** {row['class_name']}")
-                st.markdown("---")
+            st.markdown("---")
+            
+            for _, row in df_transactions.iterrows():
+                timestamp = pd.to_datetime(row['created_at']).strftime('%H:%M:%S')
                 
-                col_f1, col_f2, col_f3 = st.columns(3)
-                with col_f1:
-                    st.metric("Entry", f"{row['applied_entry_fee']:.0f} ฿")
-                with col_f2:
-                    st.metric("X-Ray", f"{row['applied_xray_fee']:.0f} ฿")
-                with col_f3:
-                    st.metric("Total", f"{row['total_applied_fee']:.0f} ฿")
-                
-                st.markdown(f"**🕐 Time:** {row['created_at']}")
-                
-                # Delete Button (Admin Only)
-                if st.session_state.user_role == "admin":
+                with st.expander(
+                    f"📷 {row['camera_id']} | {row['class_name']} | {timestamp} | {row['total_applied_fee']:.0f} ฿",
+                    expanded=False
+                ):
+                    st.markdown(f"**🆔 ID:** #{row['id']}")
+                    st.markdown(f"**📷 Camera:** {row['camera_id']}")
+                    st.markdown(f"**🚗 Vehicle:** {row['class_name']}")
+                    st.markdown("---")
+                    
+                    col_f1, col_f2, col_f3 = st.columns(3)
+                    with col_f1:
+                        st.metric("Entry", f"{row['applied_entry_fee']:.0f} ฿")
+                    with col_f2:
+                        st.metric("X-Ray", f"{row['applied_xray_fee']:.0f} ฿")
+                    with col_f3:
+                        st.metric("Total", f"{row['total_applied_fee']:.0f} ฿")
+                    
+                    st.markdown(f"**🕐 Time:** {row['created_at']}")
+                    
+                    # Delete Button
                     st.markdown("---")
                     col_d1, col_d2, col_d3 = st.columns([2, 1, 2])
                     with col_d2:
@@ -740,8 +512,11 @@ def render_transaction_history(df_classes):
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"❌ Error: {e}")
-    else:
-        st.info(f"📭 No transactions found for {date_filter.strftime('%d %B %Y')}")
+        else:
+            st.info(f"📭 No transactions found for {date_filter.strftime('%d %B %Y')}")
+    
+    except Exception as e:
+        st.error(f"Error loading transactions: {e}")
 
 # ==================== MASTER DATA TAB ====================
 def render_master_data_tab(df_classes):
@@ -802,7 +577,6 @@ def render_master_data_tab(df_classes):
                 st.rerun()
             except Exception as e:
                 st.error(f"❌ Error: {e}")
-    
 
 # ==================== ANALYTICS TAB ====================
 def render_analytics_tab():
@@ -882,39 +656,27 @@ def main():
     check_authentication()
     init_database()
     
-    if st.session_state.user_role is None:
-        render_login_page()
-        st.stop()
-    
     df_classes = load_vehicle_classes()
     
     render_header()
     
     st.markdown("---")
     
-    if st.session_state.user_role == "admin":
-        tab1, tab2, tab3 = st.tabs(["📝 Entry", "⚙️ Master Data", "📊 Analytics"])
-        
-        with tab1:
-            render_entry_tab(df_classes)
-            render_transaction_history(df_classes)
-        
-        with tab2:
-            render_master_data_tab(df_classes)
-        
-        with tab3:
-            render_analytics_tab()
-    else:
-        tab1, tab2 = st.tabs(["🚗 Current Vehicle", "📊 Analytics"])
-        
-        with tab1:
-            st.session_state.current_tab = 'current_vehicle'
-            render_current_vehicle_tab(df_classes)
-            render_transaction_history(df_classes)
-        
-        with tab2:
-            st.session_state.current_tab = 'analytics'
-            render_analytics_tab()
+    # Show all tabs for everyone
+    tab1, tab2, tab3, tab4 = st.tabs(["📝 Entry", "🚗 Current Vehicle", "⚙️ Master Data", "📊 Analytics"])
+    
+    with tab1:
+        render_entry_tab(df_classes)
+        render_transaction_history(df_classes)
+    
+    with tab2:
+        render_current_vehicle_tab(df_classes)
+    
+    with tab3:
+        render_master_data_tab(df_classes)
+    
+    with tab4:
+        render_analytics_tab()
 
 if __name__ == "__main__":
     main()
