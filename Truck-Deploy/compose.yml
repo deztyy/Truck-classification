@@ -1,12 +1,19 @@
 # =============================================================================
-# TRUCK CLASSIFICATION INFERENCE SUBSYSTEM
-# Handles ML model deployment and inference processing
+# TRUCK CLASSIFICATION INFERENCE SUBSYSTEM - OPTIMIZED RESOURCES
 # =============================================================================
 
 services:
   minio:
     image: minio/minio
     container_name: mlflow_minio
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'          # Increased from 0.5
+          memory: 2GB          # Increased from 1GB
+        reservations:
+          cpus: '0.25'
+          memory: 512MB
     ports:
       - "${MINIO_PORT_API:-9000}:9000"
       - "${MINIO_PORT_CONSOLE:-9001}:9001"
@@ -19,17 +26,25 @@ services:
     networks:
       - truck_system_network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live || exit 1"]
+      interval: 3s
+      timeout: 2s
+      retries: 3
+      start_period: 5s
 
   create-bucket:
     image: minio/mc
-    # container_name: minio_bucket_creator
     depends_on:
       minio:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512MB        # Reduced - this is a quick task
+        reservations:
+          cpus: '0.1'
+          memory: 128MB
     networks:
       - truck_system_network
     environment:
@@ -38,15 +53,35 @@ services:
       MINIO_BUCKET_NAME: ${MINIO_BUCKET_NAME:-mlflow-bucket}
     entrypoint: >
       /bin/sh -c "
-      until (/usr/bin/mc alias set myminio http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD) do sleep 1; done;
-      /usr/bin/mc mb myminio/$$MINIO_BUCKET_NAME --ignore-existing;
-      /usr/bin/mc anonymous set download myminio/$$MINIO_BUCKET_NAME;
-      exit 0;
+      MAX_RETRIES=10;
+      RETRY=0;
+      until [ $$RETRY -eq $$MAX_RETRIES ]; do
+        if /usr/bin/mc alias set myminio http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD 2>/dev/null; then
+          echo 'MinIO connected';
+          /usr/bin/mc mb myminio/$$MINIO_BUCKET_NAME --ignore-existing 2>/dev/null || true;
+          /usr/bin/mc anonymous set download myminio/$$MINIO_BUCKET_NAME 2>/dev/null || true;
+          echo 'Bucket ready';
+          exit 0;
+        fi;
+        RETRY=$$((RETRY+1));
+        echo 'Retry' $$RETRY'/10...';
+        sleep 1;
+      done;
+      echo 'Failed after' $$MAX_RETRIES 'attempts';
+      exit 1;
       "
 
   mlflow-server:
     image: ghcr.io/mlflow/mlflow:latest
     container_name: mlflow_registry
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'          # Increased from 0.5 - critical for model serving
+          memory: 3GB          # Increased from 1GB
+        reservations:
+          cpus: '0.5'
+          memory: 1GB
     ports:
       - "${MLFLOW_PORT:-5000}:5000"
     environment:
@@ -72,44 +107,66 @@ services:
       --allowed-hosts "*"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
 
   truck-worker:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: truck_inference_worker
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'          # 🚀 Increased from 1.0 - ML inference needs CPU
+          memory: 4GB          # 🚀 Increased from 1GB - Critical for batch processing
+        reservations:
+          cpus: '2.0'          # Guarantee minimum resources
+          memory: 2GB
     restart: always
-    # deploy:
-    #   replicas: 3 # 🚀 Start 3 workers automatically
-    #   resources:
-    #     limits:
-    #       cpus: '1.0' # 🛡️ Prevent one worker from eating all CPU
-    #       memory: 1G
     depends_on:
       mlflow-server:
         condition: service_healthy
       redis_broker:
         condition: service_started
     environment:
-      - MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI}
-      - MODEL_URI=${MODEL_URI}
+      - MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI:-http://mlflow-server:5000}
+      - MODEL_URI=${MODEL_URI:-models:/Truck_classification_Model/Production}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       - MLFLOW_S3_ENDPOINT_URL=${MLFLOW_S3_ENDPOINT_URL}
       - MLFLOW_S3_IGNORE_TLS=${MLFLOW_S3_IGNORE_TLS:-true}
-      - REDIS_HOST=${REDIS_HOST}
+      
+      # Redis Configuration
+      - REDIS_HOST=${REDIS_HOST:-redis_broker}
       - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_DB=${REDIS_DB:-0}
-      - OUTPUT_DIR=${OUTPUT_DIR:-/app/results}
+      
+      # Database Configuration
+      - DATABASE_URL=postgresql://user:password@db:5432/mydb
+      
+      # Storage Configuration
+      - IMAGE_STORAGE_DIR=/app/vehicle_images
+      - IMAGE_RETENTION_DAYS=${IMAGE_RETENTION_DAYS:-15}
+      
+      # 🎯 OPTIMIZED Batch Processing Configuration
+      - BATCH_SIZE=10              # Reduced from 50 - faster DB writes
+      - BATCH_TIMEOUT=2            # Reduced from 5 - more responsive
+      
+      # Optional: Python optimizations
+      - PYTHONUNBUFFERED=1
+      - OMP_NUM_THREADS=4          # Optimize numpy/cv2 threading
     volumes:
       - ./results:/app/results
+      - ./vehicle_images:/app/vehicle_images  # Persistent storage
       - ../shared_data:/app/shared_memory:ro
     networks:
       - truck_system_network
+    # Optional: Use tmpfs for faster shared memory operations
+    tmpfs:
+      - /tmp:size=1G,mode=1777
 
 networks:
   truck_system_network:
