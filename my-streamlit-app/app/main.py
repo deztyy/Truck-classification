@@ -94,18 +94,6 @@ def load_custom_css():
             border-radius: 15px;
             border: 1px solid rgba(255,255,255,0.1);
         }
-        
-        /* Admin Badge */
-        .admin-badge {
-            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-            color: white;
-            padding: 0.5rem 1rem;
-            border-radius: 20px;
-            font-weight: 600;
-            display: inline-block;
-            margin-left: 1rem;
-            font-size: 0.9em;
-        }
     </style>
     """, unsafe_allow_html=True)
 
@@ -139,7 +127,9 @@ def init_database():
     """Initialize database tables if not exist"""
     try:
         with engine.connect() as conn:
+            # Set timezone for this session
             conn.execute(text("SET TIME ZONE 'Asia/Bangkok'"))
+            
             result = conn.execute(text("""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
@@ -157,17 +147,28 @@ def init_database():
                         total_fee NUMERIC(10, 2)
                     );
                 """))
+                conn.commit()
+            
+            # Check if vehicle_transactions table exists
+            result = conn.execute(text("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'vehicle_transactions'
+                );
+            """))
+            
+            if not result.scalar():
+                # Create table matching your existing schema
                 conn.execute(text("""
                     CREATE TABLE IF NOT EXISTS vehicle_transactions (
                         id SERIAL PRIMARY KEY,
                         camera_id VARCHAR(50) NOT NULL,
-                        class_id INT,
-                        applied_entry_fee NUMERIC(10, 2),
-                        applied_xray_fee NUMERIC(10, 2),
-                        total_applied_fee NUMERIC(10, 2),
-                        image_path TEXT,
-                        created_at TIMESTAMP DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Bangkok'),
-                        FOREIGN KEY (class_id) REFERENCES vehicle_classes(class_id)
+                        track_id VARCHAR(100) NOT NULL,
+                        class_id INT NOT NULL,
+                        total_fee NUMERIC(10, 2),
+                        time_stamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        img_path TEXT,
+                        confidence NUMERIC(5, 4)
                     );
                 """))
                 conn.commit()
@@ -290,20 +291,28 @@ def render_entry_tab(df_classes):
             else:
                 try:
                     class_data = df_classes[df_classes['class_name'] == selected_class].iloc[0]
+                    
+                    # Get Thailand time and convert to naive datetime
                     current_time_thailand = datetime.now(THAILAND_TZ)
+                    naive_time_thailand = current_time_thailand.replace(tzinfo=None)
+                    
+                    # Generate track_id (manual entry uses timestamp)
+                    track_id = f"MANUAL_{current_time_thailand.strftime('%Y%m%d%H%M%S')}"
                     
                     with engine.connect() as conn:
+                        # Set timezone to Bangkok for this session
+                        conn.execute(text("SET TIME ZONE 'Asia/Bangkok'"))
+                        
                         conn.execute(text("""
                             INSERT INTO vehicle_transactions 
-                            (camera_id, class_id, applied_entry_fee, applied_xray_fee, total_applied_fee, created_at)
-                            VALUES (:camera_id, :class_id, :entry, :xray, :total, :created_at)
+                            (camera_id, track_id, class_id, total_fee, time_stamp)
+                            VALUES (:camera_id, :track_id, :class_id, :total, :time_stamp)
                         """), {
                             "camera_id": camera_id.strip(),
+                            "track_id": track_id,
                             "class_id": int(class_data['class_id']),
-                            "entry": float(class_data['entry_fee']),
-                            "xray": float(class_data['xray_fee']),
                             "total": float(class_data['total_fee']),
-                            "created_at": current_time_thailand
+                            "time_stamp": naive_time_thailand
                         })
                         conn.commit()
                     
@@ -325,20 +334,20 @@ def render_current_vehicle_tab(df_classes):
             SELECT 
                 t.camera_id,
                 c.class_name as vehicle_type,
-                t.total_applied_fee,
-                t.created_at
+                t.total_fee,
+                t.time_stamp
             FROM vehicle_transactions t
             JOIN vehicle_classes c ON t.class_id = c.class_id
-            ORDER BY t.created_at DESC
+            ORDER BY t.time_stamp DESC
             LIMIT 1
         """
         df_latest = pd.read_sql(text(query), engine)
         
         if not df_latest.empty:
             vehicle = df_latest.iloc[0]
-            timestamp = pd.to_datetime(vehicle['created_at'])
+            timestamp = pd.to_datetime(vehicle['time_stamp'])
             formatted_time = timestamp.strftime('%d/%m/%Y %H:%M:%S')
-            total_fee = vehicle['total_applied_fee'] if vehicle['total_applied_fee'] is not None else 0.0
+            total_fee = vehicle['total_fee'] if vehicle['total_fee'] is not None else 0.0
             
             st.markdown("""
             <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -451,16 +460,18 @@ def render_transaction_history(df_classes):
             SELECT 
                 t.id,
                 t.camera_id,
+                t.track_id,
                 t.class_id,
-                t.applied_entry_fee,
-                t.applied_xray_fee,
-                t.total_applied_fee,
-                t.created_at,
-                c.class_name
+                t.total_fee,
+                t.time_stamp,
+                t.confidence,
+                c.class_name,
+                c.entry_fee,
+                c.xray_fee
             FROM vehicle_transactions t
             JOIN vehicle_classes c ON t.class_id = c.class_id
-            WHERE DATE(t.created_at) = :date_filter
-            ORDER BY t.created_at DESC
+            WHERE DATE(t.time_stamp) = :date_filter
+            ORDER BY t.time_stamp DESC
         """
         
         df_transactions = pd.read_sql(text(query), engine, params={"date_filter": date_filter})
@@ -470,33 +481,37 @@ def render_transaction_history(df_classes):
             with col_m1:
                 st.metric("📊 Total Transactions", len(df_transactions))
             with col_m2:
-                st.metric("💰 Total Revenue", f"{df_transactions['total_applied_fee'].sum():.0f} ฿")
+                st.metric("💰 Total Revenue", f"{df_transactions['total_fee'].sum():.0f} ฿")
             with col_m3:
-                st.metric("📈 Avg/Transaction", f"{df_transactions['total_applied_fee'].mean():.0f} ฿")
+                st.metric("📈 Avg/Transaction", f"{df_transactions['total_fee'].mean():.0f} ฿")
             
             st.markdown("---")
             
             for _, row in df_transactions.iterrows():
-                timestamp = pd.to_datetime(row['created_at']).strftime('%H:%M:%S')
+                timestamp = pd.to_datetime(row['time_stamp']).strftime('%H:%M:%S')
+                conf_text = f" ({row['confidence']:.2%})" if pd.notna(row['confidence']) else ""
                 
                 with st.expander(
-                    f"📷 {row['camera_id']} | {row['class_name']} | {timestamp} | {row['total_applied_fee']:.0f} ฿",
+                    f"📷 {row['camera_id']} | {row['class_name']}{conf_text} | {timestamp} | {row['total_fee']:.0f} ฿",
                     expanded=False
                 ):
                     st.markdown(f"**🆔 ID:** #{row['id']}")
                     st.markdown(f"**📷 Camera:** {row['camera_id']}")
+                    st.markdown(f"**🔖 Track ID:** {row['track_id']}")
                     st.markdown(f"**🚗 Vehicle:** {row['class_name']}")
+                    if pd.notna(row['confidence']):
+                        st.markdown(f"**🎯 Confidence:** {row['confidence']:.2%}")
                     st.markdown("---")
                     
                     col_f1, col_f2, col_f3 = st.columns(3)
                     with col_f1:
-                        st.metric("Entry", f"{row['applied_entry_fee']:.0f} ฿")
+                        st.metric("Entry", f"{row['entry_fee']:.0f} ฿")
                     with col_f2:
-                        st.metric("X-Ray", f"{row['applied_xray_fee']:.0f} ฿")
+                        st.metric("X-Ray", f"{row['xray_fee']:.0f} ฿")
                     with col_f3:
-                        st.metric("Total", f"{row['total_applied_fee']:.0f} ฿")
+                        st.metric("Total", f"{row['total_fee']:.0f} ฿")
                     
-                    st.markdown(f"**🕐 Time:** {row['created_at']}")
+                    st.markdown(f"**🕐 Time:** {row['time_stamp']}")
                     
                     # Delete Button
                     st.markdown("---")
@@ -597,15 +612,13 @@ def render_analytics_tab():
                 t.id,
                 t.camera_id,
                 t.class_id,
-                t.applied_entry_fee,
-                t.applied_xray_fee,
-                t.total_applied_fee,
-                t.created_at,
+                t.total_fee,
+                t.time_stamp,
                 c.class_name
             FROM vehicle_transactions t
             JOIN vehicle_classes c ON t.class_id = c.class_id
-            WHERE DATE(t.created_at) BETWEEN :start_date AND :end_date
-            ORDER BY t.created_at DESC
+            WHERE DATE(t.time_stamp) BETWEEN :start_date AND :end_date
+            ORDER BY t.time_stamp DESC
         """
         
         df_analytics = pd.read_sql(text(query), engine, 
@@ -618,9 +631,9 @@ def render_analytics_tab():
             with col1:
                 st.metric("📊 Total Transactions", len(df_analytics))
             with col2:
-                st.metric("💰 Total Revenue", f"{df_analytics['total_applied_fee'].sum():.0f} ฿")
+                st.metric("💰 Total Revenue", f"{df_analytics['total_fee'].sum():.0f} ฿")
             with col3:
-                st.metric("📈 Avg/Transaction", f"{df_analytics['total_applied_fee'].mean():.0f} ฿")
+                st.metric("📈 Avg/Transaction", f"{df_analytics['total_fee'].mean():.0f} ฿")
             with col4:
                 st.metric("📷 Active Cameras", df_analytics['camera_id'].nunique())
             
@@ -635,7 +648,7 @@ def render_analytics_tab():
             
             with col_c2:
                 st.markdown("#### 💰 Revenue by Vehicle Type")
-                revenue_by_type = df_analytics.groupby('class_name')['total_applied_fee'].sum().sort_values(ascending=False)
+                revenue_by_type = df_analytics.groupby('class_name')['total_fee'].sum().sort_values(ascending=False)
                 st.bar_chart(revenue_by_type.to_frame("revenue"))
         else:
             st.info(f"📭 No data found between {start_date} and {end_date}")
