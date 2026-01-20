@@ -344,6 +344,11 @@ def render_current_vehicle_tab():
         if not df_latest.empty:
             vehicle = df_latest.iloc[0]
             timestamp = pd.to_datetime(vehicle['time_stamp'])
+            # Convert to Thailand timezone
+            if timestamp.tzinfo is None:
+                timestamp = pytz.utc.localize(timestamp).astimezone(THAILAND_TZ)
+            else:
+                timestamp = timestamp.astimezone(THAILAND_TZ)
             formatted_time = timestamp.strftime('%d/%m/%Y %H:%M:%S')
             total_fee = vehicle['total_fee'] if vehicle['total_fee'] is not None else 0.0
             
@@ -486,11 +491,17 @@ def render_transaction_history():
             st.markdown("---")
             
             for _, row in df_transactions.iterrows():
-                timestamp = pd.to_datetime(row['time_stamp']).strftime('%H:%M:%S')
+                timestamp = pd.to_datetime(row['time_stamp'])
+                # Convert to Thailand timezone
+                if timestamp.tzinfo is None:
+                    timestamp = pytz.utc.localize(timestamp).astimezone(THAILAND_TZ)
+                else:
+                    timestamp = timestamp.astimezone(THAILAND_TZ)
+                time_display = timestamp.strftime('%H:%M:%S')
                 conf_text = f" ({row['confidence']:.2%})" if pd.notna(row['confidence']) else ""
                 
                 with st.expander(
-                    f"📷 {row['camera_id']} | {row['class_name']}{conf_text} | {timestamp} | {row['total_fee']:.0f} ฿",
+                    f"📷 {row['camera_id']} | {row['class_name']}{conf_text} | {time_display} | {row['total_fee']:.0f} ฿",
                     expanded=False
                 ):
                     st.markdown(f"**🆔 ID:** #{row['id']}")
@@ -509,7 +520,13 @@ def render_transaction_history():
                     with col_f3:
                         st.metric("Total", f"{row['total_fee']:.0f} ฿")
                     
-                    st.markdown(f"**🕐 Time:** {row['time_stamp']}")
+                    # Format full timestamp with Thailand timezone
+                    full_timestamp = pd.to_datetime(row['time_stamp'])
+                    if full_timestamp.tzinfo is None:
+                        full_timestamp = pytz.utc.localize(full_timestamp).astimezone(THAILAND_TZ)
+                    else:
+                        full_timestamp = full_timestamp.astimezone(THAILAND_TZ)
+                    st.markdown(f"**🕐 Time:** {full_timestamp.strftime('%d/%m/%Y %H:%M:%S')} (Thailand)")
                     
                     # Delete Button
                     st.markdown("---")
