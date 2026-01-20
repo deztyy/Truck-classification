@@ -5,7 +5,6 @@ import os
 from datetime import datetime
 import pytz
 import streamlit.components.v1 as components
-import time
 
 # ==================== CONFIGURATION ====================
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'Admin1234')
@@ -166,7 +165,7 @@ def init_database():
                         track_id VARCHAR(100) NOT NULL,
                         class_id INT NOT NULL,
                         total_fee NUMERIC(10, 2),
-                        time_stamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        time_stamp TIMESTAMPZ DEFAULT CURRENT_TIMESTAMP,
                         img_path TEXT,
                         confidence NUMERIC(5, 4)
                     );
@@ -280,7 +279,7 @@ def render_entry_tab(df_classes):
     st.markdown("---")
     
     # Save button (outside form)
-    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1])
+    _, col_btn2, _ = st.columns([1, 1, 1])
     with col_btn2:
         if st.button("✅ Save Entry", use_container_width=True, type="primary", key="save_entry_btn"):
             # Validate camera ID
@@ -294,7 +293,6 @@ def render_entry_tab(df_classes):
                     
                     # Get Thailand time and convert to naive datetime
                     current_time_thailand = datetime.now(THAILAND_TZ)
-                    naive_time_thailand = current_time_thailand.replace(tzinfo=None)
                     
                     # Generate track_id (manual entry uses timestamp)
                     track_id = f"MANUAL_{current_time_thailand.strftime('%Y%m%d%H%M%S')}"
@@ -312,7 +310,7 @@ def render_entry_tab(df_classes):
                             "track_id": track_id,
                             "class_id": int(class_data['class_id']),
                             "total": float(class_data['total_fee']),
-                            "time_stamp": naive_time_thailand
+                            "time_stamp": current_time_thailand
                         })
                         conn.commit()
                     
@@ -323,7 +321,7 @@ def render_entry_tab(df_classes):
                     st.error(f"❌ Error: {e}")
 
 # ==================== CURRENT VEHICLE TAB ====================
-def render_current_vehicle_tab(df_classes):
+def render_current_vehicle_tab():
     """Render current vehicle display tab"""
     
     st.markdown("### 🚗 Current Vehicle")
@@ -423,7 +421,7 @@ def render_current_vehicle_tab(df_classes):
             
             # Refresh button
             st.markdown("---")
-            col1, col2, col3 = st.columns([1, 1, 1])
+            _, col2, _ = st.columns([1, 1, 1])
             with col2:
                 if st.button("🔄 Refresh", use_container_width=True, type="primary"):
                     st.rerun()
@@ -447,7 +445,7 @@ def render_current_vehicle_tab(df_classes):
         st.error(f"❌ Error: {e}")
 
 # ==================== TRANSACTION HISTORY ====================
-def render_transaction_history(df_classes):
+def render_transaction_history():
     """Render transaction history"""
     st.markdown("---")
     st.markdown("### 📜 Transaction History")
@@ -515,7 +513,7 @@ def render_transaction_history(df_classes):
                     
                     # Delete Button
                     st.markdown("---")
-                    col_d1, col_d2, col_d3 = st.columns([2, 1, 2])
+                    _, col_d2, _ = st.columns([2, 1, 2])
                     with col_d2:
                         if st.button(f"🗑️ Delete", key=f"del_{row['id']}", type="secondary", use_container_width=True):
                             try:
@@ -569,7 +567,7 @@ def render_master_data_tab(df_classes):
             total_fee = entry_fee + xray_fee
             st.metric("💰 Total Fee", f"{total_fee:.2f} ฿")
         
-        col_s1, col_s2, col_s3 = st.columns([1, 1, 1])
+        _, col_s2, _ = st.columns([1, 1, 1])
         with col_s2:
             submitted = st.form_submit_button("💾 Save Class", use_container_width=True, type="primary")
         
@@ -680,10 +678,10 @@ def main():
     
     with tab1:
         render_entry_tab(df_classes)
-        render_transaction_history(df_classes)
+        render_transaction_history()
     
     with tab2:
-        render_current_vehicle_tab(df_classes)
+        render_current_vehicle_tab()
     
     with tab3:
         render_master_data_tab(df_classes)
