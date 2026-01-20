@@ -23,6 +23,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - truck_system_network
 
   # Streamlit Web App Service
   web:
@@ -39,6 +41,8 @@ services:
       - DATABASE_URL=${DATABASE_URL}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
     restart: unless-stopped
+    networks:
+      - truck_system_network
 
 volumes:
   postgres_data:
