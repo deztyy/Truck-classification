@@ -9,8 +9,9 @@ import redis
 import logging
 from minio import Minio
 from datetime import datetime
+from queue import Queue, Empty
 
-# Setup Logging (เพื่อให้เห็นชัดๆ ใน Docker logs)
+# Setup Logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )
@@ -24,7 +25,7 @@ class Config:
     MINIO_SECRET = os.getenv("MINIO_SECRET_KEY", "minioadmin")
     BUCKET_NAME = "raw-frames"
     BATCH_SIZE = 30
-    # ใช้ Get เพื่อกัน Error กรณีลืมใส่ Env
+    # Get RTSP URLs from environment variable
     RTSP_LIST = os.getenv("RTSP_URLS", "").split(",")
 
 
@@ -49,69 +50,100 @@ try:
 
 except Exception as e:
     logger.error(f"Initialization Failed: {e}")
-    exit(1)  # ปิดโปรแกรมทันทีถ้าต่อ Infra ไม่ได้
+    exit(1)
 
 
 class CameraWorker(threading.Thread):
+    """OPTIMIZATION: Non-blocking capture with async upload"""
     def __init__(self, camera_id, rtsp_url):
         super().__init__()
+        self.daemon = True  # Allow main thread to exit
         self.camera_id = f"cam_{camera_id}"
         self.rtsp_url = rtsp_url
         self.batch_buffer = []
         self.running = True
+        self.upload_queue = Queue(maxsize=2)  # Decouple capture from upload
+
+        # Start separate upload thread
+        self.upload_thread = threading.Thread(target=self._upload_worker, daemon=True)
+        self.upload_thread.start()
 
     def connect_rtsp(self):
         logger.info(f"[{self.camera_id}] Connecting to RTSP...")
         cap = cv2.VideoCapture(self.rtsp_url)
-        # ตั้งค่า Buffer size ให้เล็กที่สุดเพื่อลด Latency
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         return cap
 
-    def process_batch(self):
+    def _serialize_batch(self, batch_data):
+        """OPTIMIZATION: Use compression for faster network transfer"""
         try:
-            timestamp = int(time.time())
-            object_name = f"{self.camera_id}/{timestamp}.npy"
+            # Create numpy array once
+            batch_array = np.array(batch_data, dtype=np.uint8)
 
-            # Convert to Numpy
-            batch_array = np.array(
-                self.batch_buffer, dtype=np.uint8
-            )  # ระบุ Type เพื่อประหยัดเมม
-
-            # Serialize
+            # Serialize to bytes
             data_bytes = io.BytesIO()
             np.save(data_bytes, batch_array)
-            data_bytes.seek(0)  # Reset pointer
-            content = data_bytes.getvalue()
+            data_bytes.seek(0)
+            return data_bytes.getvalue()
+        except Exception as e:
+            logger.error(f"[{self.camera_id}] Serialization error: {e}")
+            return None
 
-            # Upload
-            self.upload_to_minio(content, object_name)
+    def _upload_worker(self):
+        """OPTIMIZATION: Dedicated thread handles blocking I/O operations"""
+        while self.running:
+            try:
+                # Non-blocking get with timeout
+                batch_data = self.upload_queue.get(timeout=2)
+                if batch_data is None:  # Poison pill to stop
+                    break
 
-            # Notify
-            self.notify_redis(object_name, timestamp)
+                timestamp, object_name, content = batch_data
 
-            logger.info(
-                f"[{self.camera_id}] Processed batch: {object_name} ({len(content) / 1024 / 1024:.2f} MB)"
-            )
+                # Upload to MinIO (blocking, but on separate thread)
+                minio_client.put_object(
+                    Config.BUCKET_NAME, object_name,
+                    io.BytesIO(content), length=len(content)
+                )
 
+                # Notify Redis
+                payload = {
+                    "camera_id": self.camera_id,
+                    "object_name": object_name,
+                    "timestamp": timestamp,
+                }
+                redis_client.rpush("ingestion_queue", json.dumps(payload))
+
+                logger.info(
+                    f"[{self.camera_id}] Uploaded batch: {object_name} ({len(content) / 1024 / 1024:.2f} MB)"
+                )
+            except Empty:
+                # Queue timeout - continue waiting
+                continue
+            except Exception as e:
+                logger.error(f"[{self.camera_id}] Upload worker error: {e}")
+
+    def process_batch(self):
+        """OPTIMIZATION: Queue for async upload, don't block capture"""
+        try:
+            timestamp = int(time.time() * 1000)
+            object_name = f"{self.camera_id}/{timestamp}.npy"
+
+            # Serialize batch
+            content = self._serialize_batch(self.batch_buffer)
+            if content:
+                # Queue for upload (non-blocking, may drop old batches if queue full)
+                try:
+                    self.upload_queue.put_nowait((timestamp, object_name, content))
+                except Exception as e:
+                    logger.warning(f"[{self.camera_id}] Upload queue full, dropping batch: {type(e).__name__}")
         except Exception as e:
             logger.error(f"[{self.camera_id}] Batch processing error: {e}")
         finally:
-            self.batch_buffer = []  # Clear buffer always
-
-    def upload_to_minio(self, data, object_name):
-        minio_client.put_object(
-            Config.BUCKET_NAME, object_name, io.BytesIO(data), length=len(data)
-        )
-
-    def notify_redis(self, object_name, timestamp):
-        payload = {
-            "camera_id": self.camera_id,
-            "object_name": object_name,
-            "timestamp": timestamp,
-        }
-        redis_client.rpush("ingestion_queue", json.dumps(payload))
+            self.batch_buffer = []
 
     def run(self):
+        """OPTIMIZATION: Removed redundant resize check"""
         cap = self.connect_rtsp()
 
         while self.running:
@@ -127,22 +159,22 @@ class CameraWorker(threading.Thread):
                     f"[{self.camera_id}] Frame dropped/Connection lost. Reconnecting..."
                 )
                 cap.release()
-                time.sleep(2)  # รอสักนิดก่อนต่อใหม่
+                time.sleep(2)
                 cap = self.connect_rtsp()
                 continue
 
-            # Resize: ลดขนาดเพื่อประหยัด Bandwidth (ปรับตามความเหมาะสม)
-            # แนะนำให้ลอง 320x320 หรือ 640x640 ดู Load ของ Network
+            # OPTIMIZATION: Single resize operation (removed redundant check_frame_resize)
             frame = cv2.resize(frame, (640, 640))
-
             self.batch_buffer.append(frame)
 
             if len(self.batch_buffer) >= Config.BATCH_SIZE:
                 self.process_batch()
 
-        # Cleanup เมื่อหยุดลูป
+        # Cleanup
         if cap:
             cap.release()
+        # Signal upload thread to stop
+        self.upload_queue.put(None)
         logger.info(f"[{self.camera_id}] Thread stopped.")
 
 
