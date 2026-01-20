@@ -8,7 +8,6 @@ import numpy as np
 import redis
 import logging
 from minio import Minio
-from datetime import datetime
 from queue import Queue, Empty
 
 # Setup Logging
@@ -19,38 +18,64 @@ logger = logging.getLogger(__name__)
 
 
 class Config:
+    # Initialize with current environment so module-level usage still works
     REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
     MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
     MINIO_ACCESS = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
     MINIO_SECRET = os.getenv("MINIO_SECRET_KEY", "minioadmin")
-    BUCKET_NAME = "raw-frames"
-    BATCH_SIZE = 30
-    # Get RTSP URLs from environment variable
-    RTSP_LIST = os.getenv("RTSP_URLS", "").split(",")
+    BUCKET_NAME = os.getenv("BUCKET_NAME", "raw-frames")
+    BATCH_SIZE = int(os.getenv("BATCH_SIZE", 30))
+    rtsp_raw = os.getenv("RTSP_URLS", "")
+    RTSP_LIST = rtsp_raw.split(",") if rtsp_raw != "" else [""]
+
+    @classmethod
+    def refresh(cls):
+        cls.REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+        cls.MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
+        cls.MINIO_ACCESS = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+        cls.MINIO_SECRET = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+        cls.BUCKET_NAME = os.getenv("BUCKET_NAME", cls.BUCKET_NAME)
+        cls.BATCH_SIZE = int(os.getenv("BATCH_SIZE", cls.BATCH_SIZE))
+        rtsp_raw_env = os.getenv("RTSP_URLS", "")
+        cls.RTSP_LIST = rtsp_raw_env.split(",") if rtsp_raw_env != "" else [""]
+
+    def __init__(self):
+        # Allow per-instance refresh for tests that patch environment variables
+        self.refresh()
 
 
-# Initialize Clients
-try:
-    redis_client = redis.Redis(
-        host=Config.REDIS_HOST, port=6379, db=0, decode_responses=True
-    )
-    redis_client.ping()  # Check connection
-    logger.info("Connected to Redis")
+# Initialize Clients (will be set in init_clients() or mocked in tests)
+redis_client = None
+minio_client = None
 
-    minio_client = Minio(
-        Config.MINIO_ENDPOINT,
-        access_key=Config.MINIO_ACCESS,
-        secret_key=Config.MINIO_SECRET,
-        secure=False,
-    )
-    # Check bucket existence (Safety check)
-    if not minio_client.bucket_exists(Config.BUCKET_NAME):
-        minio_client.make_bucket(Config.BUCKET_NAME)
-    logger.info(f"Connected to MinIO, Bucket: {Config.BUCKET_NAME}")
 
-except Exception as e:
-    logger.error(f"Initialization Failed: {e}")
-    exit(1)
+def init_clients():
+    """Initialize Redis and MinIO clients"""
+    global redis_client, minio_client
+
+    try:
+        redis_client = redis.Redis(
+            host=Config.REDIS_HOST, port=6379, db=0, decode_responses=True
+        )
+        redis_client.ping()  # Check connection
+        logger.info("Connected to Redis")
+
+        minio_client = Minio(
+            Config.MINIO_ENDPOINT,
+            access_key=Config.MINIO_ACCESS,
+            secret_key=Config.MINIO_SECRET,
+            secure=False,
+        )
+        # Check bucket existence (Safety check)
+        if not minio_client.bucket_exists(Config.BUCKET_NAME):
+            minio_client.make_bucket(Config.BUCKET_NAME)
+        logger.info(f"Connected to MinIO, Bucket: {Config.BUCKET_NAME}")
+
+        return True
+
+    except Exception as e:
+        logger.error(f"Initialization Failed: {e}")
+        return False
 
 
 class CameraWorker(threading.Thread):
@@ -71,7 +96,9 @@ class CameraWorker(threading.Thread):
     def connect_rtsp(self):
         logger.info(f"[{self.camera_id}] Connecting to RTSP...")
         cap = cv2.VideoCapture(self.rtsp_url)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        buffer_prop = getattr(cv2.VideoCapture, "CAP_PROP_BUFFERSIZE", getattr(cv2, "CAP_PROP_BUFFERSIZE", None))
+        if buffer_prop is not None:
+            cap.set(buffer_prop, 1)
         return cap
 
     def _serialize_batch(self, batch_data):
@@ -94,11 +121,11 @@ class CameraWorker(threading.Thread):
         while self.running:
             try:
                 # Non-blocking get with timeout
-                batch_data = self.upload_queue.get(timeout=2)
-                if batch_data is None:  # Poison pill to stop
+                upload_item = self.upload_queue.get(timeout=2)
+                if upload_item is None:  # Poison pill to stop
                     break
 
-                timestamp, object_name, content = batch_data
+                timestamp, object_name, content = upload_item
 
                 # Upload to MinIO (blocking, but on separate thread)
                 minio_client.put_object(
@@ -180,6 +207,11 @@ class CameraWorker(threading.Thread):
 
 if __name__ == "__main__":
     logger.info("Starting Video Ingestion Service...")
+
+    # Initialize clients
+    if not init_clients():
+        logger.error("Failed to initialize clients. Exiting...")
+        exit(1)
 
     threads = []
     for idx, url in enumerate(Config.RTSP_LIST):
