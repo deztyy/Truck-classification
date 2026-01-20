@@ -1,0 +1,17 @@
+# Testing dependencies
+pytest==7.4.3
+pytest-cov==4.1.0
+pytest-mock==3.12.0
+pytest-timeout==2.2.0
+pytest-asyncio==0.21.1
+
+# Coverage reporting
+coverage==7.3.2
+
+# Mocking
+mock==5.1.0
+
+# Code quality
+flake8==6.1.0
+black==23.11.0
+pylint==3.0.2
