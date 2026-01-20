@@ -132,7 +132,7 @@ services:
       redis_broker:
         condition: service_started
     environment:
-      - MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI:-http://mlflow-server:5000}
+      - MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI}
       - MODEL_URI=${MODEL_URI:-models:/Truck_classification_Model/Production}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
@@ -145,7 +145,7 @@ services:
       - REDIS_DB=${REDIS_DB:-0}
       
       # Database Configuration
-      - DATABASE_URL=postgresql://user:password@db:5432/mydb
+      - DATABASE_URL=${DATABASE_URL}
       
       # Storage Configuration
       - IMAGE_STORAGE_DIR=/app/vehicle_images

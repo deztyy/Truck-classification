@@ -1,18 +1,22 @@
 # Update base image
-FROM python:3.9-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
-ENV PYTHONUNBUFFERED=1
+RUN apt-get update && apt-get install -y \
+    libxcb1 \
+    libx11-6 \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -r requirements.txt && \
-    pip uninstall -y setuptools wheel
+RUN pip install --no-cache-dir -r requirements.txt
 
-COPY ingestion.py .
+
+COPY ingestion_video.py .
 
 RUN mkdir -p /app/videos /app/shared_memory
 
-CMD ["python", "ingestion.py"]
+CMD ["python", "-u","ingestion_video.py"]
