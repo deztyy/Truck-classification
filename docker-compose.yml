@@ -11,9 +11,9 @@ services:
     container_name: vid_analytics_db
     restart: always
     environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: analytics_db
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     ports:
       - "5432:5432"
     volumes:
@@ -38,8 +38,8 @@ services:
     restart: always
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     ports:
       - "9000:9000" # API Port
       - "9001:9001" # Console Port
@@ -55,7 +55,7 @@ services:
     depends_on:
       - minio
     entrypoint: >
-      /bin/sh -c " /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin; /usr/bin/mc mb myminio/raw-frames; /usr/bin/mc mb myminio/processed-images; /usr/bin/mc mb myminio/mlflow-models; /usr/bin/mc admin policy set myminio download public; exit 0; "
+      /bin/sh -c " /usr/bin/mc alias set myminio http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD}; /usr/bin/mc mb myminio/raw-frames; /usr/bin/mc mb myminio/processed-images; /usr/bin/mc mb myminio/mlflow-models; /usr/bin/mc admin policy set myminio download public; exit 0; "
     networks:
       - analytics_network
 
@@ -68,11 +68,11 @@ services:
       - db
       - minio
     environment:
-      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
-      AWS_ACCESS_KEY_ID: minioadmin
-      AWS_SECRET_ACCESS_KEY: minioadmin
+      MLFLOW_S3_ENDPOINT_URL: ${MLFLOW_S3_ENDPOINT_URL}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
     command: >
-      mlflow server --backend-store-uri postgresql://admin:password@db/analytics_db --default-artifact-root s3://mlflow-models/ --host 0.0.0.0
+      mlflow server --backend-store-uri ${DB_URI} --default-artifact-root s3://mlflow-models/ --host 0.0.0.0
     ports:
       - "5000:5000"
     networks:
@@ -91,11 +91,11 @@ services:
       - redis
       - minio
     environment:
-      RTSP_URLS: "rtsp://cam1,rtsp://cam2"
-      REDIS_HOST: redis
-      MINIO_ENDPOINT: minio:9000
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
+      RTSP_URLS: ${RTSP_URLS}
+      REDIS_HOST: ${REDIS_HOST}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
     networks:
       - analytics_network
 
@@ -117,9 +117,9 @@ services:
       - db
       - mlflow
     environment:
-      REDIS_HOST: redis
-      DB_URI: postgresql://admin:password@db/analytics_db
-      MLFLOW_TRACKING_URI: http://mlflow:5000
+      REDIS_HOST: ${REDIS_HOST}
+      DB_URI: ${DB_URI}
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI}
     networks:
       - analytics_network
 
@@ -134,8 +134,8 @@ services:
       - db
       - minio
     environment:
-      DB_URI: postgresql://admin:password@db/analytics_db
-      MINIO_ENDPOINT: minio:9000
+      DB_URI: ${DB_URI}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
     networks:
       - analytics_network
 
