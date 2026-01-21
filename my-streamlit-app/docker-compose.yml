@@ -49,5 +49,4 @@ volumes:
 
 networks:
   truck_system_network:
-    name: ${NETWORK_NAME:-truck_system_network}
-    external: true
+    driver: bridge
