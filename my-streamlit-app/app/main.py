@@ -53,7 +53,7 @@ def load_custom_css() -> None:
         /* Header Styles */
         .main-header {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding: 2rem;
+            padding: 1.5rem 2rem;
             border-radius: 15px;
             margin-bottom: 2rem;
             box-shadow: 0 8px 32px rgba(102, 126, 234, 0.3);
@@ -61,35 +61,51 @@ def load_custom_css() -> None:
         
         .header-title {
             color: white;
-            font-size: 2.5em;
+            font-size: 2em;
             font-weight: 800;
             margin: 0;
-            text-align: center;
             text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+            line-height: 1.2;
         }
         
         .datetime-box {
             background: rgba(255,255,255,0.15);
             backdrop-filter: blur(10px);
-            padding: 1rem;
+            padding: 0.75rem 1.25rem;
             border-radius: 12px;
-            margin-top: 1rem;
-            text-align: center;
+            border: 1px solid rgba(255,255,255,0.2);
         }
         
         .date-text {
             color: white;
-            font-size: 1.2em;
             font-weight: 600;
-            margin-bottom: 8px;
+            line-height: 1.4;
         }
         
         .time-text {
             color: #ffd700;
-            font-size: 2em;
             font-weight: 700;
             font-family: 'Courier New', monospace;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.3);
+            line-height: 1.4;
+        }
+        
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .main-header {
+                padding: 1rem;
+            }
+            
+            .header-title {
+                font-size: 1.5em;
+                text-align: center;
+                margin-bottom: 1rem;
+            }
+            
+            .datetime-box {
+                width: 100%;
+                margin-top: 1rem;
+            }
         }
         
         /* Card Styles */
@@ -140,7 +156,13 @@ def translate_class_name(class_name: str) -> str:
     """
     if pd.isna(class_name):
         return class_name
-    return CLASS_NAME_DISPLAY.get(class_name.lower(), class_name)
+    
+    # Try to get translated name, if not found return original with warning indicator
+    translated = CLASS_NAME_DISPLAY.get(class_name.lower(), None)
+    if translated is None:
+        print(f"⚠️ Warning: No translation found for '{class_name}'")
+        return f"{class_name} ⚠️"
+    return translated
 
 # ==================== DATABASE CONNECTION ====================
 @st.cache_resource
@@ -344,10 +366,27 @@ def render_header() -> None:
     
     st.markdown(f"""
     <div class="main-header">
-        <h1 class="header-title">🚗 Vehicle Entry System</h1>
-        <div class="datetime-box">
-            <div class="date-text">📅 {current_date}</div>
-            <div class="time-text" id="clock">🕐 Loading...</div>
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 300px;">
+                <h1 class="header-title" style="margin: 0; text-align: left;">🚗 Vehicle Entry System</h1>
+            </div>
+            <div class="datetime-box" style="flex: 0 0 auto; min-width: 280px; margin-top: 0;">
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 1.5rem;">
+                    <div style="text-align: left;">
+                        <div style="color: rgba(255,255,255,0.7); font-size: 0.75em; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px;">
+                            Date
+                        </div>
+                        <div class="date-text" style="font-size: 1em; margin: 0;">📅 {current_date}</div>
+                    </div>
+                    <div style="width: 1px; height: 40px; background: rgba(255,255,255,0.2);"></div>
+                    <div style="text-align: left;">
+                        <div style="color: rgba(255,255,255,0.7); font-size: 0.75em; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px;">
+                            Time
+                        </div>
+                        <div class="time-text" id="clock" style="font-size: 1.1em; margin: 0;">🕐 Loading...</div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -614,7 +653,11 @@ def render_transaction_history() -> None:
         if not df_all.empty:
             # Filter options
             st.markdown("#### 🔍 Filters")
-            col_f1, col_f2 = st.columns(2)
+            
+            # Search box for Track ID
+            search_track = st.text_input("🔎 Search Track ID", placeholder="Enter track ID to search...", key="search_track")
+            
+            col_f1, col_f2, col_f3 = st.columns(3)
             
             with col_f1:
                 # Camera filter - dropdown
@@ -652,25 +695,109 @@ def render_transaction_history() -> None:
                 selected_vehicle_types = [vt for vt in all_vehicle_types 
                                          if translate_class_name(vt) == selected_vehicle_type]
             
+            with col_f3:
+                # Time period filter
+                time_periods = ["All Day", "Morning (06:00-12:00)", "Afternoon (12:00-18:00)", "Evening (18:00-00:00)", "Night (00:00-06:00)"]
+                selected_period = st.selectbox(
+                    "⏰ Time Period",
+                    options=time_periods,
+                    index=0,
+                    key="time_period_filter"
+                )
+            
             # Apply filters
             df_transactions = df_all[
                 (df_all['camera_id'].isin(selected_cameras)) & 
                 (df_all['class_name'].isin(selected_vehicle_types))
             ]
             
+            # Apply Track ID search
+            if search_track and search_track.strip():
+                df_transactions = df_transactions[
+                    df_transactions['track_id'].str.contains(search_track.strip(), case=False, na=False)
+                ]
+            
+            # Apply time period filter
+            if selected_period != "All Day":
+                df_transactions['hour'] = pd.to_datetime(df_transactions['time_stamp']).dt.hour
+                if selected_period == "Morning (06:00-12:00)":
+                    df_transactions = df_transactions[(df_transactions['hour'] >= 6) & (df_transactions['hour'] < 12)]
+                elif selected_period == "Afternoon (12:00-18:00)":
+                    df_transactions = df_transactions[(df_transactions['hour'] >= 12) & (df_transactions['hour'] < 18)]
+                elif selected_period == "Evening (18:00-00:00)":
+                    df_transactions = df_transactions[(df_transactions['hour'] >= 18) | (df_transactions['hour'] < 0)]
+                elif selected_period == "Night (00:00-06:00)":
+                    df_transactions = df_transactions[(df_transactions['hour'] >= 0) & (df_transactions['hour'] < 6)]
+            
             st.markdown("---")
             
             # Summary metrics
-            col_m1, col_m2 = st.columns(2)
+            col_m1, col_m2, col_m3 = st.columns(3)
             with col_m1:
                 st.metric("📊 Total Transactions", len(df_transactions))
             with col_m2:
                 st.metric("💰 Total Revenue", f"{df_transactions['total_fee'].sum():.0f} ฿")
+            with col_m3:
+                # Export CSV button
+                csv = df_transactions.to_csv(index=False, encoding='utf-8-sig')
+                st.download_button(
+                    label="📥 Download CSV",
+                    data=csv,
+                    file_name=f"transactions_{today.strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
             
             st.markdown("---")
             
-            # Transaction details
-            for _, row in df_transactions.iterrows():
+            # Statistics by Vehicle Type
+            st.markdown("#### 📊 Statistics by Vehicle Type")
+            col_s1, col_s2 = st.columns(2)
+            
+            with col_s1:
+                # Count by vehicle type
+                df_display_stats = df_transactions.copy()
+                df_display_stats['class_name_display'] = df_display_stats['class_name'].apply(translate_class_name)
+                vehicle_counts = df_display_stats['class_name_display'].value_counts()
+                
+                st.markdown("**🚗 Count by Type:**")
+                for vtype, count in vehicle_counts.items():
+                    st.write(f"• {vtype}: **{count}** คัน")
+            
+            with col_s2:
+                # Revenue by vehicle type
+                revenue_by_type = df_display_stats.groupby('class_name_display')['total_fee'].sum().sort_values(ascending=False)
+                
+                st.markdown("**💰 Revenue by Type:**")
+                for vtype, revenue in revenue_by_type.items():
+                    st.write(f"• {vtype}: **{revenue:.0f}** ฿")
+            
+            st.markdown("---")
+            
+            # Pagination
+            st.markdown("#### 📄 Transaction Details")
+            items_per_page = st.selectbox("Items per page:", [10, 25, 50, 100], index=1, key="items_per_page")
+            total_items = len(df_transactions)
+            total_pages = max(1, (total_items + items_per_page - 1) // items_per_page)
+            
+            col_p1, col_p2, col_p3 = st.columns([1, 2, 1])
+            with col_p2:
+                page = st.number_input(
+                    f"Page (1-{total_pages})", 
+                    min_value=1, 
+                    max_value=total_pages, 
+                    value=1, 
+                    key="page_number"
+                )
+            
+            # Calculate start and end indices
+            start_idx = (page - 1) * items_per_page
+            end_idx = min(start_idx + items_per_page, total_items)
+            
+            st.info(f"Showing {start_idx + 1}-{end_idx} of {total_items} transactions")
+            
+            # Transaction details (paginated)
+            for _, row in df_transactions.iloc[start_idx:end_idx].iterrows():
                 timestamp = convert_to_thailand_tz(pd.to_datetime(row['time_stamp']))
                 time_display = timestamp.strftime('%H:%M:%S')
                 conf_text = f" ({row['confidence']:.2%})" if pd.notna(row['confidence']) else ""
@@ -711,23 +838,41 @@ def render_transaction_history() -> None:
                         else:
                             st.info("📷 Image file not found")
                     
-                    # Delete button
+                    # Delete button with confirmation
                     st.markdown("---")
-                    _, col_d2, _ = st.columns([2, 1, 2])
+                    col_d1, col_d2, col_d3 = st.columns([2, 1, 2])
                     with col_d2:
-                        if st.button(f"🗑️ Delete", key=f"del_{row['id']}", type="secondary", use_container_width=True):
-                            try:
-                                with engine.connect() as conn:
-                                    conn.execute(
-                                        text("DELETE FROM vehicle_transactions WHERE id = :id"), 
-                                        {"id": row['id']}
-                                    )
-                                    conn.commit()
-                                st.success("✅ Deleted successfully!")
+                        # Use session state for confirmation
+                        confirm_key = f"confirm_del_{row['id']}"
+                        if confirm_key not in st.session_state:
+                            st.session_state[confirm_key] = False
+                        
+                        if not st.session_state[confirm_key]:
+                            if st.button(f"🗑️ Delete", key=f"del_{row['id']}", type="secondary", use_container_width=True):
+                                st.session_state[confirm_key] = True
                                 st.rerun()
-                            except Exception as e:
-                                st.error(f"❌ Error deleting transaction: {e}")
-                                print(f"❌ Error deleting transaction: {e}")
+                        else:
+                            st.warning("⚠️ Confirm delete?")
+                            col_y, col_n = st.columns(2)
+                            with col_y:
+                                if st.button("✅ Yes", key=f"yes_{row['id']}", use_container_width=True):
+                                    try:
+                                        with engine.connect() as conn:
+                                            conn.execute(
+                                                text("DELETE FROM vehicle_transactions WHERE id = :id"), 
+                                                {"id": row['id']}
+                                            )
+                                            conn.commit()
+                                        st.success("✅ Deleted successfully!")
+                                        st.session_state[confirm_key] = False
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"❌ Error deleting transaction: {e}")
+                                        print(f"❌ Error deleting transaction: {e}")
+                            with col_n:
+                                if st.button("❌ No", key=f"no_{row['id']}", use_container_width=True):
+                                    st.session_state[confirm_key] = False
+                                    st.rerun()
         else:
             st.info(f"📭 No transactions found for today ({today.strftime('%d %B %Y')})")
     
@@ -902,6 +1047,103 @@ def render_analytics_tab() -> None:
         st.error(f"❌ Error loading analytics: {e}")
         print(f"❌ Error loading analytics: {e}")
 
+
+# ==================== DASHBOARD TAB ====================
+def render_dashboard_tab() -> None:
+    """Render dashboard with overview statistics"""
+    st.markdown("### 📊 Dashboard Overview")
+    
+    now_thailand = get_thailand_time()
+    today = now_thailand.date()
+    
+    try:
+        # Get today's data
+        query_today = """
+            SELECT 
+                t.id,
+                t.camera_id,
+                t.class_id,
+                t.total_fee,
+                t.time_stamp,
+                c.class_name
+            FROM vehicle_transactions t
+            JOIN vehicle_classes c ON t.class_id = c.class_id
+            WHERE DATE(t.time_stamp) = :today
+        """
+        df_today = pd.read_sql(text(query_today), engine, params={"today": today})
+        
+        # Get this month's data
+        first_day_month = today.replace(day=1)
+        query_month = """
+            SELECT 
+                t.id,
+                t.total_fee,
+                c.class_name
+            FROM vehicle_transactions t
+            JOIN vehicle_classes c ON t.class_id = c.class_id
+            WHERE DATE(t.time_stamp) >= :first_day
+        """
+        df_month = pd.read_sql(text(query_month), engine, params={"first_day": first_day_month})
+        
+        # Display metrics
+        st.markdown("#### 📅 Today's Summary")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("🚗 Total Vehicles", len(df_today))
+        with col2:
+            st.metric("💰 Total Revenue", f"{df_today['total_fee'].sum():.0f} ฿" if not df_today.empty else "0 ฿")
+        with col3:
+            st.metric("📷 Active Cameras", df_today['camera_id'].nunique() if not df_today.empty else 0)
+        with col4:
+            latest_time = pd.to_datetime(df_today['time_stamp'].max()) if not df_today.empty else None
+            if latest_time:
+                formatted_time = convert_to_thailand_tz(latest_time).strftime('%H:%M:%S')
+                st.metric("🕐 Last Entry", formatted_time)
+            else:
+                st.metric("🕐 Last Entry", "N/A")
+        
+        st.markdown("---")
+        
+        # This month summary
+        st.markdown("#### 📆 This Month's Summary")
+        col_m1, col_m2, col_m3 = st.columns(3)
+        
+        with col_m1:
+            st.metric("🚗 Total Vehicles", len(df_month))
+        with col_m2:
+            st.metric("💰 Total Revenue", f"{df_month['total_fee'].sum():.0f} ฿" if not df_month.empty else "0 ฿")
+        with col_m3:
+            avg_per_day = len(df_month) / max(1, (today - first_day_month).days + 1)
+            st.metric("📈 Avg/Day", f"{avg_per_day:.1f}")
+        
+        if not df_today.empty:
+            st.markdown("---")
+            st.markdown("#### 🚗 Today's Vehicle Distribution")
+            
+            # Prepare data for chart
+            df_display = df_today.copy()
+            df_display['class_name'] = df_display['class_name'].apply(translate_class_name)
+            
+            col_c1, col_c2 = st.columns(2)
+            
+            with col_c1:
+                # Pie chart would be nice but streamlit doesn't have it, use bar chart
+                vehicle_counts = df_display['class_name'].value_counts()
+                st.bar_chart(vehicle_counts)
+            
+            with col_c2:
+                # Top 5 vehicle types today
+                st.markdown("**Top 5 Vehicle Types Today:**")
+                for idx, (vtype, count) in enumerate(vehicle_counts.head(5).items(), 1):
+                    st.write(f"{idx}. {vtype}: **{count}** คัน")
+        else:
+            st.info("📭 No data for today yet")
+            
+    except Exception as e:
+        st.error(f"❌ Error loading dashboard: {e}")
+        print(f"❌ Error loading dashboard: {e}")
+
 # ==================== MAIN APPLICATION ====================
 def main() -> None:
     """Main application entry point"""
@@ -925,19 +1167,23 @@ def main() -> None:
     st.markdown("---")
     
     # Create tabs
-    tab1, tab2, tab3 = st.tabs([
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "🏠 Dashboard",
         "📜 History", 
         "⚙️ Master Data", 
         "📊 Analytics"
     ])
     
     with tab1:
-        render_transaction_history()
+        render_dashboard_tab()
     
     with tab2:
-        render_master_data_tab(df_classes)
+        render_transaction_history()
     
     with tab3:
+        render_master_data_tab(df_classes)
+    
+    with tab4:
         render_analytics_tab()
 
 if __name__ == "__main__":
