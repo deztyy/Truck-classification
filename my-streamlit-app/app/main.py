@@ -139,6 +139,26 @@ def load_custom_css() -> None:
             border-radius: 15px;
             border: 1px solid rgba(255,255,255,0.1);
         }
+        
+        /* Image Container - สำหรับรูป 640x640 */
+        .vehicle-image-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+            background: rgba(255,255,255,0.05);
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .vehicle-image-container img {
+            max-width: 640px;
+            max-height: 640px;
+            width: 100%;
+            height: auto;
+            object-fit: contain;
+            border-radius: 8px;
+        }
     </style>
     """, unsafe_allow_html=True)
 
@@ -570,13 +590,16 @@ def render_current_vehicle_tab() -> None:
                 </div>
                 """, unsafe_allow_html=True)
             
-            # Display image if available
+            # Display image if available (640x640)
             if 'img_path' in vehicle and vehicle['img_path'] and vehicle['img_path'] != '':
                 import os
                 if os.path.exists(vehicle['img_path']):
                     st.markdown("---")
                     st.markdown("### 📸 Vehicle Image")
-                    st.image(vehicle['img_path'], use_container_width=True)
+                    # ใช้ column เพื่อจัดกึ่งกลาง
+                    col_img1, col_img2, col_img3 = st.columns([1, 2, 1])
+                    with col_img2:
+                        st.image(vehicle['img_path'], use_container_width=True)
                 else:
                     st.info("📷 Image file not found")
             
@@ -828,13 +851,16 @@ def render_transaction_history() -> None:
                     full_timestamp = convert_to_thailand_tz(pd.to_datetime(row['time_stamp']))
                     st.markdown(f"**🕐 Time:** {full_timestamp.strftime('%d/%m/%Y %H:%M:%S')} (Thailand)")
                     
-                    # Display image if available
+                    # Display image if available (640x640)
                     if pd.notna(row['img_path']) and row['img_path'] != '':
                         import os
                         if os.path.exists(row['img_path']):
                             st.markdown("---")
                             st.markdown("**📸 Vehicle Image:**")
-                            st.image(row['img_path'], use_container_width=True)
+                            # ใช้ column เพื่อจัดกึ่งกลาง
+                            col_img1, col_img2, col_img3 = st.columns([1, 2, 1])
+                            with col_img2:
+                                st.image(row['img_path'], use_container_width=True)
                         else:
                             st.info("📷 Image file not found")
                     
@@ -909,71 +935,6 @@ def render_master_data_tab(df_classes: pd.DataFrame) -> None:
         )
     else:
         st.info("📭 No vehicle classes defined yet")
-    
-    #st.markdown("---")
-    # st.markdown("#### ➕ Add/Edit Vehicle Class")
-    
-    # with st.form("class_form", clear_on_submit=True):
-    #     col1, col2 = st.columns(2)
-        
-    #     with col1:
-    #         class_name = st.text_input("🚗 Vehicle Type", placeholder="e.g., Sedan, Truck")
-    #         entry_fee = st.number_input(
-    #             "💵 Entry Fee (฿)", 
-    #             min_value=MIN_FEE, 
-    #             step=FEE_STEP, 
-    #             value=MIN_FEE
-    #         )
-        
-    #     with col2:
-    #         xray_fee = st.number_input(
-    #             "🔍 X-Ray Fee (฿)", 
-    #             min_value=MIN_FEE, 
-    #             step=FEE_STEP, 
-    #             value=MIN_FEE
-    #         )
-    #         total_fee = entry_fee + xray_fee
-    #         st.metric("💰 Total Fee", f"{total_fee:.2f} ฿")
-        
-    #     _, col_s2, _ = st.columns([1, 1, 1])
-    #     with col_s2:
-    #         submitted = st.form_submit_button("💾 Save Class", use_container_width=True, type="primary")
-        
-    #     if submitted:
-    #         # Validate class name
-    #         is_valid, error_msg = validate_class_name(class_name)
-            
-    #         if not is_valid:
-    #             st.error(f"❌ {error_msg}")
-    #         else:
-    #             # Validate fees
-    #             entry_valid, entry_msg = validate_fee(entry_fee, "Entry fee")
-    #             xray_valid, xray_msg = validate_fee(xray_fee, "X-Ray fee")
-                
-    #             if not entry_valid:
-    #                 st.error(f"❌ {entry_msg}")
-    #             elif not xray_valid:
-    #                 st.error(f"❌ {xray_msg}")
-    #             else:
-    #                 try:
-    #                     with engine.connect() as conn:
-    #                         conn.execute(text("""
-    #                             INSERT INTO vehicle_classes (class_name, entry_fee, xray_fee, total_fee)
-    #                             VALUES (:name, :entry, :xray, :total)
-    #                             ON CONFLICT (class_name) DO UPDATE 
-    #                             SET entry_fee = :entry, xray_fee = :xray, total_fee = :total
-    #                         """), {
-    #                             "name": class_name.strip(),
-    #                             "entry": entry_fee,
-    #                             "xray": xray_fee,
-    #                             "total": total_fee
-    #                         })
-    #                         conn.commit()
-    #                     st.success(f"✅ Saved: {class_name}")
-    #                     st.rerun()
-    #                 except Exception as e:
-    #                     st.error(f"❌ Error saving vehicle class: {e}")
-    #                     print(f"❌ Error saving vehicle class: {e}")
 
 # ==================== ANALYTICS TAB ====================
 def render_analytics_tab() -> None:
