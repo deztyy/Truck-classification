@@ -1094,7 +1094,7 @@ def render_dashboard_tab() -> None:
         with col2:
             st.metric("💰 Total Revenue", f"{df_today['total_fee'].sum():.0f} ฿" if not df_today.empty else "0 ฿")
         with col3:
-            st.metric("📷 Active Cameras", df_today['camera_id'].nunique() if not df_today.empty else 0)
+            st.metric("📷 Cameras", df_today['camera_id'].nunique() if not df_today.empty else 0)
         with col4:
             latest_time = pd.to_datetime(df_today['time_stamp'].max()) if not df_today.empty else None
             if latest_time:
@@ -1107,15 +1107,12 @@ def render_dashboard_tab() -> None:
         
         # This month summary
         st.markdown("#### 📆 This Month's Summary")
-        col_m1, col_m2, col_m3 = st.columns(3)
+        col_m1, col_m2 = st.columns(2)
         
         with col_m1:
             st.metric("🚗 Total Vehicles", len(df_month))
         with col_m2:
             st.metric("💰 Total Revenue", f"{df_month['total_fee'].sum():.0f} ฿" if not df_month.empty else "0 ฿")
-        with col_m3:
-            avg_per_day = len(df_month) / max(1, (today - first_day_month).days + 1)
-            st.metric("📈 Avg/Day", f"{avg_per_day:.1f}")
         
         if not df_today.empty:
             st.markdown("---")
