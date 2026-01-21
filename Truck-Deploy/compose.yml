@@ -117,6 +117,8 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: truck_inference_worker
+    env_file:
+      - .env
     deploy:
       resources:
         limits:

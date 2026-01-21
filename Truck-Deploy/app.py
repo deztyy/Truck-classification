@@ -449,24 +449,20 @@ def init_database(engine):
             
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS vehicle_transactions (
-                    id SERIAL PRIMARY KEY,
-                    camera_id VARCHAR(50) NOT NULL,
-                    track_id INTEGER NOT NULL,
-                    class_id INT,
-                    applied_entry_fee NUMERIC(10, 2),
-                    applied_xray_fee NUMERIC(10, 2),
-                    total_applied_fee NUMERIC(10, 2),
-                    image_path TEXT,
-                    confidence NUMERIC(5, 4),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (class_id) REFERENCES vehicle_classes(class_id),
-                    UNIQUE(camera_id, track_id)
-                );
+                        id SERIAL PRIMARY KEY,
+                        camera_id VARCHAR(50) NOT NULL,
+                        track_id VARCHAR(100) NOT NULL,
+                        class_id INT NOT NULL,
+                        total_fee NUMERIC(10, 2),
+                        time_stamp TIMESTAMPZ DEFAULT CURRENT_TIMESTAMP,
+                        img_path TEXT,
+                        confidence NUMERIC(5, 4)
+                    );
             """))
             
             conn.execute(text("""
                 CREATE INDEX IF NOT EXISTS idx_camera_created 
-                ON vehicle_transactions(camera_id, created_at DESC);
+                ON vehicle_transactions(camera_id, time_stamp DESC);
             """))
             
             conn.execute(text("""
@@ -502,10 +498,8 @@ def batch_insert_to_database(engine, batch_data):
             with engine.connect() as conn:
                 conn.execute(text("""
                     INSERT INTO vehicle_transactions 
-                    (camera_id, track_id, class_id, applied_entry_fee, applied_xray_fee, 
-                     total_applied_fee, image_path, confidence)
-                    VALUES (:cam_id, :track_id, :class_id, :entry, :xray, :total, :img, :conf)
-                    ON CONFLICT (camera_id, track_id) DO NOTHING
+                    (camera_id, track_id, class_id, total_fee, img_path, confidence)
+                    VALUES (:cam_id, :track_id, :class_id, :total, :img, :conf)
                 """), batch_data)
                 conn.commit()
                 
@@ -526,13 +520,11 @@ def add_to_batch(camera_id, track_id, class_id, confidence, image_path):
     
     record = {
         "cam_id": camera_id,
-        "track_id": track_id,
+        "track_id": str(track_id),  # Ensure string type
         "class_id": class_id,
-        "entry": vehicle["entry_fee"],
-        "xray": vehicle["xray_fee"],
         "total": total_fee,
         "img": image_path,
-        "conf": confidence
+        "conf": float(confidence)
     }
     
     with batch_lock:
