@@ -346,108 +346,57 @@ def render_header() -> None:
     )
 
 # ==================== ENTRY TAB ====================
-def render_entry_tab(df_classes: pd.DataFrame) -> None:
-    """
-    Render vehicle entry form
+# Manual entry removed - system now only accepts data from cameras
+
+
+# ==================== IMAGE CLEANUP ====================
+def cleanup_old_images() -> None:
+    """Delete images that are not from today"""
+    import os
+    from pathlib import Path
     
-    Args:
-        df_classes: DataFrame containing vehicle class information
-    """
-    st.markdown("### 📝 New Vehicle Entry")
-    
-    if df_classes.empty:
-        st.warning("⚠️ No vehicle classes available. Please add some in Master Data tab.")
-        return
-    
-    # Selection section (outside form for real-time update)
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Camera selection dropdown
-        camera_selection = st.selectbox(
-            "📷 Camera ID", 
-            DEFAULT_CAMERA_OPTIONS, 
-            key="camera_select"
-        )
+    try:
+        now_thailand = get_thailand_time()
+        today = now_thailand.date()
         
-        # Show text input if "Add New" is selected
-        if camera_selection == ADD_NEW_OPTION:
-            camera_id = st.text_input(
-                "🆕 New Camera ID", 
-                placeholder="e.g., CAM-001", 
-                key="new_camera",
-                max_chars=MAX_CAMERA_ID_LENGTH
-            )
-        else:
-            camera_id = camera_selection
-    
-    with col2:
-        class_options = df_classes['class_name'].tolist()
-        selected_class = st.selectbox(
-            "🚗 Vehicle Type", 
-            class_options, 
-            key="vehicle_type_select"
-        )
-    
-    # Display fees (updates in real-time when vehicle type changes)
-    if selected_class:
-        class_data = df_classes[df_classes['class_name'] == selected_class].iloc[0]
+        # Query to get img_path of old images (not today)
+        query = """
+            SELECT img_path 
+            FROM vehicle_transactions 
+            WHERE DATE(time_stamp) < :today 
+            AND img_path IS NOT NULL 
+            AND img_path != ''
+        """
         
-        st.markdown("---")
-        col_fee1, col_fee2, col_fee3 = st.columns(3)
+        with engine.connect() as conn:
+            result = conn.execute(text(query), {"today": today})
+            old_images = [row[0] for row in result]
         
-        with col_fee1:
-            st.metric("💵 Entry Fee", f"{class_data['entry_fee']:.0f} ฿")
-        with col_fee2:
-            st.metric("🔍 X-Ray Fee", f"{class_data['xray_fee']:.0f} ฿")
-        with col_fee3:
-            st.metric("💰 Total Fee", f"{class_data['total_fee']:.0f} ฿")
-    
-    st.markdown("---")
-    
-    # Save button (outside form)
-    _, col_btn2, _ = st.columns([1, 1, 1])
-    with col_btn2:
-        if st.button("✅ Save Entry", use_container_width=True, type="primary", key="save_entry_btn"):
-            # Validate camera ID
-            is_valid, error_msg = validate_camera_id(camera_id)
-            
-            if not is_valid:
-                st.error(f"❌ {error_msg}")
-            elif camera_selection == ADD_NEW_OPTION and not camera_id.strip():
-                st.error("❌ Please enter Camera ID")
-            else:
+        deleted_count = 0
+        for img_path in old_images:
+            if img_path and os.path.exists(img_path):
                 try:
-                    class_data = df_classes[df_classes['class_name'] == selected_class].iloc[0]
-                    current_time_thailand = get_thailand_time()
-                    
-                    # Generate track_id (manual entry uses timestamp)
-                    track_id = f"MANUAL_{current_time_thailand.strftime('%Y%m%d%H%M%S')}"
-                    
-                    with engine.connect() as conn:
-                        # Set timezone to Bangkok for this session
-                        conn.execute(text("SET TIME ZONE 'Asia/Bangkok'"))
-                        
-                        conn.execute(text("""
-                            INSERT INTO vehicle_transactions 
-                            (camera_id, track_id, class_id, total_fee, time_stamp)
-                            VALUES (:camera_id, :track_id, :class_id, :total, :time_stamp)
-                        """), {
-                            "camera_id": camera_id.strip(),
-                            "track_id": track_id,
-                            "class_id": int(class_data['class_id']),
-                            "total": float(class_data['total_fee']),
-                            "time_stamp": current_time_thailand
-                        })
-                        conn.commit()
-                    
-                    st.success(f"✅ Entry saved! Camera: {camera_id} | Vehicle: {selected_class} | Total: {class_data['total_fee']:.0f} ฿")
-                    st.balloons()
-                    st.rerun()
-                    
+                    os.remove(img_path)
+                    deleted_count += 1
+                    print(f"🗑️ Deleted old image: {img_path}")
                 except Exception as e:
-                    st.error(f"❌ Error saving entry: {e}")
-                    print(f"❌ Error saving entry: {e}")
+                    print(f"❌ Error deleting {img_path}: {e}")
+        
+        if deleted_count > 0:
+            print(f"✅ Cleaned up {deleted_count} old images")
+        
+        # Update database to clear img_path for old records
+        with engine.connect() as conn:
+            conn.execute(text("""
+                UPDATE vehicle_transactions 
+                SET img_path = NULL 
+                WHERE DATE(time_stamp) < :today
+            """), {"today": today})
+            conn.commit()
+            
+    except Exception as e:
+        print(f"❌ Error during image cleanup: {e}")
+
 
 # ==================== CURRENT VEHICLE TAB ====================
 def render_current_vehicle_tab() -> None:
@@ -455,12 +404,16 @@ def render_current_vehicle_tab() -> None:
     st.markdown("### 🚗 Current Vehicle")
     
     try:
+        # Run cleanup first
+        cleanup_old_images()
+        
         query = """
             SELECT 
                 t.camera_id,
                 c.class_name as vehicle_type,
                 t.total_fee,
-                t.time_stamp
+                t.time_stamp,
+                t.img_path
             FROM vehicle_transactions t
             JOIN vehicle_classes c ON t.class_id = c.class_id
             ORDER BY t.time_stamp DESC
@@ -546,6 +499,16 @@ def render_current_vehicle_tab() -> None:
                 </div>
                 """, unsafe_allow_html=True)
             
+            # Display image if available
+            if 'img_path' in vehicle and vehicle['img_path'] and vehicle['img_path'] != '':
+                import os
+                if os.path.exists(vehicle['img_path']):
+                    st.markdown("---")
+                    st.markdown("### 📸 Vehicle Image")
+                    st.image(vehicle['img_path'], use_container_width=True)
+                else:
+                    st.info("📷 Image file not found")
+            
             # Refresh button
             st.markdown("---")
             _, col2, _ = st.columns([1, 1, 1])
@@ -574,12 +537,15 @@ def render_current_vehicle_tab() -> None:
 
 # ==================== TRANSACTION HISTORY ====================
 def render_transaction_history() -> None:
-    """Render transaction history with filtering and delete functionality"""
+    """Render transaction history for today only"""
     st.markdown("---")
-    st.markdown("### 📜 Transaction History")
+    st.markdown("### 📜 Transaction History (Today)")
     
     now_thailand = get_thailand_time()
-    date_filter = st.date_input("📅 Select Date", value=now_thailand.date())
+    today = now_thailand.date()
+    
+    # Display current date
+    st.info(f"📅 Showing transactions for: {today.strftime('%d %B %Y')}")
     
     try:
         query = """
@@ -591,16 +557,17 @@ def render_transaction_history() -> None:
                 t.total_fee,
                 t.time_stamp,
                 t.confidence,
+                t.img_path,
                 c.class_name,
                 c.entry_fee,
                 c.xray_fee
             FROM vehicle_transactions t
             JOIN vehicle_classes c ON t.class_id = c.class_id
-            WHERE DATE(t.time_stamp) = :date_filter
+            WHERE DATE(t.time_stamp) = :today
             ORDER BY t.time_stamp DESC
         """
         
-        df_transactions = pd.read_sql(text(query), engine, params={"date_filter": date_filter})
+        df_transactions = pd.read_sql(text(query), engine, params={"today": today})
         
         if not df_transactions.empty:
             # Summary metrics
@@ -645,6 +612,16 @@ def render_transaction_history() -> None:
                     full_timestamp = convert_to_thailand_tz(pd.to_datetime(row['time_stamp']))
                     st.markdown(f"**🕐 Time:** {full_timestamp.strftime('%d/%m/%Y %H:%M:%S')} (Thailand)")
                     
+                    # Display image if available
+                    if pd.notna(row['img_path']) and row['img_path'] != '':
+                        import os
+                        if os.path.exists(row['img_path']):
+                            st.markdown("---")
+                            st.markdown("**📸 Vehicle Image:**")
+                            st.image(row['img_path'], use_container_width=True)
+                        else:
+                            st.info("📷 Image file not found")
+                    
                     # Delete button
                     st.markdown("---")
                     _, col_d2, _ = st.columns([2, 1, 2])
@@ -663,7 +640,7 @@ def render_transaction_history() -> None:
                                 st.error(f"❌ Error deleting transaction: {e}")
                                 print(f"❌ Error deleting transaction: {e}")
         else:
-            st.info(f"📭 No transactions found for {date_filter.strftime('%d %B %Y')}")
+            st.info(f"📭 No transactions found for today ({today.strftime('%d %B %Y')})")
     
     except Exception as e:
         st.error(f"❌ Error loading transactions: {e}")
@@ -854,18 +831,17 @@ def main() -> None:
     
     # Create tabs
     tab1, tab2, tab3, tab4 = st.tabs([
-        "📝 Entry", 
         "🚗 Current Vehicle", 
+        "📜 History", 
         "⚙️ Master Data", 
         "📊 Analytics"
     ])
     
     with tab1:
-        render_entry_tab(df_classes)
-        render_transaction_history()
+        render_current_vehicle_tab()
     
     with tab2:
-        render_current_vehicle_tab()
+        render_transaction_history()
     
     with tab3:
         render_master_data_tab(df_classes)
