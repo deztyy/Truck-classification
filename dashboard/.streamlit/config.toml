@@ -1,0 +1,19 @@
+[server]
+port = 8501
+address = 0.0.0.0
+headless = true
+enableXsrfProtection = false
+
+[client]
+showErrorDetails = true
+toolbarMode = "viewer"
+
+[logger]
+level = "info"
+
+[theme]
+primaryColor = "#667eea"
+backgroundColor = "#0e1117"
+secondaryBackgroundColor = "#161b22"
+textColor = "#e6edf3"
+font = "sans serif"
