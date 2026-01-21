@@ -1,26 +1,24 @@
-version: '3.8'
-
 services:
   # ---------------------------------------------------------------------------
   # INFRASTRUCTURE LAYER
   # ---------------------------------------------------------------------------
 
   # 1. PostgreSQL (Metadata & MLflow Backend)
-  # Commented out - not needed for video ingestion testing
-  # db:
-  #   image: postgres:15-alpine
-  #   container_name: vid_analytics_db
-  #   restart: always
-  #   environment:
-  #     POSTGRES_USER: ${POSTGRES_USER}
-  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-  #     POSTGRES_DB: ${POSTGRES_DB}
-  #   ports:
-  #     - "5432:5432"
-  #   volumes:
-  #     - db_data:/var/lib/postgresql/data
-  #   networks:
-  #     - analytics_network
+  db:
+    image: postgres:15-alpine
+    container_name: vid_analytics_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro # <-- เพิ่มบรรทัดนี้
+    networks:
+      - analytics_network
 
   # 2. Redis (Message Queue)
   redis:
@@ -48,6 +46,7 @@ services:
       - minio_data:/data
     networks:
       - analytics_network
+
   # 4. MinIO Setup (One-off task to create buckets automatically)
   # Commented out - ingestion.py creates buckets automatically if needed
   # createbuckets:
@@ -107,6 +106,30 @@ services:
       - ./ingestion/sample_videos:/app/sample_videos:ro
     networks:
       - analytics_network
+
+  # B. Processing Worker (Frame Processing & Database Writer)
+  processing-worker:
+    build: ./fake-processing
+    container_name: vid_processing_worker
+    restart: on-failure
+    depends_on:
+      - redis
+      - minio
+      - db
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_SECURE: "false"
+      DB_HOST: db
+      DB_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    networks:
+      - analytics_network
   # B. Processing Worker (Scalable: docker-compose up --scale worker=3)
   # Commented out - not implemented yet
   # processing-worker:
@@ -162,7 +185,7 @@ services:
   # VOLUMES & NETWORKS
   # ---------------------------------------------------------------------------
 volumes:
-  # db_data:  # Commented out - db service not in use
+  db_data:
   minio_data:
 
 
