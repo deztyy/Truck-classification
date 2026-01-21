@@ -37,6 +37,7 @@ credentials.json
 # 📁 DATA DIRECTORIES - CONTAINS GENERATED FILES
 # =============================================================================
 shared_data/        # Camera frame storage
+sample_videos/     # Sample video files
 data_output/
 results/           # Inference results
 mlflow_db/         # MLflow database

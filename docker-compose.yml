@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # ---------------------------------------------------------------------------
   # INFRASTRUCTURE LAYER
@@ -60,23 +58,23 @@ services:
       - analytics_network
 
   # 5. MLflow Tracking Server
-  mlflow:
-    image: ghcr.io/mlflow/mlflow:v2.7.1
-    container_name: vid_analytics_mlflow
-    restart: always
-    depends_on:
-      - db
-      - minio
-    environment:
-      MLFLOW_S3_ENDPOINT_URL: ${MLFLOW_S3_ENDPOINT_URL}
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
-    command: >
-      mlflow server --backend-store-uri ${DB_URI} --default-artifact-root s3://mlflow-models/ --host 0.0.0.0
-    ports:
-      - "5000:5000"
-    networks:
-      - analytics_network
+  # mlflow:
+  #   image: ghcr.io/mlflow/mlflow:v2.7.1
+  #   container_name: vid_analytics_mlflow
+  #   restart: always
+  #   depends_on:
+  #     - db
+  #     - minio
+  #   environment:
+  #     MLFLOW_S3_ENDPOINT_URL: ${MLFLOW_S3_ENDPOINT_URL}
+  #     AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+  #     AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+  #   command: >
+  #     mlflow server --backend-store-uri ${DB_URI} --default-artifact-root s3://mlflow-models/ --host 0.0.0.0
+  #   ports:
+  #     - "5000:5000"
+  #   networks:
+  #     - analytics_network
 
   # ---------------------------------------------------------------------------
   # APPLICATION LAYER (Your Custom Services)
@@ -84,75 +82,82 @@ services:
 
   # A. Video Ingestion Service
   ingestion-service:
-    build: ./ingestion # Point to your python code folder
+    build: ./ingestion
     container_name: vid_ingestion
     restart: on-failure
     depends_on:
       - redis
       - minio
     environment:
-      RTSP_URLS: ${RTSP_URLS}
-      REDIS_HOST: ${REDIS_HOST}
-      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      VIDEO_FILE: /app/sample_videos/truck_highway_short.mp4
+      CAMERA_ID: docker_camera_01
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      REDIS_QUEUE_NAME: frame_batches
+      MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_BUCKET_NAME: raw-frames
+      MINIO_SECURE: "false"
+    volumes:
+      - ./ingestion/sample_videos:/app/sample_videos:ro
     networks:
       - analytics_network
-
   # B. Processing Worker (Scalable: docker-compose up --scale worker=3)
-  processing-worker:
-    build: ./worker # Point to your worker code folder
-    container_name: vid_worker
-    restart: on-failure
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [ gpu ]
-    depends_on:
-      - redis
-      - minio
-      - db
-      - mlflow
-    environment:
-      REDIS_HOST: ${REDIS_HOST}
-      DB_URI: ${DB_URI}
-      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI}
-    networks:
-      - analytics_network
+  # processing-worker:
+  #   build: ./worker # Point to your worker code folder
+  #   container_name: vid_worker
+  #   restart: on-failure
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [ gpu ]
+  #   depends_on:
+  #     - redis
+  #     - minio
+  #     - db
+  #     - mlflow
+  #   environment:
+  #     REDIS_HOST: ${REDIS_HOST}
+  #     DB_URI: ${DB_URI}
+  #     MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI}
+  #   networks:
+  #     - analytics_network
 
   # C. Backend API (Decouples Dashboard from DB)
-  backend-api:
-    build: ./backend # Point to your FastAPI/Node code
-    container_name: vid_api
-    restart: always
-    ports:
-      - "8080:8080"
-    depends_on:
-      - db
-      - minio
-    environment:
-      DB_URI: ${DB_URI}
-      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
-    networks:
-      - analytics_network
+  # backend-api:
+  #   build: ./backend # Point to your FastAPI/Node code
+  #   container_name: vid_api
+  #   restart: always
+  #   ports:
+  #     - "8080:8080"
+  #   depends_on:
+  #     - db
+  #     - minio
+  #   environment:
+  #     DB_URI: ${DB_URI}
+  #     MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+  #   networks:
+  #     - analytics_network
 
-  # D. Dashboard (Frontend)
-  dashboard:
-    build: ./dashboard # React/Vue/Streamlit app
-    container_name: vid_dashboard
-    ports:
-      - "3000:3000"
-    depends_on:
-      - backend-api
-    networks:
-      - analytics_network
+  # # D. Dashboard (Frontend)
+  # dashboard:
+  #   build: ./dashboard # React/Vue/Streamlit app
+  #   container_name: vid_dashboard
+  #   ports:
+  #     - "3000:3000"
+  #   depends_on:
+  #     - backend-api
+  #   networks:
+  #     - analytics_network
 
-# ---------------------------------------------------------------------------
-# VOLUMES & NETWORKS
-# ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # VOLUMES & NETWORKS
+  # ---------------------------------------------------------------------------
 volumes:
   db_data:
   minio_data:
