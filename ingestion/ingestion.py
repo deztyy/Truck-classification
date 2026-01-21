@@ -4,7 +4,6 @@ Video Ingestion Script for Computer Vision Pipeline
 This script reads video streams from RTSP sources, batches frames,
 uploads them to MinIO (S3-compatible storage), and publishes metadata to Redis.
 
-Author: Senior Python Developer
 Date: January 2026
 """
 
@@ -27,6 +26,10 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+# Frame preprocessing target size
+FRAME_TARGET_HEIGHT = 640
+FRAME_TARGET_WIDTH = 640
 
 
 class VideoIngestor:
@@ -98,7 +101,7 @@ class VideoIngestor:
         self._ensure_bucket_exists()
 
         # Video capture object (initialized on start)
-        self.cap: Optional[cv2.VideoCapture] = None
+        self.video_capture: Optional[cv2.VideoCapture] = None
 
         # Statistics
         self.frames_processed = 0
@@ -200,22 +203,22 @@ class VideoIngestor:
             source_type = "video file" if self.video_file else "RTSP stream"
 
             logger.info(f"Connecting to {source_type}: {source}")
-            self.cap = cv2.VideoCapture(source)
+            self.video_capture = cv2.VideoCapture(source)
 
-            if not self.cap.isOpened():
+            if not self.video_capture.isOpened():
                 logger.error(f"Failed to open {source_type}")
                 return False
 
             # Read one frame to verify stream is working
-            ret, _ = self.cap.read()
+            ret, _ = self.video_capture.read()
             if not ret:
                 logger.error(f"Failed to read frame from {source_type}")
                 return False
 
             # Get video info
             if self.video_file:
-                total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                fps = self.cap.get(cv2.CAP_PROP_FPS)
+                total_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+                fps = self.video_capture.get(cv2.CAP_PROP_FPS)
                 logger.info(f"Video file info - Frames: {total_frames}, FPS: {fps:.2f}")
 
             logger.info(f"Successfully connected to {source_type}")
@@ -229,9 +232,9 @@ class VideoIngestor:
         """
         Safely disconnect from the video stream.
         """
-        if self.cap is not None:
-            self.cap.release()
-            self.cap = None
+        if self.video_capture is not None:
+            self.video_capture.release()
+            self.video_capture = None
             logger.info("Disconnected from video stream")
 
     def _read_frame_batch(self) -> Optional[np.ndarray]:
@@ -248,20 +251,17 @@ class VideoIngestor:
         - Skip frames (e.g., process every Nth frame)
         - Add frame metadata (timestamps, frame numbers)
         """
-        frames = []
-
-        TARGET_HEIGHT = 640
-        TARGET_WIDTH = 640
+        frames_buffer = []
 
         for i in range(self.batch_size):
             try:
-                ret, frame = self.cap.read()
+                ret, frame = self.video_capture.read()
 
                 # If video file ends and loop is enabled, restart
                 if not ret and self.video_file and self.loop_video:
                     logger.info("Video file ended, restarting from beginning...")
-                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    ret, frame = self.cap.read()
+                    self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    ret, frame = self.video_capture.read()
 
                 if not ret:
                     # Distinguish between expected EOF for non-looping local files
@@ -280,9 +280,9 @@ class VideoIngestor:
                 # --- CUSTOM PREPROCESSING GOES HERE ---
                 # Example: frame = cv2.resize(frame, (640, 640))
                 # Example: frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frame = cv2.resize(frame, (TARGET_WIDTH, TARGET_HEIGHT))
+                frame = cv2.resize(frame, (FRAME_TARGET_WIDTH, FRAME_TARGET_HEIGHT))
 
-                frames.append(frame)
+                frames_buffer.append(frame)
                 self.frames_processed += 1
 
             except Exception as e:
@@ -291,10 +291,10 @@ class VideoIngestor:
 
         # Convert list of frames to NumPy array
         # Shape: (batch_size, height, width, channels)
-        batch_array = np.array(frames)
-        logger.debug(f"Created batch with shape: {batch_array.shape}")
+        frames_batch = np.array(frames_buffer)
+        logger.debug(f"Created batch with shape: {frames_batch.shape}")
 
-        return batch_array
+        return frames_batch
 
     def _upload_batch_to_minio(self, batch: np.ndarray) -> Optional[str]:
         """
@@ -315,7 +315,7 @@ class VideoIngestor:
         try:
             # Generate unique object name with timestamp
             timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
-            object_name = f"{self.camera_id}/batch_{timestamp}.npy"
+            batch_object_key = f"{self.camera_id}/batch_{timestamp}.npy"
 
             # Serialize NumPy array to bytes using io.BytesIO
             buffer = io.BytesIO()
@@ -328,16 +328,18 @@ class VideoIngestor:
             # Upload to MinIO
             self.minio_client.put_object(
                 bucket_name=self.bucket_name,
-                object_name=object_name,
+                object_name=batch_object_key,
                 data=buffer,
                 length=buffer_size,
                 content_type="application/octet-stream",
             )
 
-            logger.info(f"Uploaded batch to MinIO: {object_name} ({buffer_size} bytes)")
+            logger.info(
+                f"Uploaded batch to MinIO: {batch_object_key} ({buffer_size} bytes)"
+            )
             self.batches_uploaded += 1
 
-            return object_name
+            return batch_object_key
 
         except S3Error as e:
             logger.error(f"MinIO upload error: {e}")
@@ -348,7 +350,7 @@ class VideoIngestor:
             self.errors_count += 1
             return None
 
-    def _publish_to_redis(self, object_name: str, batch_shape: tuple) -> bool:
+    def _publish_to_redis(self, batch_object_key: str, batch_shape: tuple) -> bool:
         """
         Publish metadata to Redis queue for downstream processing.
 
@@ -369,7 +371,7 @@ class VideoIngestor:
             # Create metadata message
             metadata = {
                 "camera_id": self.camera_id,
-                "object_name": object_name,
+                "object_name": batch_object_key,
                 "timestamp": datetime.utcnow().isoformat(),
                 "batch_size": batch_shape[0],
                 "frame_shape": list(batch_shape[1:]),
@@ -411,14 +413,14 @@ class VideoIngestor:
             return False
 
         # Upload to MinIO
-        object_name = self._upload_batch_to_minio(batch)
-        if object_name is None:
+        batch_object_key = self._upload_batch_to_minio(batch)
+        if batch_object_key is None:
             return False
 
         # Publish metadata to Redis
-        success = self._publish_to_redis(object_name, batch.shape)
+        publish_ok = self._publish_to_redis(batch_object_key, batch.shape)
 
-        return success
+        return publish_ok
 
     def run(self) -> None:
         """
@@ -439,28 +441,28 @@ class VideoIngestor:
         """
         logger.info(f"Starting video ingestion for camera: {self.camera_id}")
 
-        reconnect_attempts = 0
+        retry_count = 0
 
         while True:
             try:
                 # Connect to stream if not connected
-                if self.cap is None or not self.cap.isOpened():
-                    if reconnect_attempts >= self.max_reconnect_attempts:
+                if self.video_capture is None or not self.video_capture.isOpened():
+                    if retry_count >= self.max_reconnect_attempts:
                         logger.error(
                             f"Max reconnection attempts ({self.max_reconnect_attempts}) reached"
                         )
                         logger.info("Waiting before resetting reconnection counter...")
                         time.sleep(self.reconnect_delay * 5)
-                        reconnect_attempts = 0
+                        retry_count = 0
 
                     logger.info(
-                        f"Reconnection attempt {reconnect_attempts + 1}/{self.max_reconnect_attempts}"
+                        f"Reconnection attempt {retry_count + 1}/{self.max_reconnect_attempts}"
                     )
 
                     if self._connect_to_stream():
-                        reconnect_attempts = 0  # Reset counter on successful connection
+                        retry_count = 0  # Reset counter on successful connection
                     else:
-                        reconnect_attempts += 1
+                        retry_count += 1
                         time.sleep(self.reconnect_delay)
                         continue
 
@@ -470,7 +472,7 @@ class VideoIngestor:
                 if not success:
                     logger.warning("Batch processing failed, will attempt reconnection")
                     self._disconnect_from_stream()
-                    reconnect_attempts += 1
+                    retry_count += 1
                     time.sleep(self.reconnect_delay)
                 else:
                     # Log statistics periodically
@@ -511,7 +513,8 @@ class VideoIngestor:
             "frames_processed": self.frames_processed,
             "batches_uploaded": self.batches_uploaded,
             "errors_count": self.errors_count,
-            "is_connected": self.cap is not None and self.cap.isOpened(),
+            "is_connected": self.video_capture is not None
+            and self.video_capture.isOpened(),
         }
 
 

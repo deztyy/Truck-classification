@@ -12,7 +12,7 @@ import random
 from dataclasses import dataclass
 from enum import Enum
 from io import BytesIO
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import psycopg2
@@ -26,6 +26,13 @@ from PIL import Image
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
+
+# ----------------------------------------------------------------------------
+# Module constants
+# ----------------------------------------------------------------------------
+DEFAULT_QUEUE_NAME = "frame_batches"
+PROCESSED_BUCKET_NAME = "process-frames"
+JPEG_QUALITY = 95
 
 
 # ============================================================================
@@ -96,8 +103,8 @@ class ProcessingTask:
     camera_id: str
     video_file: str
     minio_bucket: str
-    minio_prefix: str
-    timestamp: datetime.datetime = None
+    object_key_or_prefix: str
+    timestamp: Optional[datetime.datetime] = None
 
     def to_dict(self) -> Dict:
         """Convert to dictionary"""
@@ -106,7 +113,10 @@ class ProcessingTask:
             "camera_id": self.camera_id,
             "video_file": self.video_file,
             "minio_bucket": self.minio_bucket,
-            "minio_prefix": self.minio_prefix,
+            # Keep legacy key for compatibility with existing producers
+            "minio_prefix": self.object_key_or_prefix,
+            # Also include clearer name for downstream consumers
+            "object_key_or_prefix": self.object_key_or_prefix,
             "timestamp": (
                 self.timestamp or datetime.datetime.now(datetime.timezone.utc)
             ).isoformat(),
@@ -142,7 +152,8 @@ class ProcessingTask:
                 minio_bucket=data.get("minio_bucket")
                 or data.get("bucket_name")
                 or data.get("bucket", "video-frames"),
-                minio_prefix=data.get("minio_prefix")
+                object_key_or_prefix=data.get("object_key_or_prefix")
+                or data.get("minio_prefix")
                 or data.get("minio_key")
                 or data.get("object_name")
                 or data.get("key", ""),
@@ -170,7 +181,7 @@ class RedisQueueManager:
         host: str,
         port: int,
         db: int = 0,
-        queue_name: str = "frame_batches",
+        queue_name: str = DEFAULT_QUEUE_NAME,
     ):
         """Initialize Redis connection"""
         self.host = host
@@ -262,14 +273,14 @@ class MinIOManager:
             self.client = Minio(
                 endpoint, access_key=access_key, secret_key=secret_key, secure=secure
             )
-            # Test connection
-            self.client.bucket_exists("test") or True
+            # Attempt a lightweight call to validate connectivity/credentials
+            _ = self.client.list_buckets()
             logging.info(f"✓ MinIO connected: {endpoint}")
         except Exception as e:
             logging.error(f"✗ MinIO connection failed: {e}")
             raise
 
-    def list_objects(self, bucket: str, prefix: str = "") -> List[Dict]:
+    def list_objects(self, bucket: str, prefix: str = "") -> List[Dict[str, Any]]:
         """List objects in bucket with optional prefix"""
         try:
             objects = []
@@ -403,16 +414,18 @@ class PostgreSQLDatabase:
 
     def insert_transaction(self, transaction: VehicleTransaction) -> bool:
         """Insert a single transaction record"""
+        conn = None
+        cur = None
         try:
-            conn = self._get_connection()
-            cur = conn.cursor()
-
             record = transaction.to_dict()
 
             # Skip if class_id is 0 (not yet classified)
             if record["class_id"] == 0:
                 logging.warning("Skipping insert: class_id is 0 (not yet classified)")
                 return False
+
+            conn = self._get_connection()
+            cur = conn.cursor()
 
             sql = """
                 INSERT INTO vehicle_transactions
@@ -434,19 +447,28 @@ class PostgreSQLDatabase:
             )
 
             conn.commit()
-            cur.close()
-            conn.close()
-
             self.transaction_count += 1
             logging.info(f"✓ Transaction inserted: {record['track_id']}")
             return True
-
         except Exception as e:
             logging.error(f"✗ Insert failed: {e}")
-            if "conn" in locals():
-                conn.rollback()
-                conn.close()
+            if conn is not None:
+                try:
+                    conn.rollback()
+                finally:
+                    pass
             return False
+        finally:
+            if cur is not None:
+                try:
+                    cur.close()
+                finally:
+                    pass
+            if conn is not None:
+                try:
+                    conn.close()
+                finally:
+                    pass
 
     def get_vehicle_class(self, class_id: int) -> Optional[Dict]:
         """Get vehicle class reference data"""
@@ -556,43 +578,82 @@ class ProcessingService:
 
         return selected_class.value, total_fee, confidence
 
-    def process_task(self, task: ProcessingTask) -> Dict:
+    # ---------------------------------------------------------------------
+    # Image and batch helpers
+    # ---------------------------------------------------------------------
+    @staticmethod
+    def _load_batch_from_file(file_path: str) -> np.ndarray:
+        """Load a numpy batch file from disk."""
+        return np.load(file_path)
+
+    @staticmethod
+    def _select_frame(batch: np.ndarray) -> Tuple[np.ndarray, int]:
+        """Select a representative frame from a batch or return the image itself.
+
+        Returns a tuple of (frame, index). Index is 0 for single images.
+        """
+        if batch.ndim == 4:
+            frame_idx = len(batch) // 2
+            return batch[frame_idx], frame_idx
+        return batch, 0
+
+    @staticmethod
+    def _normalize_to_uint8(arr: np.ndarray) -> np.ndarray:
+        """Convert array to uint8, normalizing floats when appropriate."""
+        if arr.dtype in (np.float32, np.float64):
+            if arr.max() <= 1.0:
+                return (arr * 255).astype(np.uint8)
+            return arr.astype(np.uint8)
+        if arr.dtype != np.uint8:
+            return arr.astype(np.uint8)
+        return arr
+
+    @staticmethod
+    def _encode_jpeg(image: Image.Image, quality: int = JPEG_QUALITY) -> bytes:
+        """Encode PIL image to JPEG bytes with given quality."""
+        buf = BytesIO()
+        image.save(buf, format="JPEG", quality=quality)
+        return buf.getvalue()
+
+    def process_task(self, task: ProcessingTask) -> Dict[str, Any]:
         """Process single task: fetch batch from MinIO, extract 1 frame, save as JPG"""
         try:
             logging.info(f"\n--- Processing Task: {task.task_id} ---")
-            logging.info(f"Bucket: {task.minio_bucket}, Object: {task.minio_prefix}")
+            logging.info(
+                f"Bucket: {task.minio_bucket}, Object: {task.object_key_or_prefix}"
+            )
 
             # Check if minio_prefix is a full object name (file) or a prefix (directory)
             # If it looks like a file path (contains .npy), use it directly
-            if task.minio_prefix.endswith(".npy"):
+            if task.object_key_or_prefix.endswith(".npy"):
                 # Direct file path
-                batch_object = task.minio_prefix
+                batch_object = task.object_key_or_prefix
                 logging.info(f"Processing direct file: {batch_object}")
             else:
                 # Prefix/directory - list objects
-                objects = self.minio_manager.list_objects(
-                    bucket=task.minio_bucket, prefix=task.minio_prefix
+                listed_objects = self.minio_manager.list_objects(
+                    bucket=task.minio_bucket, prefix=task.object_key_or_prefix
                 )
                 logging.info(
-                    f"Found {len(objects)} objects in {task.minio_bucket}/{task.minio_prefix}"
+                    f"Found {len(listed_objects)} objects in {task.minio_bucket}/{task.object_key_or_prefix}"
                 )
 
                 # Filter out directories (objects ending with /)
-                file_objects = [obj for obj in objects if not obj["name"].endswith("/")]
+                files = [obj for obj in listed_objects if not obj["name"].endswith("/")]
 
-                if not file_objects:
+                if not files:
                     logging.warning(
-                        f"No files found, only directories in {task.minio_bucket}/{task.minio_prefix}"
+                        f"No files found, only directories in {task.minio_bucket}/{task.object_key_or_prefix}"
                     )
                     return {
                         "status": "no_objects",
                         "task_id": task.task_id,
                         "camera_id": task.camera_id,
-                        "objects_found": len(objects),
+                        "objects_found": len(listed_objects),
                         "files_found": 0,
                     }
 
-                batch_object = file_objects[0]["name"]
+                batch_object = files[0]["name"]
                 logging.info(f"Processing batch: {batch_object}")
 
             # Download numpy batch file
@@ -607,65 +668,40 @@ class ProcessingService:
             if success:
                 # Load numpy batch (30 frames)
                 try:
-                    batch_data = np.load(batch_file)
+                    batch_data = self._load_batch_from_file(batch_file)
                     logging.info(f"Loaded batch shape: {batch_data.shape}")
 
-                    # Select 1 frame from batch (middle frame)
-                    if (
-                        len(batch_data.shape) == 4
-                    ):  # (batch_size, height, width, channels)
-                        frame_idx = len(batch_data) // 2  # Select middle frame
-                        selected_frame = batch_data[frame_idx]
-                    else:  # If single image
-                        selected_frame = batch_data
-                        frame_idx = 0
+                    selected_frame, frame_idx = self._select_frame(batch_data)
+                    logging.info(
+                        f"Selected frame {frame_idx} with shape: {selected_frame.shape}"
+                    )
 
-                        logging.info(
-                            f"Selected frame {frame_idx} with shape: {selected_frame.shape}"
-                        )
+                    frame_uint8 = self._normalize_to_uint8(selected_frame)
 
-                    # Convert to PIL Image
-                    # Handle different data types
-                    if (
-                        selected_frame.dtype == np.float32
-                        or selected_frame.dtype == np.float64
-                    ):
-                        # Normalize to 0-255 if float
-                        if selected_frame.max() <= 1.0:
-                            selected_frame = (selected_frame * 255).astype(np.uint8)
-                        else:
-                            selected_frame = selected_frame.astype(np.uint8)
-                    elif selected_frame.dtype != np.uint8:
-                        selected_frame = selected_frame.astype(np.uint8)
-
-                    # Create PIL Image
-                    if len(selected_frame.shape) == 2:  # Grayscale
-                        image = Image.fromarray(selected_frame, mode="L")
-                    elif selected_frame.shape[2] == 3:  # RGB
-                        image = Image.fromarray(selected_frame, mode="RGB")
-                    elif selected_frame.shape[2] == 4:  # RGBA
-                        image = Image.fromarray(selected_frame, mode="RGBA")
-                        image = image.convert("RGB")  # Convert to RGB for JPEG
+                    # Create PIL Image from array
+                    if frame_uint8.ndim == 2:  # Grayscale
+                        image = Image.fromarray(frame_uint8, mode="L")
+                    elif frame_uint8.shape[2] == 3:  # RGB
+                        image = Image.fromarray(frame_uint8, mode="RGB")
+                    elif frame_uint8.shape[2] == 4:  # RGBA -> convert to RGB
+                        image = Image.fromarray(frame_uint8, mode="RGBA").convert("RGB")
                     else:
                         raise ValueError(
-                            f"Unsupported image shape: {selected_frame.shape}"
+                            f"Unsupported image shape: {frame_uint8.shape}"
                         )
 
-                    # Save to JPEG bytes
-                    img_buffer = BytesIO()
-                    image.save(img_buffer, format="JPEG", quality=95)
-                    img_bytes = img_buffer.getvalue()
+                    img_bytes = self._encode_jpeg(image, quality=JPEG_QUALITY)
 
                     # Create output filename
                     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                     output_filename = f"{task.camera_id}_{task.task_id}_{timestamp}.jpg"
 
-                    # Ensure process_frames bucket exists
-                    self.minio_manager.create_bucket("process-frames")
+                    # Ensure destination bucket exists
+                    self.minio_manager.create_bucket(PROCESSED_BUCKET_NAME)
 
                     # Upload to process_frames bucket
                     upload_success = self.minio_manager.upload_from_bytes(
-                        bucket="process-frames",
+                        bucket=PROCESSED_BUCKET_NAME,
                         object_name=output_filename,
                         data=img_bytes,
                         content_type="image/jpeg",
@@ -695,7 +731,7 @@ class ProcessingService:
                             total_fee=total_fee,
                             time_stamp=task.timestamp
                             or datetime.datetime.now(datetime.timezone.utc),
-                            img_path=f"process-frames/{output_filename}",
+                            img_path=f"{PROCESSED_BUCKET_NAME}/{output_filename}",
                             confidence=confidence,
                         )
 
@@ -709,7 +745,7 @@ class ProcessingService:
                             "batch_file": batch_object,
                             "batch_deleted": delete_success,
                             "frame_selected": frame_idx,
-                            "output_image": f"process-frames/{output_filename}",
+                            "output_image": f"{PROCESSED_BUCKET_NAME}/{output_filename}",
                             "image_size_bytes": len(img_bytes),
                             "transaction": transaction.to_dict(),
                         }
@@ -725,8 +761,8 @@ class ProcessingService:
                 "status": "no_objects",
                 "task_id": task.task_id,
                 "camera_id": task.camera_id,
-                "objects_found": len(objects),
-                "files_found": len(file_objects) if "file_objects" in locals() else 0,
+                "objects_found": len(listed_objects),
+                "files_found": len(files) if "files" in locals() else 0,
             }
 
         except Exception as e:
