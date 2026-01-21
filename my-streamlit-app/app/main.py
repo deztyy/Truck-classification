@@ -875,7 +875,7 @@ def render_analytics_tab() -> None:
             with col2:
                 st.metric("💰 Total Revenue", f"{df_analytics['total_fee'].sum():.0f} ฿")
             with col3:
-                st.metric("📷 Active Cameras", df_analytics['camera_id'].nunique())
+                st.metric("📷 Cameras", df_analytics['camera_id'].nunique())
             
             st.markdown("---")
             
