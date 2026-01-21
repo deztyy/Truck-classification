@@ -195,7 +195,13 @@ def translate_class_name(class_name: str) -> str:
 
 def check_system_status() -> dict:
     """Check database and MinIO connection status"""
-    status = {"database": False, "minio": False, "database_msg": "", "minio_msg": ""}
+    status = {
+        "database": False,
+        "minio": False,
+        "database_msg": "",
+        "minio_msg": "",
+        "buckets": [],
+    }
 
     # Check database
     try:
@@ -209,9 +215,11 @@ def check_system_status() -> dict:
     # Check MinIO
     if minio_client:
         try:
-            minio_client.bucket_exists(MINIO_BUCKET_NAME)
+            # List all buckets
+            buckets = minio_client.list_buckets()
+            status["buckets"] = [bucket.name for bucket in buckets]
             status["minio"] = True
-            status["minio_msg"] = "Connected"
+            status["minio_msg"] = f"Connected ({len(status['buckets'])} buckets)"
         except Exception as e:
             status["minio_msg"] = f"Error: {str(e)[:50]}"
     else:
@@ -293,7 +301,7 @@ def get_image_from_minio(img_path: str) -> Optional[Image.Image]:
     Retrieve image from MinIO storage
 
     Args:
-    img_path: Path to image in MinIO bucket (e.g., 'camera_01/batch_123.jpg')
+    img_path: Path to image in MinIO (format: 'bucket-name/object-key' or just 'object-key')
 
     Returns:
         PIL.Image or None if image not found
@@ -302,18 +310,31 @@ def get_image_from_minio(img_path: str) -> Optional[Image.Image]:
         return None
 
     try:
+        # Parse bucket and object key from img_path
+        # Format can be: "process-frames/output_xxx.jpg" or just "output_xxx.jpg"
+        if "/" in img_path:
+            parts = img_path.split("/", 1)
+            bucket_name = parts[0]
+            object_key = parts[1] if len(parts) > 1 else parts[0]
+        else:
+            bucket_name = MINIO_BUCKET_NAME
+            object_key = img_path
+
+        print(f"🔍 Trying to load image from bucket: {bucket_name}, key: {object_key}")
+
         # Get object from MinIO
-        response = minio_client.get_object(MINIO_BUCKET_NAME, img_path)
+        response = minio_client.get_object(bucket_name, object_key)
         # Read image data
         image_data = response.read()
         # Convert to PIL Image
         image = Image.open(io.BytesIO(image_data))
+        print(f"✅ Successfully loaded image: {img_path}")
         return image
     except S3Error as e:
-        print(f"⚠️ MinIO error loading image {img_path}: {e}")
+        print(f"❌ MinIO S3 error loading {img_path}: {e.code} - {e.message}")
         return None
     except Exception as e:
-        print(f"⚠️ Error loading image {img_path}: {e}")
+        print(f"❌ Error loading image {img_path}: {type(e).__name__} - {str(e)}")
         return None
     finally:
         if "response" in locals():
@@ -656,7 +677,12 @@ def render_current_vehicle_tab() -> None:
                 if image:
                     st.image(image, use_container_width=True)
                 else:
-                    st.info("📷 Image not available in MinIO storage")
+                    st.warning("⚠️ Image not available in MinIO storage")
+                    with st.expander("🔍 Debug Info"):
+                        st.code(f"Path: {vehicle['img_path']}", language="text")
+                        st.info(
+                            "Image should be in format: 'bucket-name/object-key' (e.g., 'process-frames/output_123.jpg')"
+                        )
 
             # Refresh button
             st.markdown("---")
@@ -963,7 +989,12 @@ def render_transaction_history() -> None:
                         if image:
                             st.image(image, use_container_width=True)
                         else:
-                            st.info("📷 Image not available in MinIO storage")
+                            st.warning("⚠️ Image not available in MinIO storage")
+                            with st.expander("🔍 Debug Info"):
+                                st.code(f"Path: {row['img_path']}", language="text")
+                                st.info(
+                                    "Image should be in format: 'bucket-name/object-key' (e.g., 'process-frames/output_123.jpg')"
+                                )
 
                     # Delete button with confirmation
                     st.markdown("---")
@@ -1349,6 +1380,10 @@ def main() -> None:
         # MinIO status
         if status["minio"]:
             st.success(f"✅ MinIO: {status['minio_msg']}")
+            if status["buckets"]:
+                with st.expander("📦 Available Buckets"):
+                    for bucket in status["buckets"]:
+                        st.text(f"• {bucket}")
         else:
             st.warning(f"⚠️ MinIO: {status['minio_msg']}")
 
