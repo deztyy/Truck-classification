@@ -250,7 +250,19 @@ class VideoIngestor:
                     ret, frame = self.cap.read()
 
                 if not ret:
-                    logger.warning(f"Failed to read frame {i + 1}/{self.batch_size}")
+                    # Distinguish between expected EOF for non-looping local files
+                    # and other read failures (e.g., RTSP/network issues).
+                    if self.video_file and not self.loop_video:
+                        logger.info(
+                            "End of video file reached and loop_video is False; "
+                            "stopping ingestion for this source."
+                        )
+                        # Signal EOF to the caller so it can terminate cleanly
+                        raise EOFError("End of video file reached")
+
+                    logger.warning(
+                        f"Failed to read frame {i + 1}/{self.batch_size}"
+                    )
                     return None
 
                 # --- CUSTOM PREPROCESSING GOES HERE ---
