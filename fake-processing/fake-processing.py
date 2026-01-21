@@ -51,33 +51,6 @@ class VehicleClass(Enum):
 
 
 @dataclass
-class VehicleClassRecord:
-    """Represents a vehicle class reference record"""
-
-    class_id: int
-    class_name: str
-    entry_fee: Optional[float] = None
-    xray_fee: Optional[float] = None
-    total_fee: Optional[float] = None
-
-    def to_dict(self) -> Dict:
-        """Convert to dictionary for database insert"""
-        return {
-            "class_id": self.class_id,
-            "class_name": self.class_name,
-            "entry_fee": round(self.entry_fee, 2) if self.entry_fee else None,
-            "xray_fee": round(self.xray_fee, 2) if self.xray_fee else None,
-            "total_fee": round(self.total_fee, 2) if self.total_fee else None,
-        }
-
-    def __repr__(self) -> str:
-        return (
-            f"VehicleClassRecord(class_id={self.class_id}, "
-            f"class_name={self.class_name}, total_fee={self.total_fee})"
-        )
-
-
-@dataclass
 class VehicleTransaction:
     """Represents a vehicle transaction record"""
 
@@ -194,8 +167,8 @@ class RedisQueueManager:
 
     def __init__(
         self,
-        host: str = "localhost",
-        port: int = 6379,
+        host: str,
+        port: int,
         db: int = 0,
         queue_name: str = "frame_batches",
     ):
@@ -275,9 +248,9 @@ class MinIOManager:
 
     def __init__(
         self,
-        endpoint: str = "localhost:9000",
-        access_key: str = "minioadmin",
-        secret_key: str = "minioadmin",
+        endpoint: str,
+        access_key: str,
+        secret_key: str,
         secure: bool = False,
     ):
         """Initialize MinIO connection"""
@@ -325,29 +298,6 @@ class MinIOManager:
         except S3Error as e:
             logging.error(f"✗ Download failed: {e}")
             return False
-
-    def upload_object(self, bucket: str, object_name: str, file_path: str) -> bool:
-        """Upload file to MinIO"""
-        try:
-            self.client.fput_object(bucket, object_name, file_path)
-            logging.info(f"✓ Uploaded {file_path} to {bucket}/{object_name}")
-            return True
-        except S3Error as e:
-            logging.error(f"✗ Upload failed: {e}")
-            return False
-
-    def get_object_data(self, bucket: str, object_name: str) -> Optional[bytes]:
-        """Get object data as bytes"""
-        try:
-            response = self.client.get_object(bucket, object_name)
-            data = response.read()
-            response.close()
-            response.release_conn()
-            logging.info(f"✓ Retrieved {object_name} from {bucket}")
-            return data
-        except S3Error as e:
-            logging.error(f"✗ Get object failed: {e}")
-            return None
 
     def create_bucket(self, bucket: str) -> bool:
         """Create bucket if not exists"""
@@ -402,89 +352,13 @@ class MinIOManager:
 class PostgreSQLDatabase:
     """PostgreSQL database operations for vehicle transactions and classes"""
 
-    # Vehicle class pricing reference (matches database schema)
-    VEHICLE_CLASSES_REF = {
-        1: {
-            "class_name": "car",
-            "entry_fee": 0.00,
-            "xray_fee": 0.00,
-            "total_fee": 0.00,
-        },
-        2: {
-            "class_name": "other",
-            "entry_fee": 0.00,
-            "xray_fee": 0.00,
-            "total_fee": 0.00,
-        },
-        3: {
-            "class_name": "other_truck",
-            "entry_fee": 100.00,
-            "xray_fee": 50.00,
-            "total_fee": 150.00,
-        },
-        4: {
-            "class_name": "pickup_truck",
-            "entry_fee": 0.00,
-            "xray_fee": 0.00,
-            "total_fee": 0.00,
-        },
-        5: {
-            "class_name": "truck_20_back",
-            "entry_fee": 100.00,
-            "xray_fee": 250.00,
-            "total_fee": 350.00,
-        },
-        6: {
-            "class_name": "truck_20_front",
-            "entry_fee": 100.00,
-            "xray_fee": 250.00,
-            "total_fee": 350.00,
-        },
-        7: {
-            "class_name": "truck_20x2",
-            "entry_fee": 100.00,
-            "xray_fee": 500.00,
-            "total_fee": 600.00,
-        },
-        8: {
-            "class_name": "truck_40",
-            "entry_fee": 100.00,
-            "xray_fee": 350.00,
-            "total_fee": 450.00,
-        },
-        9: {
-            "class_name": "truck_roro",
-            "entry_fee": 100.00,
-            "xray_fee": 50.00,
-            "total_fee": 150.00,
-        },
-        10: {
-            "class_name": "truck_tail",
-            "entry_fee": 100.00,
-            "xray_fee": 50.00,
-            "total_fee": 150.00,
-        },
-        11: {
-            "class_name": "motorcycle",
-            "entry_fee": 0.00,
-            "xray_fee": 0.00,
-            "total_fee": 0.00,
-        },
-        12: {
-            "class_name": "truck_head",
-            "entry_fee": 100.00,
-            "xray_fee": 50.00,
-            "total_fee": 150.00,
-        },
-    }
-
     def __init__(
         self,
-        host: str = "db",
-        port: int = 5432,
-        database: str = "vehicle_db",
-        user: str = "postgres",
-        password: str = "postgres123",
+        host: str,
+        port: int,
+        database: str,
+        user: str,
+        password: str,
     ):
         """Initialize PostgreSQL connection"""
         self.connection_params = {
@@ -594,94 +468,6 @@ class PostgreSQLDatabase:
             logging.error(f"✗ Get vehicle class failed: {e}")
             return None
 
-    def get_all_vehicle_classes(self) -> List[Dict]:
-        """Get all vehicle classes"""
-        try:
-            conn = self._get_connection()
-            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
-            cur.execute("SELECT * FROM vehicle_classes ORDER BY class_id")
-
-            results = cur.fetchall()
-            cur.close()
-            conn.close()
-
-            return [dict(r) for r in results]
-
-        except Exception as e:
-            logging.error(f"✗ Get all vehicle classes failed: {e}")
-            return []
-
-    def get_records_by_camera(self, camera_id: str) -> List[Dict]:
-        """Query records by camera_id"""
-        try:
-            conn = self._get_connection()
-            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
-            cur.execute(
-                "SELECT * FROM vehicle_transactions WHERE camera_id = %s ORDER BY time_stamp DESC",
-                (camera_id,),
-            )
-
-            results = cur.fetchall()
-            cur.close()
-            conn.close()
-
-            return [dict(r) for r in results]
-
-        except Exception as e:
-            logging.error(f"✗ Get records by camera failed: {e}")
-            return []
-
-    def get_summary_stats(self) -> Dict:
-        """Get summary statistics"""
-        try:
-            conn = self._get_connection()
-            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
-            # Get total records and fees
-            cur.execute("""
-                SELECT
-                    COUNT(*) as total_records,
-                    COALESCE(SUM(total_fee), 0) as total_fee_collected,
-                    COALESCE(AVG(confidence), 0) as avg_confidence
-                FROM vehicle_transactions
-            """)
-
-            stats = dict(cur.fetchone())
-
-            # Get vehicle counts by class
-            cur.execute("""
-                SELECT class_id, COUNT(*) as count
-                FROM vehicle_transactions
-                GROUP BY class_id
-                ORDER BY class_id
-            """)
-
-            vehicle_counts = {}
-            for row in cur.fetchall():
-                # Map class_id to class name
-                for vc in VehicleClass:
-                    if vc.value == row["class_id"]:
-                        vehicle_counts[vc.name] = row["count"]
-                        break
-
-            cur.close()
-            conn.close()
-
-            return {
-                "total_records": stats["total_records"],
-                "total_fee_collected": round(float(stats["total_fee_collected"]), 2),
-                "vehicle_counts": vehicle_counts,
-                "avg_confidence": round(float(stats["avg_confidence"]), 4)
-                if stats["avg_confidence"]
-                else 0.0,
-            }
-
-        except Exception as e:
-            logging.error(f"✗ Get summary stats failed: {e}")
-            return {"total_records": 0}
-
 
 # ============================================================================
 # PROCESSING SERVICE - Redis Queue + MinIO Integration
@@ -693,17 +479,17 @@ class ProcessingService:
 
     def __init__(
         self,
-        redis_host: str = "localhost",
-        redis_port: int = 6379,
-        minio_endpoint: str = "localhost:9000",
-        minio_access_key: str = "minioadmin",
-        minio_secret_key: str = "minioadmin",
+        redis_host: str,
+        redis_port: int,
+        minio_endpoint: str,
+        minio_access_key: str,
+        minio_secret_key: str,
+        db_host: str,
+        db_port: int,
+        db_name: str,
+        db_user: str,
+        db_password: str,
         minio_secure: bool = False,
-        db_host: str = "db",
-        db_port: int = 5432,
-        db_name: str = "vehicle_db",
-        db_user: str = "postgres",
-        db_password: str = "postgres123",
         output_dir: str = "./processed_data",
     ):
         """Initialize processing service"""
@@ -1011,20 +797,44 @@ def main():
 
     logging.info("Initializing Processing Service...")
 
+    # Get configuration from environment variables (REQUIRED)
+    required_vars = [
+        "REDIS_HOST",
+        "REDIS_PORT",
+        "MINIO_ENDPOINT",
+        "MINIO_ACCESS_KEY",
+        "MINIO_SECRET_KEY",
+        "DB_HOST",
+        "DB_PORT",
+        "POSTGRES_DB",
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+    ]
+
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
+    if missing_vars:
+        logging.error(
+            f"Missing required environment variables: {', '.join(missing_vars)}"
+        )
+        logging.error("Please set all required variables in .env file or environment")
+        raise ValueError(
+            f"Missing required environment variables: {', '.join(missing_vars)}"
+        )
+
     # Get configuration from environment variables
-    redis_host = os.getenv("REDIS_HOST", "redis")
-    redis_port = int(os.getenv("REDIS_PORT", 6379))
-    minio_endpoint = os.getenv("MINIO_ENDPOINT", "minio:9000")
-    minio_access_key = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
-    minio_secret_key = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+    redis_host = os.getenv("REDIS_HOST")
+    redis_port = int(os.getenv("REDIS_PORT"))
+    minio_endpoint = os.getenv("MINIO_ENDPOINT")
+    minio_access_key = os.getenv("MINIO_ACCESS_KEY")
+    minio_secret_key = os.getenv("MINIO_SECRET_KEY")
     minio_secure = os.getenv("MINIO_SECURE", "false").lower() == "true"
 
     # Database configuration
-    db_host = os.getenv("DB_HOST", "db")
-    db_port = int(os.getenv("DB_PORT", 5432))
-    db_name = os.getenv("POSTGRES_DB", "vehicle_db")
-    db_user = os.getenv("POSTGRES_USER", "postgres")
-    db_password = os.getenv("POSTGRES_PASSWORD", "postgres123")
+    db_host = os.getenv("DB_HOST")
+    db_port = int(os.getenv("DB_PORT"))
+    db_name = os.getenv("POSTGRES_DB")
+    db_user = os.getenv("POSTGRES_USER")
+    db_password = os.getenv("POSTGRES_PASSWORD")
 
     try:
         # Initialize processing service
@@ -1034,12 +844,12 @@ def main():
             minio_endpoint=minio_endpoint,
             minio_access_key=minio_access_key,
             minio_secret_key=minio_secret_key,
-            minio_secure=minio_secure,
             db_host=db_host,
             db_port=db_port,
             db_name=db_name,
             db_user=db_user,
             db_password=db_password,
+            minio_secure=minio_secure,
         )
 
         # Run as worker
