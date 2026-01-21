@@ -537,7 +537,7 @@ def render_current_vehicle_tab() -> None:
 
 # ==================== TRANSACTION HISTORY ====================
 def render_transaction_history() -> None:
-    """Render transaction history for today only"""
+    """Render transaction history for today only with filters"""
     st.markdown("---")
     st.markdown("### 📜 Transaction History (Today)")
     
@@ -548,6 +548,16 @@ def render_transaction_history() -> None:
     st.info(f"📅 Showing transactions for: {today.strftime('%d %B %Y')}")
     
     try:
+        # Get all vehicle classes from master data
+        query_classes = """
+            SELECT class_name 
+            FROM vehicle_classes 
+            ORDER BY class_id
+        """
+        df_classes = pd.read_sql(text(query_classes), engine)
+        all_vehicle_types = df_classes['class_name'].tolist()
+        
+        # Get all transactions for today
         query = """
             SELECT 
                 t.id,
@@ -567,17 +577,59 @@ def render_transaction_history() -> None:
             ORDER BY t.time_stamp DESC
         """
         
-        df_transactions = pd.read_sql(text(query), engine, params={"today": today})
+        df_all = pd.read_sql(text(query), engine, params={"today": today})
         
-        if not df_transactions.empty:
+        if not df_all.empty:
+            # Filter options
+            st.markdown("#### 🔍 Filters")
+            col_f1, col_f2 = st.columns(2)
+            
+            with col_f1:
+                # Camera filter - dropdown
+                all_cameras = sorted(df_all['camera_id'].unique().tolist())
+                camera_options = ["All Cameras"] + all_cameras
+                selected_camera = st.selectbox(
+                    "📷 Select Camera",
+                    options=camera_options,
+                    index=0,
+                    key="camera_filter"
+                )
+            
+            with col_f2:
+                # Vehicle type filter - dropdown (ใช้จาก master data)
+                vehicle_type_options = ["All Types"] + all_vehicle_types
+                selected_vehicle_type = st.selectbox(
+                    "🚗 Select Vehicle Type",
+                    options=vehicle_type_options,
+                    index=0,
+                    key="vehicle_type_filter"
+                )
+            
+            # Apply filters based on dropdown selection
+            if selected_camera == "All Cameras":
+                selected_cameras = all_cameras
+            else:
+                selected_cameras = [selected_camera]
+            
+            if selected_vehicle_type == "All Types":
+                selected_vehicle_types = all_vehicle_types
+            else:
+                selected_vehicle_types = [selected_vehicle_type]
+            
+            # Apply filters
+            df_transactions = df_all[
+                (df_all['camera_id'].isin(selected_cameras)) & 
+                (df_all['class_name'].isin(selected_vehicle_types))
+            ]
+            
+            st.markdown("---")
+            
             # Summary metrics
-            col_m1, col_m2, col_m3 = st.columns(3)
+            col_m1, col_m2 = st.columns(2)
             with col_m1:
                 st.metric("📊 Total Transactions", len(df_transactions))
             with col_m2:
                 st.metric("💰 Total Revenue", f"{df_transactions['total_fee'].sum():.0f} ฿")
-            with col_m3:
-                st.metric("📈 Avg/Transaction", f"{df_transactions['total_fee'].mean():.0f} ฿")
             
             st.markdown("---")
             
@@ -775,15 +827,13 @@ def render_analytics_tab() -> None:
             st.markdown("---")
             
             # Summary metrics
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3 = st.columns(3)
             
             with col1:
                 st.metric("📊 Total Transactions", len(df_analytics))
             with col2:
                 st.metric("💰 Total Revenue", f"{df_analytics['total_fee'].sum():.0f} ฿")
             with col3:
-                st.metric("📈 Avg/Transaction", f"{df_analytics['total_fee'].mean():.0f} ฿")
-            with col4:
                 st.metric("📷 Active Cameras", df_analytics['camera_id'].nunique())
             
             st.markdown("---")
@@ -830,23 +880,19 @@ def main() -> None:
     st.markdown("---")
     
     # Create tabs
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "🚗 Current Vehicle", 
+    tab1, tab2, tab3 = st.tabs([
         "📜 History", 
         "⚙️ Master Data", 
         "📊 Analytics"
     ])
     
     with tab1:
-        render_current_vehicle_tab()
-    
-    with tab2:
         render_transaction_history()
     
-    with tab3:
+    with tab2:
         render_master_data_tab(df_classes)
     
-    with tab4:
+    with tab3:
         render_analytics_tab()
 
 if __name__ == "__main__":
