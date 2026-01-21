@@ -7,7 +7,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # คัดลอกโค้ดทั้งหมดเข้า Container
-COPY app/main.py .
+COPY app/ ./app/
 
 EXPOSE 8501
 
