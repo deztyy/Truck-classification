@@ -24,6 +24,22 @@ FEE_STEP = 10.0
 MAX_CAMERA_ID_LENGTH = 50
 MAX_TRACK_ID_LENGTH = 100
 
+# Display Name Mapping for Vehicle Classes
+CLASS_NAME_DISPLAY = {
+    "car": "รถยนต์",
+    "other": "รถประเภทอื่น(เช่น รถบัส รถตุ๊กตุ๊ก)",
+    "other_truck": "รถบรรทุกประเภทอื่น(เช่น รถบรรทุกของเหลว)",
+    "pickup_truck": "รถกระบะ",
+    "truck_20_back": "รถบรรทุกที่มีตู้ขนาด 20 อยู่ด้านหลัง",
+    "truck_20_front": "รถบรรทุกที่มีตู้ขนาด 20 อยู่ด้านหน้า",
+    "truck_40": "รถบรรทุกที่มีตู้ขนาด 40",
+    "truck_roro": "รถบรรทุกขนรถ",
+    "truck_tail": "รถบรรทุกที่มีหาง",
+    "motorcycle": "มอเตอร์ไซค์",
+    "truck_head": "รถบรรทุกที่แต่หัว",
+    "truck_20x2": "รถบรรทุกที่มีตู้ขนาด 20 อยู่ 2 ตู้"
+}
+
 # ==================== CUSTOM CSS ====================
 def load_custom_css() -> None:
     """Load custom CSS styling for the application"""
@@ -109,6 +125,22 @@ def load_custom_css() -> None:
         }
     </style>
     """, unsafe_allow_html=True)
+
+
+# ==================== HELPER FUNCTIONS ====================
+def translate_class_name(class_name: str) -> str:
+    """
+    Translate class name from database to display name
+    
+    Args:
+        class_name: Original class name from database
+        
+    Returns:
+        Translated display name
+    """
+    if pd.isna(class_name):
+        return class_name
+    return CLASS_NAME_DISPLAY.get(class_name.lower(), class_name)
 
 # ==================== DATABASE CONNECTION ====================
 @st.cache_resource
@@ -597,7 +629,9 @@ def render_transaction_history() -> None:
             
             with col_f2:
                 # Vehicle type filter - dropdown (ใช้จาก master data)
-                vehicle_type_options = ["All Types"] + all_vehicle_types
+                # แปลงชื่อสำหรับแสดงใน dropdown
+                translated_types = [translate_class_name(vt) for vt in all_vehicle_types]
+                vehicle_type_options = ["All Types"] + translated_types
                 selected_vehicle_type = st.selectbox(
                     "🚗 Select Vehicle Type",
                     options=vehicle_type_options,
@@ -614,7 +648,9 @@ def render_transaction_history() -> None:
             if selected_vehicle_type == "All Types":
                 selected_vehicle_types = all_vehicle_types
             else:
-                selected_vehicle_types = [selected_vehicle_type]
+                # แปลงกลับเป็นชื่อเดิมสำหรับ filter
+                selected_vehicle_types = [vt for vt in all_vehicle_types 
+                                         if translate_class_name(vt) == selected_vehicle_type]
             
             # Apply filters
             df_transactions = df_all[
@@ -638,15 +674,16 @@ def render_transaction_history() -> None:
                 timestamp = convert_to_thailand_tz(pd.to_datetime(row['time_stamp']))
                 time_display = timestamp.strftime('%H:%M:%S')
                 conf_text = f" ({row['confidence']:.2%})" if pd.notna(row['confidence']) else ""
+                translated_name = translate_class_name(row['class_name'])
                 
                 with st.expander(
-                    f"📷 {row['camera_id']} | {row['class_name']}{conf_text} | {time_display} | {row['total_fee']:.0f} ฿",
+                    f"📷 {row['camera_id']} | {translated_name}{conf_text} | {time_display} | {row['total_fee']:.0f} ฿",
                     expanded=False
                 ):
                     st.markdown(f"**🆔 ID:** #{row['id']}")
                     st.markdown(f"**📷 Camera:** {row['camera_id']}")
                     st.markdown(f"**🔖 Track ID:** {row['track_id']}")
-                    st.markdown(f"**🚗 Vehicle:** {row['class_name']}")
+                    st.markdown(f"**🚗 Vehicle:** {translated_name}")
                     if pd.notna(row['confidence']):
                         st.markdown(f"**🎯 Confidence:** {row['confidence']:.2%}")
                     st.markdown("---")
@@ -709,8 +746,12 @@ def render_master_data_tab(df_classes: pd.DataFrame) -> None:
     st.markdown("### ⚙️ Vehicle Classes Management")
     
     if not df_classes.empty:
+        # แปลงชื่อสำหรับแสดงผล
+        df_display = df_classes.copy()
+        df_display['class_name'] = df_display['class_name'].apply(translate_class_name)
+        
         st.dataframe(
-            df_classes,
+            df_display,
             use_container_width=True,
             hide_index=True,
             column_config={
@@ -841,14 +882,18 @@ def render_analytics_tab() -> None:
             # Charts
             col_c1, col_c2 = st.columns(2)
             
+            # แปลงชื่อสำหรับแสดงใน chart
+            df_analytics_display = df_analytics.copy()
+            df_analytics_display['class_name'] = df_analytics_display['class_name'].apply(translate_class_name)
+            
             with col_c1:
                 st.markdown("#### 🚗 Transactions by Vehicle Type")
-                vehicle_counts = df_analytics['class_name'].value_counts()
+                vehicle_counts = df_analytics_display['class_name'].value_counts()
                 st.bar_chart(vehicle_counts.to_frame("count"))
             
             with col_c2:
                 st.markdown("#### 💰 Revenue by Vehicle Type")
-                revenue_by_type = df_analytics.groupby('class_name')['total_fee'].sum().sort_values(ascending=False)
+                revenue_by_type = df_analytics_display.groupby('class_name')['total_fee'].sum().sort_values(ascending=False)
                 st.bar_chart(revenue_by_type.to_frame("revenue"))
         else:
             st.info(f"📭 No data found between {start_date.strftime('%d %B %Y')} and {end_date.strftime('%d %B %Y')}")
