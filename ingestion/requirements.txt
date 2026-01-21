@@ -1,4 +1,0 @@
-numpy
-redis
-minio
-opencv-python-headless
