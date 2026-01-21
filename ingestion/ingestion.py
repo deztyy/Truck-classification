@@ -120,10 +120,17 @@ class VideoIngestor:
             - MINIO_SECRET_KEY: Secret key for authentication
             - MINIO_SECURE: Use HTTPS (default: 'false')
         """
-        endpoint = os.getenv("MINIO_ENDPOINT", "localhost:9000")
-        access_key = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
-        secret_key = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+        endpoint = os.getenv("MINIO_ENDPOINT")
+        access_key = os.getenv("MINIO_ACCESS_KEY")
+        secret_key = os.getenv("MINIO_SECRET_KEY")
         secure = os.getenv("MINIO_SECURE", "false").lower() == "true"
+
+        # Validate required credentials
+        if not endpoint or not access_key or not secret_key:
+            raise ValueError(
+                "Missing required MinIO environment variables: "
+                "MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY"
+            )
 
         logger.info(f"Connecting to MinIO at {endpoint} (secure={secure})")
 
@@ -139,16 +146,23 @@ class VideoIngestor:
             redis.Redis: Configured Redis client
 
         Environment Variables Required:
-            - REDIS_HOST: Redis server hostname (default: 'localhost')
-            - REDIS_PORT: Redis server port (default: '6379')
+            - REDIS_HOST: Redis server hostname
+            - REDIS_PORT: Redis server port
             - REDIS_DB: Redis database number (default: '0')
             - REDIS_PASSWORD: Redis password (optional)
         """
-        host = os.getenv("REDIS_HOST", "localhost")
-        port = int(os.getenv("REDIS_PORT", "6379"))
+        host = os.getenv("REDIS_HOST")
+        port = os.getenv("REDIS_PORT")
         db = int(os.getenv("REDIS_DB", "0"))
         password = os.getenv("REDIS_PASSWORD", None)
 
+        # Validate required configuration
+        if not host or not port:
+            raise ValueError(
+                "Missing required Redis environment variables: REDIS_HOST, REDIS_PORT"
+            )
+
+        port = int(port)
         logger.info(f"Connecting to Redis at {host}:{port}")
 
         return redis.Redis(
@@ -260,9 +274,7 @@ class VideoIngestor:
                         # Signal EOF to the caller so it can terminate cleanly
                         raise EOFError("End of video file reached")
 
-                    logger.warning(
-                        f"Failed to read frame {i + 1}/{self.batch_size}"
-                    )
+                    logger.warning(f"Failed to read frame {i + 1}/{self.batch_size}")
                     return None
 
                 # --- CUSTOM PREPROCESSING GOES HERE ---
