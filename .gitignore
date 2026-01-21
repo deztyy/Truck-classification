@@ -24,7 +24,7 @@ credentials.json
 # =============================================================================
 # 📊 DATA FILES - GENERATED AT RUNTIME
 # =============================================================================
-*.npy          # NumPy arrays from cameras
+*.npy
 *.npz
 *.txt          # Result files
 !requirements.txt
@@ -43,9 +43,8 @@ mlflow_db/         # MLflow database
 minio_data/        # MinIO S3 storage
 logs/
 *.log
-*.npy
 *.meta
-Truck-Deploy/minio_data/
+
 # =============================================================================
 # 🤖 ML MODELS - LARGE BINARY FILES
 # =============================================================================

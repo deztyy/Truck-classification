@@ -5,3 +5,6 @@ onnxruntime
 boto3
 requests
 redis
+lap
+psycopg2-binary
+Pillow>=10.0.0
