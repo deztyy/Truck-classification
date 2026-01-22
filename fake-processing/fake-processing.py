@@ -798,19 +798,45 @@ class ProcessingService:
                     frame_uint8 = self._normalize_to_uint8(selected_frame)
 
                     # Create PIL Image
-                    minio_path = self.convert_npy_to_jpg(
-                        npy_array=frame_uint8,
-                        frame_index=frame_idx,
-                        camera_id=task.camera_id,
-                        task_id=task.task_id,
-                        quality=JPEG_QUALITY
+                    if frame_uint8.ndim == 2:
+                        image = Image.fromarray(frame_uint8, mode="L")
+                    elif frame_uint8.shape[2] == 3:
+                        image = Image.fromarray(frame_uint8, mode="RGB")
+                    elif frame_uint8.shape[2] == 4:
+                        image = Image.fromarray(frame_uint8, mode="RGBA").convert("RGB")
+                    else:
+                        raise ValueError(f"Unsupported image shape: {frame_uint8.shape}")
+
+                    img_bytes = self._encode_jpeg(image, quality=JPEG_QUALITY)
+
+                    # Create output filename
+                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    output_filename = f"{task.camera_id}_{task.task_id}_{timestamp}.jpg"
+
+                    # Ensure bucket exists
+                    self.minio_manager.create_bucket(PROCESSED_BUCKET_NAME)
+
+                    # Upload to MinIO
+                    upload_success = self.minio_manager.upload_from_bytes(
+                        bucket=PROCESSED_BUCKET_NAME,
+                        object_name=output_filename,
+                        data=img_bytes,
+                        content_type="image/jpeg",
                     )
 
-                    if not minio_path:
-                        raise Exception("Failed to convert and upload frame")
+                    if upload_success:
+                        # Delete original batch file from MinIO
+                        delete_success = self.minio_manager.delete_object(
+                            bucket=task.minio_bucket, object_name=batch_object
+                        )
 
-                    # Run inference
-                    class_id, total_fee, confidence = self._run_inference(frame_uint8)
+                        # Clean up local file
+                        if os.path.exists(batch_file):
+                            os.remove(batch_file)
+                            logging.info(f"✓ Cleaned up local file: {batch_file}")
+
+                        # Run inference
+                        class_id, total_fee, confidence = self._run_inference(frame_uint8)
 
                     # Create transaction record
                     transaction = VehicleTransaction(

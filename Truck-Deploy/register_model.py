@@ -5,9 +5,11 @@ from mlflow.tracking import MlflowClient
 import time
 import sys
 
-# 1. Setup Environment
-os.environ["AWS_ACCESS_KEY_ID"] = "admin123"
-os.environ["AWS_SECRET_ACCESS_KEY"] = "password123"
+# ============================================================================
+# CRITICAL: Use SAME credentials as docker-compose.yml
+# ============================================================================
+os.environ["AWS_ACCESS_KEY_ID"] = "minioadmin"  # Changed from admin123
+os.environ["AWS_SECRET_ACCESS_KEY"] = "minioadmin"  # Changed from password123
 os.environ["MLFLOW_S3_ENDPOINT_URL"] = "http://localhost:9000"
 os.environ["MLFLOW_S3_IGNORE_TLS"] = "true"
 
@@ -15,7 +17,7 @@ mlflow.set_tracking_uri("http://localhost:5000")
 client = MlflowClient()
 
 model_name = "Truck_classification_Model"
-onnx_path = "truck_classification.onnx"
+onnx_path = "truck_classification.onnx"  # Make sure this file exists!
 
 print(f"{'='*60}")
 print(f"MLflow Model Registration (with S3/MinIO)")
@@ -29,6 +31,7 @@ try:
     print(f"  ✓ MLflow server: {response.status_code}")
 except Exception as e:
     print(f"  ✗ MLflow server not accessible: {e}")
+    print("  Run: docker-compose up -d mlflow-server")
     sys.exit(1)
 
 print("\n[2/5] Testing MinIO connectivity...")
@@ -44,6 +47,7 @@ except Exception as e:
 print(f"\n[3/5] Checking model file...")
 if not os.path.exists(onnx_path):
     print(f"  ✗ Model file not found: {onnx_path}")
+    print(f"  Please make sure you have 'truck_classification.onnx' in current directory")
     sys.exit(1)
 
 file_size = os.path.getsize(onnx_path) / (1024 * 1024)  # MB
@@ -94,7 +98,7 @@ try:
                 onnx_model=onnx_model,
                 artifact_path="model",
                 registered_model_name=model_name,
-                pip_requirements=["onnx", "mlflow"]
+                pip_requirements=["onnx", "onnxruntime"]
             )
         finally:
             stop_progress.set()
@@ -111,27 +115,45 @@ except Exception as e:
     traceback.print_exc()
     sys.exit(1)
 
-# Get the latest version
+# Get the latest version and set to Production
 print(f"\nSetting model to Production stage...")
 try:
-    latest_version = client.get_latest_versions(model_name, stages=["None"])[0].version
-    
-    client.transition_model_version_stage(
-        name=model_name,
-        version=latest_version,
-        stage="Production",
-        archive_existing_versions=True
-    )
-    
-    print(f"  ✓ Model version {latest_version} → Production")
+    # Get all versions
+    versions = client.search_model_versions(f"name='{model_name}'")
+    if versions:
+        latest_version = max([int(v.version) for v in versions])
+        
+        client.transition_model_version_stage(
+            name=model_name,
+            version=str(latest_version),
+            stage="Production",
+            archive_existing_versions=True
+        )
+        
+        print(f"  ✓ Model version {latest_version} → Production")
+    else:
+        print(f"  ⚠ No versions found, trying alternative method...")
+        latest_versions = client.get_latest_versions(model_name, stages=["None"])
+        if latest_versions:
+            latest_version = latest_versions[0].version
+            client.transition_model_version_stage(
+                name=model_name,
+                version=latest_version,
+                stage="Production",
+                archive_existing_versions=True
+            )
+            print(f"  ✓ Model version {latest_version} → Production")
+        else:
+            print(f"  ⚠ Could not set Production stage automatically")
+            latest_version = "1"
     
 except Exception as e:
-    print(f"  ✗ Failed to set stage: {e}")
-    # Don't exit - the model is still registered
-    latest_version = "?"
+    print(f"  ⚠ Failed to set stage: {e}")
+    print(f"  You can set it manually in MLflow UI: http://localhost:5000")
+    latest_version = "1"
 
 # Verify
-print(f"\nVerifying artifacts...")
+print(f"\nVerifying artifacts in MinIO...")
 try:
     artifacts = client.list_artifacts(run_id, path="model")
     print(f"  ✓ Found {len(artifacts)} artifacts:")
@@ -149,6 +171,11 @@ print(f"Version: {latest_version}")
 print(f"Stage: Production")
 print(f"Model URI: models:/{model_name}/Production")
 print(f"Total time: {time.time() - start_time:.1f}s")
-print(f"\nView in MLflow UI: http://localhost:5000")
-print(f"View in MinIO UI: http://localhost:9001")
+print(f"\n📍 Next Steps:")
+print(f"  1. Verify in MLflow UI: http://localhost:5000")
+print(f"  2. Verify in MinIO UI: http://localhost:9001")
+print(f"     - Username: minioadmin")
+print(f"     - Password: minioadmin")
+print(f"     - Check bucket: mlflow-bucket")
+print(f"  3. Start your worker: docker-compose up -d processing-worker")
 print(f"{'='*60}")
