@@ -24,6 +24,8 @@ REDIS_HOST = os.getenv("REDIS_HOST", "redis_broker")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_DB = int(os.getenv("REDIS_DB", 0))
 REDIS_QUEUE_LIMIT = 100  # Threshold to stop pushing jobs if the consumer is slow
+REDIS_CONNECT_TIMEOUT = 10  # Connection timeout in seconds
+REDIS_RETRY_DELAY = 5  # Delay between connection retries
 
 # Image Processing & Storage Settings
 TARGET_SIZE = (640, 640)  # Target dimensions (Width, Height)
@@ -52,6 +54,79 @@ def handle_signal(signum, frame):
 # Register signal handlers
 signal.signal(signal.SIGINT, handle_signal)
 signal.signal(signal.SIGTERM, handle_signal)
+
+# =============================================================================
+# REDIS CONNECTION MANAGEMENT
+# =============================================================================
+def connect_to_redis(max_retries=None):
+    """
+    Establishes connection to Redis with retry logic.
+    
+    Args:
+        max_retries: Maximum number of retry attempts (None for infinite)
+    
+    Returns:
+        redis.Redis: Connected Redis client or None if failed
+    """
+    retry_count = 0
+    
+    while RUNNING:
+        try:
+            print(f"🔌 Attempting to connect to Redis at {REDIS_HOST}:{REDIS_PORT}...")
+            
+            # Create Redis client with proper timeout settings
+            redis_client = redis.Redis(
+                host=REDIS_HOST,
+                port=REDIS_PORT,
+                db=REDIS_DB,
+                socket_connect_timeout=REDIS_CONNECT_TIMEOUT,
+                socket_timeout=REDIS_CONNECT_TIMEOUT,
+                socket_keepalive=True,
+                socket_keepalive_options={},
+                health_check_interval=30,
+                decode_responses=False  # Important: keep as bytes for binary data
+            )
+            
+            # Test connection
+            redis_client.ping()
+            
+            print(f"✅ Successfully connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
+            return redis_client
+            
+        except redis.ConnectionError as e:
+            retry_count += 1
+            if max_retries and retry_count >= max_retries:
+                print(f"❌ Failed to connect to Redis after {retry_count} attempts")
+                return None
+            
+            print(f"🔴 Redis connection failed (attempt {retry_count}): {e}")
+            print(f"⏳ Retrying in {REDIS_RETRY_DELAY} seconds...")
+            time.sleep(REDIS_RETRY_DELAY)
+            
+        except Exception as e:
+            print(f"❌ Unexpected error connecting to Redis: {e}")
+            import traceback
+            traceback.print_exc()
+            time.sleep(REDIS_RETRY_DELAY)
+    
+    return None
+
+def ensure_redis_connection(redis_client):
+    """
+    Check if Redis connection is alive, reconnect if needed.
+    
+    Args:
+        redis_client: Existing Redis client
+    
+    Returns:
+        redis.Redis: Working Redis client
+    """
+    try:
+        redis_client.ping()
+        return redis_client
+    except:
+        print("⚠️ Redis connection lost. Reconnecting...")
+        return connect_to_redis()
 
 # =============================================================================
 # UTILITY FUNCTIONS
@@ -100,10 +175,10 @@ def save_and_push_batch(redis_client, save_dir, batch_frames, camera_id, queue_l
         queue_limit: Maximum queue length before dropping
     
     Returns:
-        bool: True if successfully pushed, False otherwise
+        tuple: (success: bool, redis_client: Redis) - Returns updated Redis client
     """
     if not batch_frames:
-        return False
+        return False, redis_client
     
     try:
         # Generate filename with timestamp
@@ -114,6 +189,12 @@ def save_and_push_batch(redis_client, save_dir, batch_frames, camera_id, queue_l
         # Convert list to numpy array and save
         batch_array = np.array(batch_frames, dtype=np.uint8)
         np.save(full_path, batch_array)
+        
+        # Ensure Redis connection is alive
+        redis_client = ensure_redis_connection(redis_client)
+        if redis_client is None:
+            print("❌ Cannot push to Redis - connection failed")
+            return False, None
         
         # Check queue length
         q_len = redis_client.llen('video_jobs')
@@ -126,8 +207,8 @@ def save_and_push_batch(redis_client, save_dir, batch_frames, camera_id, queue_l
             }
             redis_client.rpush('video_jobs', json.dumps(message))
             
-            print(f"✅ [{camera_id}] Pushed {file_name} (Queue: {q_len}, Progress: {len(batch_frames)} frames)")
-            return True
+            print(f"✅ [{camera_id}] Pushed {file_name} (Queue: {q_len}, Frames: {len(batch_frames)})")
+            return True, redis_client
         else:
             print(f"⚠️ Redis Queue Full ({q_len}/{queue_limit}). Dropping batch...")
             # Delete the saved file since we're not processing it
@@ -135,11 +216,16 @@ def save_and_push_batch(redis_client, save_dir, batch_frames, camera_id, queue_l
                 os.remove(full_path)
             except:
                 pass
-            return False
+            return False, redis_client
             
+    except redis.ConnectionError as e:
+        print(f"🔥 Redis connection error: {e}")
+        return False, connect_to_redis()
     except Exception as e:
         print(f"🔥 Batch save error: {e}")
-        return False
+        import traceback
+        traceback.print_exc()
+        return False, redis_client
 
 # =============================================================================
 # THREADED VIDEO CAPTURE CLASS
@@ -238,10 +324,15 @@ def cleanup_worker(folder_path, retention_sec):
             now = time.time()
             # Find all NumPy files in the directory
             files = glob.glob(os.path.join(folder_path, "*.npy"))
+            deleted_count = 0
             for f in files:
                 # Delete if modification time is older than retention limit
                 if os.stat(f).st_mtime < now - retention_sec:
                     os.remove(f)
+                    deleted_count += 1
+            
+            if deleted_count > 0:
+                print(f"🗑️ Cleaned up {deleted_count} old files")
 
             # Check every 60 seconds
             time.sleep(60) 
@@ -255,6 +346,10 @@ def cleanup_worker(folder_path, retention_sec):
 def main():
     global frame_buffer
     
+    print("=" * 60)
+    print("📹 Video Capture Service Starting...")
+    print("=" * 60)
+    
     # 1. Validation
     if not VIDEO_PATH:
         print("❌ Error: VIDEO_PATH environment variable is not set.")
@@ -263,22 +358,27 @@ def main():
     if not os.path.exists(VIDEO_PATH):
         print(f"❌ Error: Video file not found at {VIDEO_PATH}")
         sys.exit(1)
+    
+    print(f"📁 Video Path: {VIDEO_PATH}")
+    print(f"📷 Camera ID: {CAMERA_ID}")
+    print(f"💾 Output Folder: {OUTPUT_FOLDER}")
+    print(f"🔄 Loop Video: {LOOP_VIDEO}")
+    print(f"📦 Batch Size: {BATCH_SIZE} frames")
+    print(f"⚙️ Process FPS: {PROCESS_FPS}")
+    print("=" * 60)
 
     # 2. Redis Connection Setup
-    r = None
-    while RUNNING:
-        try:
-            r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, socket_connect_timeout=2)
-            r.ping()
-            print(f"🟢 Connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
-            break
-        except redis.ConnectionError:
-            print("🔴 Redis not ready. Retrying in 5s...")
-            time.sleep(5)
+    print("\n🔌 Connecting to Redis...")
+    redis_client = connect_to_redis()
+    
+    if redis_client is None:
+        print("❌ Failed to connect to Redis. Exiting...")
+        sys.exit(1)
 
     # 3. Directory Setup
     save_dir = os.path.join(OUTPUT_FOLDER, CAMERA_ID)
     os.makedirs(save_dir, exist_ok=True)
+    print(f"📁 Save directory created: {save_dir}")
 
     # 4. Start Cleanup Thread
     cleaner_thread = threading.Thread(target=cleanup_worker, args=(save_dir, RETENTION_SECONDS))
@@ -286,7 +386,7 @@ def main():
     cleaner_thread.start()
 
     # 5. Start Video Stream
-    print(f"📡 Loading Video: {VIDEO_PATH}...")
+    print(f"\n📡 Loading Video: {VIDEO_PATH}...")
     try:
         video_stream = LocalVideoLoader(VIDEO_PATH, loop=LOOP_VIDEO).start()
     except ValueError as e:
@@ -299,7 +399,8 @@ def main():
     last_process_time = 0
     process_interval = 1.0 / PROCESS_FPS 
 
-    print(f"🚀 Service Started. Processing frames in batches of {BATCH_SIZE}...")
+    print(f"\n🚀 Service Started. Processing frames in batches of {BATCH_SIZE}...")
+    print("=" * 60)
 
     # --- MAIN LOOP ---
     while RUNNING:
@@ -316,11 +417,13 @@ def main():
         # Handle video end (when not looping)
         if not grabbed or frame is None:
             if not LOOP_VIDEO:
-                print(f"⏹️ Video playback completed.")
+                print(f"\n⏹️ Video playback completed.")
                 # Save remaining frames in buffer before exiting
                 if frame_buffer:
                     print(f"💾 Saving final batch of {len(frame_buffer)} frames...")
-                    save_and_push_batch(r, save_dir, frame_buffer, CAMERA_ID, REDIS_QUEUE_LIMIT)
+                    success, redis_client = save_and_push_batch(
+                        redis_client, save_dir, frame_buffer, CAMERA_ID, REDIS_QUEUE_LIMIT
+                    )
                     frame_buffer = []
                 break
             else:
@@ -337,7 +440,9 @@ def main():
             
             # D. Save and Push When Batch is Full
             if len(frame_buffer) >= BATCH_SIZE:
-                success = save_and_push_batch(r, save_dir, frame_buffer, CAMERA_ID, REDIS_QUEUE_LIMIT)
+                success, redis_client = save_and_push_batch(
+                    redis_client, save_dir, frame_buffer, CAMERA_ID, REDIS_QUEUE_LIMIT
+                )
                 
                 # Clear buffer regardless of success
                 frame_buffer = []
@@ -360,14 +465,23 @@ def main():
             time.sleep(1)
 
     # Cleanup before exit
+    print("\n🛑 Shutting down...")
     video_stream.stop()
     
     # Save any remaining frames in buffer
     if frame_buffer:
         print(f"💾 Saving final batch of {len(frame_buffer)} frames...")
-        save_and_push_batch(r, save_dir, frame_buffer, CAMERA_ID, REDIS_QUEUE_LIMIT)
+        success, redis_client = save_and_push_batch(
+            redis_client, save_dir, frame_buffer, CAMERA_ID, REDIS_QUEUE_LIMIT
+        )
+    
+    # Close Redis connection
+    if redis_client:
+        redis_client.close()
+        print("✅ Redis connection closed")
     
     print("👋 Service Stopped Gracefully.")
+    print("=" * 60)
 
 if __name__ == "__main__":
     main()

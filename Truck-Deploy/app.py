@@ -329,7 +329,7 @@ THAI_TZ = ZoneInfo("Asia/Bangkok")
 RUNNING = True
 
 # =============================================================================
-# VEHICLE CLASSIFICATION DATA
+# VEHICLE CLASSIFICATION DATA (ตรงกับ Streamlit App)
 # =============================================================================
 VEHICLE_CLASSES = {
     0: {"name": "car", "entry_fee": 0.00, "xray_fee": 0.00},
@@ -431,7 +431,6 @@ def convert_npy_to_jpg(npy_array, frame_index, output_dir=IMAGE_STORAGE_DIR, qua
             npy_array = npy_array.astype(np.uint8)
         
         # Convert BGR (OpenCV) to RGB (PIL)
-        # OpenCV uses BGR, PIL uses RGB
         if npy_array.shape[2] == 3:
             frame_rgb = cv2.cvtColor(npy_array, cv2.COLOR_BGR2RGB)
         else:
@@ -450,12 +449,16 @@ def convert_npy_to_jpg(npy_array, frame_index, output_dir=IMAGE_STORAGE_DIR, qua
         return None
 
 # =============================================================================
-# DATABASE OPERATIONS
+# DATABASE OPERATIONS (ปรับให้ตรงกับ Streamlit App)
 # =============================================================================
 def init_database(engine):
-    """Initialize database tables"""
+    """Initialize database tables - ตรงกับ Production Database Schema"""
     try:
         with engine.connect() as conn:
+            # Set timezone for this session
+            conn.execute(text("SET TIME ZONE 'Asia/Bangkok'"))
+            
+            # Create vehicle_classes table
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS vehicle_classes (
                     class_id SERIAL PRIMARY KEY,
@@ -466,26 +469,29 @@ def init_database(engine):
                 );
             """))
             
+            # Create vehicle_transactions table - ตรงกับ Production Schema
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS vehicle_transactions (
-                    id SERIAL PRIMARY KEY,
+                    id BIGSERIAL PRIMARY KEY,
                     camera_id VARCHAR(50) NOT NULL,
-                    track_id INTEGER NOT NULL,
-                    class_id INT,
-                    applied_entry_fee NUMERIC(10, 2),
-                    applied_xray_fee NUMERIC(10, 2),
-                    total_applied_fee NUMERIC(10, 2),
-                    image_path TEXT,
-                    confidence NUMERIC(5, 4),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (class_id) REFERENCES vehicle_classes(class_id),
-                    UNIQUE(camera_id, track_id)
+                    track_id VARCHAR(100) NOT NULL,
+                    class_id INT NOT NULL,
+                    total_fee NUMERIC(10, 2) DEFAULT 0.00,
+                    time_stamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    img_path TEXT,
+                    confidence NUMERIC(5, 4)
                 );
             """))
             
+            # สร้าง indexes
             conn.execute(text("""
-                CREATE INDEX IF NOT EXISTS idx_camera_created 
-                ON vehicle_transactions(camera_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_camera_time 
+                ON vehicle_transactions(camera_id, time_stamp);
+            """))
+            
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_class_id 
+                ON vehicle_transactions(class_id);
             """))
             
             conn.execute(text("""
@@ -493,49 +499,80 @@ def init_database(engine):
                 ON vehicle_transactions(track_id);
             """))
             
+            # เพิ่ม Foreign Key constraint (ถ้ายังไม่มี)
+            # ตรวจสอบว่ามี constraint อยู่แล้วหรือไม่
+            result = conn.execute(text("""
+                SELECT COUNT(*) 
+                FROM information_schema.table_constraints 
+                WHERE constraint_name = 'fk_class_id' 
+                AND table_name = 'vehicle_transactions'
+            """))
+            
+            if result.scalar() == 0:
+                conn.execute(text("""
+                    ALTER TABLE vehicle_transactions 
+                    ADD CONSTRAINT fk_class_id 
+                    FOREIGN KEY (class_id) 
+                    REFERENCES vehicle_classes(class_id) 
+                    ON DELETE RESTRICT 
+                    ON UPDATE CASCADE;
+                """))
+                print("✅ Foreign key constraint added")
+            
+            # Insert vehicle classes (handle conflicts)
             for class_id, info in VEHICLE_CLASSES.items():
+                total_fee = info["entry_fee"] + info["xray_fee"]
                 conn.execute(text("""
                     INSERT INTO vehicle_classes (class_id, class_name, entry_fee, xray_fee, total_fee)
                     VALUES (:id, :name, :entry, :xray, :total)
-                    ON CONFLICT (class_id) DO NOTHING
+                    ON CONFLICT (class_name) DO UPDATE SET
+                        class_id = EXCLUDED.class_id,
+                        entry_fee = EXCLUDED.entry_fee,
+                        xray_fee = EXCLUDED.xray_fee,
+                        total_fee = EXCLUDED.total_fee
                 """), {
                     "id": class_id,
                     "name": info["name"],
                     "entry": info["entry_fee"],
                     "xray": info["xray_fee"],
-                    "total": info["entry_fee"] + info["xray_fee"]
+                    "total": total_fee
                 })
             
             conn.commit()
-            print("✅ Database initialized")
+            print("✅ Database initialized (matching Production schema)")
     except Exception as e:
         print(f"❌ Database initialization error: {e}")
+        import traceback
+        traceback.print_exc()
 
 def batch_insert_to_database(engine, batch_data):
-    """Batch insert multiple records to database"""
     if not batch_data:
+        print("⚠️ No data to insert")  # ADD THIS
         return
     
     with db_lock:
         try:
+            print(f"💾 Attempting to insert {len(batch_data)} records...")  # ADD THIS
             with engine.connect() as conn:
-                conn.execute(text("""
+                result = conn.execute(text("""
                     INSERT INTO vehicle_transactions 
-                    (camera_id, track_id, class_id, applied_entry_fee, applied_xray_fee, 
-                     total_applied_fee, image_path, confidence)
-                    VALUES (:cam_id, :track_id, :class_id, :entry, :xray, :total, :img, :conf)
-                    ON CONFLICT (camera_id, track_id) DO NOTHING
+                    (camera_id, track_id, class_id, total_fee, img_path, confidence, time_stamp)
+                    VALUES (:cam_id, :track_id, :class_id, :total, :img, :conf, :timestamp)
                 """), batch_data)
                 conn.commit()
                 
-                print(f"💾 Batch inserted {len(batch_data)} records to database")
+                print(f"✅ Successfully inserted {len(batch_data)} records")  # ADD THIS
         except Exception as e:
             print(f"❌ Batch insert error: {e}")
+            print(f"📋 First record sample: {batch_data[0] if batch_data else 'N/A'}")  # ADD THIS
+            import traceback
+            traceback.print_exc()
 
 def add_to_batch(camera_id, track_id, class_id, confidence, image_path):
-    """Add record to batch buffer"""
+    """Add record to batch buffer - ปรับให้ตรงกับ Streamlit App"""
     global batch_buffer, last_batch_time
     
+    # ใช้ track_id แบบ string ตรงกับ Streamlit
     track_key = f"{camera_id}_{track_id}"
     if track_key in saved_tracks:
         return
@@ -543,15 +580,15 @@ def add_to_batch(camera_id, track_id, class_id, confidence, image_path):
     vehicle = VEHICLE_CLASSES[class_id]
     total_fee = vehicle["entry_fee"] + vehicle["xray_fee"]
     
+    # ปรับ record ให้ตรงกับ Streamlit schema
     record = {
         "cam_id": camera_id,
-        "track_id": track_id,
+        "track_id": str(track_id),  # Convert to string
         "class_id": class_id,
-        "entry": vehicle["entry_fee"],
-        "xray": vehicle["xray_fee"],
         "total": total_fee,
         "img": image_path,
-        "conf": confidence
+        "conf": confidence,
+        "timestamp": datetime.now(THAI_TZ)  # เพิ่ม timestamp
     }
     
     with batch_lock:
@@ -645,7 +682,7 @@ def nms(boxes, scores, iou_threshold=0.5):
     
     return keep
 
-def postprocess_yolo_detection(outputs, conf_thresh=0.5, nms_thresh=0.45, img_shape=(640, 640)):
+def postprocess_yolo_detection(outputs, conf_thresh=0.5, nms_thresh=0.45, img_shape=(640, 640), debug=False):
     """Postprocess YOLO output with NMS for better accuracy"""
     output = outputs[0][0]  # [84, 8400]
     
@@ -655,11 +692,24 @@ def postprocess_yolo_detection(outputs, conf_thresh=0.5, nms_thresh=0.45, img_sh
     class_ids = np.argmax(class_probs, axis=1)
     confidences = np.max(class_probs, axis=1)
     
+    # Debug: แสดงจำนวน detections ก่อนกรอง
+    if debug:
+        print(f"  📊 Raw detections: {len(confidences)}, Max conf: {confidences.max():.3f}, Min conf: {confidences.min():.3f}")
+    
     # Higher confidence threshold
     mask = confidences > conf_thresh
     boxes = boxes[mask]
     class_ids = class_ids[mask]
     confidences = confidences[mask]
+    
+    if debug:
+        print(f"  ✅ After threshold ({conf_thresh}): {len(confidences)} detections")
+        if len(confidences) > 0:
+            class_counts = {}
+            for cls in class_ids:
+                class_name = VEHICLE_CLASSES.get(cls, {}).get('name', f'class_{cls}')
+                class_counts[class_name] = class_counts.get(class_name, 0) + 1
+            print(f"     Classes: {class_counts}")
     
     # Convert to x1,y1,x2,y2 format
     bbox_list = []
@@ -695,54 +745,59 @@ def postprocess_yolo_detection(outputs, conf_thresh=0.5, nms_thresh=0.45, img_sh
                 class_id=int(cls)
             ))
     
+    if debug and len(final_detections) > 0:
+        print(f"  🎯 After NMS: {len(final_detections)} final detections")
+    
     return final_detections
 
 # =============================================================================
 # INFERENCE FUNCTION
 # =============================================================================
-def run_inference_batch(session, frames_batch):
+def run_inference_batch(session, frames_batch, debug=False):
     """
     Run inference on a batch of frames with improved accuracy
     
     Args:
         session: ONNX runtime session
         frames_batch: numpy array of shape (batch_size, H, W, 3)
+        debug: Enable debug logging
     
     Returns:
         List of detections for each frame
     """
     all_detections = []
     
-    for frame_bgr in frames_batch:
+    for idx, frame_bgr in enumerate(frames_batch):
+        if debug and idx == 0:  # Debug first frame only
+            print(f"  🔬 Processing frame 0 (shape: {frame_bgr.shape})")
+        
         input_tensor = preprocess_frame(frame_bgr)
         input_name = session.get_inputs()[0].name
         outputs = session.run(None, {input_name: input_tensor})
         
-        # Higher confidence and apply NMS
+        # Lower confidence for better detection
         detections = postprocess_yolo_detection(
             outputs, 
-            conf_thresh=0.5,  # Stricter confidence
-            nms_thresh=0.45   # NMS threshold
+            conf_thresh=0.25,  # ลด threshold เพื่อ detect ได้ง่ายขึ้น
+            nms_thresh=0.45,   # NMS threshold
+            debug=(debug and idx == 0)
         )
         all_detections.append(detections)
     
     return all_detections
 
 # =============================================================================
-# REDIS CONSUMER WITH BYTETRACK (FIXED FOR BATCH PROCESSING)
+# REDIS CONSUMER WITH BYTETRACK
 # =============================================================================
-# Add this debugging section to process_redis_queue function
-# Replace the frame processing loop with this version:
-
 def process_redis_queue_realtime(session, redis_client, engine):
     """Real-time saving with strong de-duplication"""
     print("🚀 Starting Redis consumer with Real-time De-duplication...")
     
-    # Stricter tracker for better accuracy
+    # Balanced tracker for better detection
     trackers = defaultdict(lambda: ByteTracker(
-        track_thresh=0.5,  # Higher confidence threshold
+        track_thresh=0.3,  # ลด threshold เพื่อ track ง่ายขึ้น
         track_buffer=90,
-        match_thresh=0.7   # Stricter matching
+        match_thresh=0.5   # ลดความเข้มงวดในการ match
     ))
     
     # Per-camera vehicle registry with spatial and class info
@@ -751,8 +806,8 @@ def process_redis_queue_realtime(session, redis_client, engine):
     # Global frame counter
     global_frame_id = defaultdict(int)
     
-    # Strict de-duplication parameters
-    IOU_THRESHOLD = 0.4  # Lower = stricter
+    # Balanced de-duplication parameters
+    IOU_THRESHOLD = 0.6  # เพิ่มขึ้นเพื่อให้รถที่เคลื่อนที่ช้าไม่ถูกกรอง
     TIME_WINDOW = 150    # frames (5 seconds at 30fps)
     
     processed_count = 0
@@ -823,7 +878,12 @@ def process_redis_queue_realtime(session, redis_client, engine):
                 continue
             
             frames_batch = np.load(batch_path)
-            all_detections = run_inference_batch(session, frames_batch)
+            all_detections = run_inference_batch(session, frames_batch, debug=True)
+            
+            # Debug: แสดงจำนวน detections
+            total_dets = sum(len(dets) for dets in all_detections)
+            if total_dets > 0:
+                print(f"🔍 [{camera_id}] Detected {total_dets} objects in batch ({len(frames_batch)} frames)")
             
             tracker = trackers[camera_id]
             new_vehicles_in_batch = 0
@@ -835,11 +895,17 @@ def process_redis_queue_realtime(session, redis_client, engine):
                 
                 online_tracks = tracker.update(detections)
                 
+                # Debug: แสดงจำนวน tracks
+                if len(online_tracks) > 0:
+                    track_info = [f"{VEHICLE_CLASSES[t.class_id]['name']}({t.score:.2f})" for t in online_tracks if t.class_id < len(VEHICLE_CLASSES)]
+                    if track_info:
+                        print(f"  🎯 Frame {current_frame}: {len(online_tracks)} tracks - {', '.join(track_info)}")
+                
                 for track in online_tracks:
-                    # Require higher confidence and minimum tracklet length for stability
-                    if (track.score >= 0.5 and 
+                    # Require reasonable confidence for detection
+                    if (track.score >= 0.3 and  # ลด confidence requirement
                         track.class_id < len(VEHICLE_CLASSES) and
-                        track.tracklet_len >= 3):  # At least 3 frames confirmed
+                        track.tracklet_len >= 2):  # ลดเป็น 2 เฟรมเพื่อ detect ง่ายขึ้น
                         
                         # Check if this is a duplicate
                         is_dup, existing_db_id = is_duplicate(
@@ -918,6 +984,7 @@ def process_redis_queue_realtime(session, redis_client, engine):
     
     print(f"👋 Consumer stopped. Total unique vehicles: "
           f"{sum(len(v) for v in vehicle_registry.values())}")
+
 # =============================================================================
 # MAIN EXECUTION
 # =============================================================================

@@ -11,8 +11,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '1.0'          # 🚀 Increased from 0.5
-          memory: 1GB          # 🚀 Increased from 512MB
+          cpus: '1.0'
+          memory: 1GB
         reservations:
           cpus: '0.25'
           memory: 256MB
@@ -20,7 +20,9 @@ services:
     ports:
       - "6379:6379"
     networks:
-      - truck_system_network
+      truck_system_network:
+        aliases:
+          - redis  # ✅ เพิ่ม alias เพื่อให้เข้าถึงได้ทั้ง redis และ redis_broker
     command: >
       redis-server
       --maxmemory 768mb
@@ -42,135 +44,51 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '2.0'          # 🚀 Increased from 0.5 - video decoding is CPU intensive
-          memory: 2GB          # 🚀 Increased from 512MB - needed for frame buffering
+          cpus: '2.0'
+          memory: 2GB
         reservations:
-          cpus: '1.0'          # Guarantee minimum CPU
-          memory: 1GB          # Guarantee minimum memory
+          cpus: '1.0'
+          memory: 1GB
     restart: always
     depends_on:
       redis_broker:
         condition: service_healthy
     environment:
-      - REDIS_HOST=redis_broker
+      - REDIS_HOST=redis_broker  # ✅ ชัดเจนว่าใช้ redis_broker
       - REDIS_PORT=6379
       - OUTPUT_FOLDER=/app/shared_memory
       - CAMERA_ID=VIDEO_TEST
       - VIDEO_PATH=/app/videos/testvid_1.mp4
       - LOOP_VIDEO=true
       
-      # 🎯 OPTIMIZED Processing Parameters
-      - PROCESS_FPS=2.0        # Increased from 1.0 - process more frames per second
-      - BATCH_SIZE=30          # Keep at 30 for optimal balance
-      - TARGET_WIDTH=640       # Ensure proper resolution
+      # Processing Parameters
+      - PROCESS_FPS=2.0
+      - BATCH_SIZE=30
+      - TARGET_WIDTH=640
       - TARGET_HEIGHT=640
-      - JPG_QUALITY=85         # Good quality/size balance
-      - RETENTION_SECONDS=3600 # 1 hour cleanup
+      - JPG_QUALITY=85
+      - RETENTION_SECONDS=3600
       
       # Performance optimizations
       - PYTHONUNBUFFERED=1
-      - OMP_NUM_THREADS=2      # Optimize OpenCV threading
+      - OMP_NUM_THREADS=2
     volumes:
       - ../shared_data:/app/shared_memory
-      - ./test_videos:/app/videos:ro  # Read-only for safety
+      - ./test_videos:/app/videos:ro
     networks:
       - truck_system_network
-    # Optional: Use tmpfs for faster temporary operations
     tmpfs:
       - /tmp:size=512M,mode=1777
 
-# Network will be created by main compose.yml
+# Network configuration
 networks:
   truck_system_network:
     name: truck_system_network
     external: true
+
 # =============================================================================
-# VIDEO INGESTION SUBSYSTEM
-# Handles RTSP camera capture and frame preprocessing
+# NOTES:
+# - Redis service has two network aliases: 'redis_broker' and 'redis'
+# - Services can connect using either hostname
+# - Recommended to use 'redis_broker' for clarity
 # =============================================================================
-
-# services:
-#   redis_broker:
-#     image: redis:alpine
-#     container_name: redis_broker
-#     restart: always
-#     ports:
-#       - "${REDIS_PORT:-6379}:6379"
-#     networks:
-#       - truck_system_network
-#     healthcheck:
-#       test: ["CMD", "redis-cli", "ping"]
-#       interval: 5s
-#       timeout: 3s
-#       retries: 5
-
-#   cam_01:
-#     build:
-#       context: .
-#       dockerfile: Dockerfile
-#     container_name: worker_cam_01
-#     restart: always
-#     depends_on:
-#       redis_broker:
-#         condition: service_healthy
-#     environment:
-#       - REDIS_HOST=${REDIS_HOST}
-#       - REDIS_PORT=${REDIS_PORT:-6379}
-#       - OUTPUT_FOLDER=${OUTPUT_FOLDER}
-#       - CAMERA_ID=${CAM_01_ID}
-#       - RTSP_URL=${CAM_01_RTSP_URL}
-#       - PROCESS_FPS=${PROCESS_FPS:-1.0}
-#       - RETENTION_SECONDS=${RETENTION_SECONDS:-3600}
-#     volumes:
-#       - ../shared_data:/app/shared_memory
-#     networks:
-#       - truck_system_network
-
-  # cam_02:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile
-  #   container_name: worker_cam_02
-  #   restart: always
-  #   depends_on:
-  #     redis_broker:
-  #       condition: service_healthy
-  #   environment:
-  #     - REDIS_HOST=${REDIS_HOST}
-  #     - REDIS_PORT=${REDIS_PORT:-6379}
-  #     - OUTPUT_FOLDER=${OUTPUT_FOLDER}
-  #     - CAMERA_ID=${CAM_02_ID}
-  #     - RTSP_URL=${CAM_02_RTSP_URL}
-  #     - PROCESS_FPS=${PROCESS_FPS:-1.0}
-  #     - RETENTION_SECONDS=${RETENTION_SECONDS:-3600}
-  #   volumes:
-  #     - ../shared_data:/app/shared_memory
-  #   networks:
-  #     - truck_system_network
-
-  # cam_03:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile
-  #   container_name: worker_cam_03
-  #   restart: always
-  #   depends_on:
-  #     redis_broker:
-  #       condition: service_healthy
-  #   environment:
-  #     - REDIS_HOST=${REDIS_HOST}
-  #     - REDIS_PORT=${REDIS_PORT:-6379}
-  #     - OUTPUT_FOLDER=${OUTPUT_FOLDER}
-  #     - CAMERA_ID=${CAM_03_ID}
-  #     - RTSP_URL=${CAM_03_RTSP_URL}
-  #     - PROCESS_FPS=${PROCESS_FPS:-1.0}
-  #     - RETENTION_SECONDS=${RETENTION_SECONDS:-3600}
-  #   volumes:
-  #     - ../shared_data:/app/shared_memory
-  #   networks:
-  #     - truck_system_network
-
-# networks:
-#   truck_system_network:
-#     name: ${NETWORK_NAME:-truck_system_network}
-#     external: true
