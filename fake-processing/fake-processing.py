@@ -3,7 +3,9 @@ Mock Database Writer - Simulates writing vehicle transaction data
 Generates fake data matching the vehicle_transactions table schema
 Integrates with Redis Queue and MinIO for data pipeline
 """
-
+import mlflow
+import onnxruntime as ort
+import cv2
 import datetime
 import json
 import logging
@@ -113,9 +115,7 @@ class ProcessingTask:
             "camera_id": self.camera_id,
             "video_file": self.video_file,
             "minio_bucket": self.minio_bucket,
-            # Keep legacy key for compatibility with existing producers
             "minio_prefix": self.object_key_or_prefix,
-            # Also include clearer name for downstream consumers
             "object_key_or_prefix": self.object_key_or_prefix,
             "timestamp": (
                 self.timestamp or datetime.datetime.now(datetime.timezone.utc)
@@ -132,16 +132,6 @@ class ProcessingTask:
         try:
             data = json.loads(json_str)
             logging.debug(f"Parsed task data: {data}")
-
-            # Handle ingestion service structure:
-            # {
-            #   "camera_id": "...",
-            #   "object_name": "camera_id/batch_xxx.npy",
-            #   "timestamp": "...",
-            #   "bucket_name": "video-frames",
-            #   "batch_size": 30,
-            #   "frame_shape": [...]
-            # }
 
             return cls(
                 task_id=data.get("task_id")
@@ -178,8 +168,8 @@ class RedisQueueManager:
 
     def __init__(
         self,
-        host: str,
-        port: int,
+        host: str = "localhost",
+        port: int = 6379,
         db: int = 0,
         queue_name: str = DEFAULT_QUEUE_NAME,
     ):
@@ -188,10 +178,9 @@ class RedisQueueManager:
         self.port = port
         self.db = db
         self.queue_name = queue_name
+
         try:
-            self.client = redis.Redis(
-                host=host, port=port, db=db, decode_responses=True
-            )
+            self.client = redis.Redis(host=host, port=port, db=db, decode_responses=True)
             self.client.ping()
             logging.info(f"✓ Redis connected: {host}:{port}/{db}")
         except Exception as e:
@@ -250,12 +239,12 @@ class RedisQueueManager:
 
 
 # ============================================================================
-# MINIO STORAGE MANAGER
+# MINIO MANAGER (MISSING CLASS - ADDED)
 # ============================================================================
 
 
 class MinIOManager:
-    """Manages MinIO object storage operations"""
+    """Manages MinIO operations"""
 
     def __init__(
         self,
@@ -269,109 +258,97 @@ class MinIOManager:
         self.access_key = access_key
         self.secret_key = secret_key
         self.secure = secure
+
         try:
             self.client = Minio(
-                endpoint, access_key=access_key, secret_key=secret_key, secure=secure
+                endpoint=endpoint,
+                access_key=access_key,
+                secret_key=secret_key,
+                secure=secure,
             )
-            # Attempt a lightweight call to validate connectivity/credentials
-            _ = self.client.list_buckets()
             logging.info(f"✓ MinIO connected: {endpoint}")
         except Exception as e:
             logging.error(f"✗ MinIO connection failed: {e}")
             raise
 
-    def list_objects(self, bucket: str, prefix: str = "") -> List[Dict[str, Any]]:
-        """List objects in bucket with optional prefix"""
+    def create_bucket(self, bucket_name: str) -> bool:
+        """Create bucket if it doesn't exist"""
         try:
-            objects = []
-            for obj in self.client.list_objects(bucket, prefix=prefix):
-                objects.append(
-                    {
-                        "name": obj.object_name,
-                        "size": obj.size,
-                        "last_modified": obj.last_modified.isoformat()
-                        if obj.last_modified
-                        else None,
-                    }
-                )
-            logging.info(f"✓ Listed {len(objects)} objects in {bucket}/{prefix}")
-            return objects
-        except S3Error as e:
-            logging.error(f"✗ List objects failed: {e}")
-            return []
-
-    def download_object(self, bucket: str, object_name: str, file_path: str) -> bool:
-        """Download object from MinIO to local file"""
-        try:
-            self.client.fget_object(bucket, object_name, file_path)
-            logging.info(f"✓ Downloaded {object_name} from {bucket} to {file_path}")
-            return True
-        except S3Error as e:
-            logging.error(f"✗ Download failed: {e}")
-            return False
-
-    def create_bucket(self, bucket: str) -> bool:
-        """Create bucket if not exists"""
-        try:
-            if not self.client.bucket_exists(bucket):
-                self.client.make_bucket(bucket)
-                logging.info(f"✓ Bucket created: {bucket}")
+            if not self.client.bucket_exists(bucket_name):
+                self.client.make_bucket(bucket_name)
+                logging.info(f"✓ Bucket created: {bucket_name}")
             return True
         except S3Error as e:
             logging.error(f"✗ Create bucket failed: {e}")
             return False
 
-    def delete_object(self, bucket: str, object_name: str) -> bool:
-        """Delete object from MinIO"""
-        try:
-            self.client.remove_object(bucket, object_name)
-            logging.info(f"✓ Deleted {object_name} from {bucket}")
-            return True
-        except S3Error as e:
-            logging.error(f"✗ Delete object failed: {e}")
-            return False
-
     def upload_from_bytes(
-        self,
-        bucket: str,
-        object_name: str,
-        data: bytes,
-        content_type: str = "image/jpeg",
+        self, bucket: str, object_name: str, data: bytes, content_type: str = "application/octet-stream"
     ) -> bool:
-        """Upload bytes data to MinIO"""
+        """Upload data from bytes"""
         try:
-            data_stream = BytesIO(data)
             self.client.put_object(
                 bucket,
                 object_name,
-                data_stream,
+                BytesIO(data),
                 length=len(data),
                 content_type=content_type,
             )
-            logging.info(f"✓ Uploaded {len(data)} bytes to {bucket}/{object_name}")
+            logging.info(f"✓ Uploaded: {bucket}/{object_name}")
             return True
         except S3Error as e:
-            logging.error(f"✗ Upload from bytes failed: {e}")
+            logging.error(f"✗ Upload failed: {e}")
+            return False
+
+    def download_object(self, bucket: str, object_name: str, file_path: str) -> bool:
+        """Download object to file"""
+        try:
+            self.client.fget_object(bucket, object_name, file_path)
+            logging.info(f"✓ Downloaded: {bucket}/{object_name} -> {file_path}")
+            return True
+        except S3Error as e:
+            logging.error(f"✗ Download failed: {e}")
+            return False
+
+    def list_objects(self, bucket: str, prefix: str = "") -> List[Dict]:
+        """List objects in bucket with prefix"""
+        try:
+            objects = self.client.list_objects(bucket, prefix=prefix, recursive=True)
+            result = [
+                {
+                    "name": obj.object_name,
+                    "size": obj.size,
+                    "last_modified": obj.last_modified,
+                }
+                for obj in objects
+            ]
+            logging.info(f"✓ Listed {len(result)} objects in {bucket}/{prefix}")
+            return result
+        except S3Error as e:
+            logging.error(f"✗ List objects failed: {e}")
+            return []
+
+    def delete_object(self, bucket: str, object_name: str) -> bool:
+        """Delete object from bucket"""
+        try:
+            self.client.remove_object(bucket, object_name)
+            logging.info(f"✓ Deleted: {bucket}/{object_name}")
+            return True
+        except S3Error as e:
+            logging.error(f"✗ Delete failed: {e}")
             return False
 
 
 # ============================================================================
-# POSTGRESQL DATABASE
+# POSTGRESQL DATABASE (MISSING CLASS - ADDED)
 # ============================================================================
 
 
 class PostgreSQLDatabase:
-    """PostgreSQL database operations for vehicle transactions and classes"""
+    """Manages PostgreSQL database operations"""
 
-    def __init__(
-        self,
-        host: str,
-        port: int,
-        database: str,
-        user: str,
-        password: str,
-    ):
-        """Initialize PostgreSQL connection"""
+    def __init__(self, host: str, port: int, database: str, user: str, password: str):
+        """Initialize database connection"""
         self.connection_params = {
             "host": host,
             "port": port,
@@ -379,120 +356,148 @@ class PostgreSQLDatabase:
             "user": user,
             "password": password,
         }
-        self.transaction_count = 0
 
-        # Test connection
         try:
-            conn = self._get_connection()
-            conn.close()
+            self.conn = psycopg2.connect(**self.connection_params)
+            self.conn.autocommit = False
             logging.info(f"✓ PostgreSQL connected: {host}:{port}/{database}")
+
+            # Initialize tables
+            self._init_tables()
         except Exception as e:
-            logging.error(f"✗ PostgreSQL connection failed: {e}")
+            logging.error(f"✗ Database connection failed: {e}")
             raise
 
-    def _get_connection(self):
-        """Get database connection"""
-        return psycopg2.connect(**self.connection_params)
-
-    def get_transaction_count(self) -> int:
-        """Get total number of transactions"""
+    def _init_tables(self):
+        """Initialize required database tables"""
         try:
-            conn = self._get_connection()
-            cur = conn.cursor()
+            with self.conn.cursor() as cur:
+                # Create vehicle_classes table
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS vehicle_classes (
+                        class_id INTEGER PRIMARY KEY,
+                        class_name VARCHAR(50) UNIQUE NOT NULL,
+                        entry_fee NUMERIC(10, 2) DEFAULT 0.00,
+                        xray_fee NUMERIC(10, 2) DEFAULT 0.00,
+                        total_fee NUMERIC(10, 2) DEFAULT 0.00
+                    );
+                """)
 
-            cur.execute("SELECT COUNT(*) FROM vehicle_transactions")
-            count = cur.fetchone()[0]
+                # Create vehicle_transactions table
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS vehicle_transactions (
+                        id SERIAL PRIMARY KEY,
+                        camera_id VARCHAR(50) NOT NULL,
+                        track_id VARCHAR(100) NOT NULL,
+                        class_id INT NOT NULL,
+                        total_fee NUMERIC(10, 2) DEFAULT 0.00,
+                        time_stamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                        img_path TEXT,
+                        confidence NUMERIC(5, 4),
+                        FOREIGN KEY (class_id) REFERENCES vehicle_classes(class_id)
+                    );
+                """)
 
-            cur.close()
-            conn.close()
+                # Create indexes
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_camera_timestamp 
+                    ON vehicle_transactions(camera_id, time_stamp DESC);
+                """)
 
-            return count
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_track_id 
+                    ON vehicle_transactions(track_id);
+                """)
+
+                # Insert vehicle class data
+                vehicle_classes = [
+                    (0, "car", 0.00, 0.00, 0.00),
+                    (1, "other", 0.00, 0.00, 0.00),
+                    (2, "other_truck", 100.00, 50.00, 150.00),
+                    (3, "pickup_truck", 0.00, 0.00, 0.00),
+                    (4, "truck_20_back", 100.00, 250.00, 350.00),
+                    (5, "truck_20_front", 100.00, 250.00, 350.00),
+                    (6, "truck_20x2", 100.00, 500.00, 600.00),
+                    (7, "truck_40", 100.00, 350.00, 450.00),
+                    (8, "truck_roro", 100.00, 50.00, 150.00),
+                    (9, "truck_tail", 100.00, 50.00, 150.00),
+                    (10, "motorcycle", 0.00, 0.00, 0.00),
+                    (11, "truck_head", 100.00, 50.00, 150.00),
+                ]
+
+                for class_data in vehicle_classes:
+                    cur.execute("""
+                        INSERT INTO vehicle_classes (class_id, class_name, entry_fee, xray_fee, total_fee)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (class_id) DO NOTHING
+                    """, class_data)
+
+                self.conn.commit()
+                logging.info("✓ Database tables initialized")
 
         except Exception as e:
-            logging.error(f"✗ Get transaction count failed: {e}")
-            return 0
-
-    def insert_transaction(self, transaction: VehicleTransaction) -> bool:
-        """Insert a single transaction record"""
-        conn = None
-        cur = None
-        try:
-            record = transaction.to_dict()
-
-            # Skip if class_id is 0 (not yet classified)
-            if record["class_id"] == 0:
-                logging.warning("Skipping insert: class_id is 0 (not yet classified)")
-                return False
-
-            conn = self._get_connection()
-            cur = conn.cursor()
-
-            sql = """
-                INSERT INTO vehicle_transactions
-                (camera_id, track_id, class_id, total_fee, time_stamp, img_path, confidence)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """
-
-            cur.execute(
-                sql,
-                (
-                    record["camera_id"],
-                    record["track_id"],
-                    record["class_id"],
-                    record["total_fee"],
-                    record["time_stamp"],
-                    record["img_path"],
-                    record["confidence"],
-                ),
-            )
-
-            conn.commit()
-            self.transaction_count += 1
-            logging.info(f"✓ Transaction inserted: {record['track_id']}")
-            return True
-        except Exception as e:
-            logging.error(f"✗ Insert failed: {e}")
-            if conn is not None:
-                try:
-                    conn.rollback()
-                finally:
-                    pass
-            return False
-        finally:
-            if cur is not None:
-                try:
-                    cur.close()
-                finally:
-                    pass
-            if conn is not None:
-                try:
-                    conn.close()
-                finally:
-                    pass
+            self.conn.rollback()
+            logging.error(f"✗ Table initialization failed: {e}")
+            raise
 
     def get_vehicle_class(self, class_id: int) -> Optional[Dict]:
-        """Get vehicle class reference data"""
+        """Get vehicle class information"""
         try:
-            conn = self._get_connection()
-            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
-            cur.execute(
-                "SELECT * FROM vehicle_classes WHERE class_id = %s", (class_id,)
-            )
-
-            result = cur.fetchone()
-            cur.close()
-            conn.close()
-
-            return dict(result) if result else None
-
+            with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT * FROM vehicle_classes WHERE class_id = %s",
+                    (class_id,)
+                )
+                result = cur.fetchone()
+                return dict(result) if result else None
         except Exception as e:
             logging.error(f"✗ Get vehicle class failed: {e}")
             return None
 
+    def insert_transaction(self, transaction: VehicleTransaction) -> bool:
+        """Insert vehicle transaction"""
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO vehicle_transactions 
+                    (camera_id, track_id, class_id, total_fee, time_stamp, img_path, confidence)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    transaction.camera_id,
+                    transaction.track_id,
+                    transaction.class_id,
+                    transaction.total_fee,
+                    transaction.time_stamp,
+                    transaction.img_path,
+                    transaction.confidence,
+                ))
+                self.conn.commit()
+                logging.info(f"✓ Transaction saved: {transaction.track_id}")
+                return True
+        except Exception as e:
+            self.conn.rollback()
+            logging.error(f"✗ Insert transaction failed: {e}")
+            return False
+
+    def get_transaction_count(self) -> int:
+        """Get total number of transactions"""
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM vehicle_transactions")
+                return cur.fetchone()[0]
+        except Exception as e:
+            logging.error(f"✗ Get transaction count failed: {e}")
+            return 0
+
+    def close(self):
+        """Close database connection"""
+        if self.conn:
+            self.conn.close()
+            logging.info("✓ Database connection closed")
+
 
 # ============================================================================
-# PROCESSING SERVICE - Redis Queue + MinIO Integration
+# PROCESSING SERVICE
 # ============================================================================
 
 
@@ -513,6 +518,8 @@ class ProcessingService:
         db_password: str,
         minio_secure: bool = False,
         output_dir: str = "./processed_data",
+        mlflow_tracking_uri: str = "http://mlflow-server:5000",
+        model_uri: str = "models:/Truck_classification_Model/Production",
     ):
         """Initialize processing service"""
         self.output_dir = output_dir
@@ -535,52 +542,97 @@ class ProcessingService:
             user=db_user,
             password=db_password,
         )
+
+        # Load AI model from MLflow
+        logging.info(f"Loading model from MLflow: {model_uri}")
+        mlflow.set_tracking_uri(mlflow_tracking_uri)
+
+        try:
+            # Download model from MLflow (stored in MinIO)
+            local_model_path = mlflow.artifacts.download_artifacts(artifact_uri=model_uri)
+            onnx_path = os.path.join(local_model_path, "model.onnx")
+
+            if not os.path.exists(onnx_path):
+                raise FileNotFoundError(f"Model not found at: {onnx_path}")
+
+            # Load ONNX model
+            self.session = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+            logging.info(f"✓ Model loaded successfully from {onnx_path}")
+        except Exception as e:
+            logging.error(f"✗ Failed to load model: {e}")
+            raise
+
         logging.info("✓ ProcessingService initialized")
 
-    def _generate_fake_classification(self) -> tuple:
-        """Generate fake classification result for testing"""
-        # Randomly select a vehicle class (weighted towards trucks)
-        vehicle_classes = [
-            (VehicleClass.CAR, 0.15),
-            (VehicleClass.OTHER, 0.05),
-            (VehicleClass.OTHER_TRUCK, 0.10),
-            (VehicleClass.PICKUP_TRUCK, 0.10),
-            (VehicleClass.TRUCK_20_BACK, 0.15),
-            (VehicleClass.TRUCK_20_FRONT, 0.15),
-            (VehicleClass.TRUCK_20X2, 0.10),
-            (VehicleClass.TRUCK_40, 0.10),
-            (VehicleClass.TRUCK_RORO, 0.03),
-            (VehicleClass.TRUCK_TAIL, 0.03),
-            (VehicleClass.MOTORCYCLE, 0.02),
-            (VehicleClass.TRUCK_HEAD, 0.02),
-        ]
+    def _run_inference(self, frame: np.ndarray) -> Tuple[int, float, float]:
+        """Run inference on frame using ONNX model"""
+        try:
+            # Preprocess frame
+            input_tensor = self._preprocess_frame(frame)
 
-        classes, weights = zip(*vehicle_classes)
-        selected_class = random.choices(classes, weights=weights, k=1)[0]
+            # Run inference
+            input_name = self.session.get_inputs()[0].name
+            outputs = self.session.run(None, {input_name: input_tensor})
 
-        # Generate confidence score (higher for common classes)
-        if selected_class in [
-            VehicleClass.CAR,
-            VehicleClass.TRUCK_20_BACK,
-            VehicleClass.TRUCK_20_FRONT,
-        ]:
-            confidence = random.uniform(0.85, 0.99)
-        else:
-            confidence = random.uniform(0.70, 0.95)
+            # Post-process outputs
+            class_id, confidence = self._postprocess_outputs(outputs)
 
-        # Get vehicle class info from database
-        vehicle_info = self.db.get_vehicle_class(selected_class.value)
-        total_fee = vehicle_info["total_fee"] if vehicle_info else 0.00
+            # Get fee from database
+            vehicle_info = self.db.get_vehicle_class(class_id)
+            total_fee = vehicle_info["total_fee"] if vehicle_info else 0.00
 
-        logging.info(
-            f"🎲 Generated fake classification: {selected_class.name} (confidence: {confidence:.4f}, fee: {total_fee})"
-        )
+            logging.info(
+                f"🤖 Model inference: class_id={class_id} (confidence: {confidence:.4f}, fee: {total_fee})"
+            )
 
-        return selected_class.value, total_fee, confidence
+            return class_id, total_fee, confidence
+        except Exception as e:
+            logging.error(f"✗ Inference failed: {e}")
+            # Fallback to default class
+            return 0, 0.0, 0.0
 
-    # ---------------------------------------------------------------------
-    # Image and batch helpers
-    # ---------------------------------------------------------------------
+    def _preprocess_frame(self, frame_bgr: np.ndarray, input_size=(640, 640)) -> np.ndarray:
+        """Preprocess frame for ONNX model"""
+        # Convert BGR to RGB
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        # Resize
+        frame_resized = cv2.resize(frame_rgb, input_size)
+        # Normalize to [0, 1]
+        frame_norm = frame_resized.astype(np.float32) / 255.0
+        # Convert to CHW format (Channel, Height, Width)
+        frame_chw = np.transpose(frame_norm, (2, 0, 1))
+        # Add batch dimension
+        frame_chw = np.expand_dims(frame_chw, axis=0)
+        return frame_chw
+
+    def _postprocess_outputs(self, outputs) -> Tuple[int, float]:
+        """Post-process ONNX model outputs"""
+        # Adjust based on your model's output format
+        # Example: YOLOv8 detection output [1, num_classes+4, num_predictions]
+        output = outputs[0][0]  # [84, 8400] for YOLOv8
+        
+        # Extract boxes and class probabilities
+        boxes = output[:4, :].T  # [8400, 4]
+        class_probs = output[4:, :].T  # [8400, num_classes]
+        
+        # Get class with highest confidence
+        class_ids = np.argmax(class_probs, axis=1)
+        confidences = np.max(class_probs, axis=1)
+        
+        # Get best detection
+        if len(confidences) > 0:
+            best_idx = np.argmax(confidences)
+            class_id = int(class_ids[best_idx])
+            confidence = float(confidences[best_idx])
+            
+            # Ensure class_id is within valid range
+            if class_id >= 12:
+                class_id = 0  # Default to "car"
+                
+            return class_id, confidence
+        
+        return 0, 0.0  # No detection
+
     @staticmethod
     def _load_batch_from_file(file_path: str) -> np.ndarray:
         """Load a numpy batch file from disk."""
@@ -588,10 +640,7 @@ class ProcessingService:
 
     @staticmethod
     def _select_frame(batch: np.ndarray) -> Tuple[np.ndarray, int]:
-        """Select a representative frame from a batch or return the image itself.
-
-        Returns a tuple of (frame, index). Index is 0 for single images.
-        """
+        """Select a representative frame from a batch or return the image itself."""
         if batch.ndim == 4:
             frame_idx = len(batch) // 2
             return batch[frame_idx], frame_idx
@@ -624,9 +673,7 @@ class ProcessingService:
             )
 
             # Check if minio_prefix is a full object name (file) or a prefix (directory)
-            # If it looks like a file path (contains .npy), use it directly
             if task.object_key_or_prefix.endswith(".npy"):
-                # Direct file path
                 batch_object = task.object_key_or_prefix
                 logging.info(f"Processing direct file: {batch_object}")
             else:
@@ -638,12 +685,12 @@ class ProcessingService:
                     f"Found {len(listed_objects)} objects in {task.minio_bucket}/{task.object_key_or_prefix}"
                 )
 
-                # Filter out directories (objects ending with /)
+                # Filter out directories
                 files = [obj for obj in listed_objects if not obj["name"].endswith("/")]
 
                 if not files:
                     logging.warning(
-                        f"No files found, only directories in {task.minio_bucket}/{task.object_key_or_prefix}"
+                        f"No files found in {task.minio_bucket}/{task.object_key_or_prefix}"
                     )
                     return {
                         "status": "no_objects",
@@ -666,7 +713,6 @@ class ProcessingService:
             )
 
             if success:
-                # Load numpy batch (30 frames)
                 try:
                     batch_data = self._load_batch_from_file(batch_file)
                     logging.info(f"Loaded batch shape: {batch_data.shape}")
@@ -678,17 +724,15 @@ class ProcessingService:
 
                     frame_uint8 = self._normalize_to_uint8(selected_frame)
 
-                    # Create PIL Image from array
-                    if frame_uint8.ndim == 2:  # Grayscale
+                    # Create PIL Image
+                    if frame_uint8.ndim == 2:
                         image = Image.fromarray(frame_uint8, mode="L")
-                    elif frame_uint8.shape[2] == 3:  # RGB
+                    elif frame_uint8.shape[2] == 3:
                         image = Image.fromarray(frame_uint8, mode="RGB")
-                    elif frame_uint8.shape[2] == 4:  # RGBA -> convert to RGB
+                    elif frame_uint8.shape[2] == 4:
                         image = Image.fromarray(frame_uint8, mode="RGBA").convert("RGB")
                     else:
-                        raise ValueError(
-                            f"Unsupported image shape: {frame_uint8.shape}"
-                        )
+                        raise ValueError(f"Unsupported image shape: {frame_uint8.shape}")
 
                     img_bytes = self._encode_jpeg(image, quality=JPEG_QUALITY)
 
@@ -696,10 +740,10 @@ class ProcessingService:
                     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                     output_filename = f"{task.camera_id}_{task.task_id}_{timestamp}.jpg"
 
-                    # Ensure destination bucket exists
+                    # Ensure bucket exists
                     self.minio_manager.create_bucket(PROCESSED_BUCKET_NAME)
 
-                    # Upload to process_frames bucket
+                    # Upload to MinIO
                     upload_success = self.minio_manager.upload_from_bytes(
                         bucket=PROCESSED_BUCKET_NAME,
                         object_name=output_filename,
@@ -713,15 +757,13 @@ class ProcessingService:
                             bucket=task.minio_bucket, object_name=batch_object
                         )
 
-                        # Clean up local batch file
+                        # Clean up local file
                         if os.path.exists(batch_file):
                             os.remove(batch_file)
                             logging.info(f"✓ Cleaned up local file: {batch_file}")
 
-                        # Generate fake classification result
-                        class_id, total_fee, confidence = (
-                            self._generate_fake_classification()
-                        )
+                        # Run inference
+                        class_id, total_fee, confidence = self._run_inference(frame_uint8)
 
                         # Create transaction record
                         transaction = VehicleTransaction(
@@ -758,11 +800,9 @@ class ProcessingService:
                     }
 
             return {
-                "status": "no_objects",
+                "status": "download_failed",
                 "task_id": task.task_id,
                 "camera_id": task.camera_id,
-                "objects_found": len(listed_objects),
-                "files_found": len(files) if "files" in locals() else 0,
             }
 
         except Exception as e:
@@ -801,9 +841,6 @@ class ProcessingService:
                         )
 
                     logging.info(f"{'=' * 70}")
-                else:
-                    # No task available, continue waiting
-                    pass
 
         except KeyboardInterrupt:
             logging.info("\n\nWorker stopped by user")
@@ -852,7 +889,6 @@ def main():
         logging.error(
             f"Missing required environment variables: {', '.join(missing_vars)}"
         )
-        logging.error("Please set all required variables in .env file or environment")
         raise ValueError(
             f"Missing required environment variables: {', '.join(missing_vars)}"
         )
@@ -872,6 +908,10 @@ def main():
     db_user = os.getenv("POSTGRES_USER")
     db_password = os.getenv("POSTGRES_PASSWORD")
 
+    # MLflow configuration
+    mlflow_tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow-server:5000")
+    model_uri = os.getenv("MODEL_URI", "models:/Truck_classification_Model/Production")
+
     try:
         # Initialize processing service
         service = ProcessingService(
@@ -886,6 +926,8 @@ def main():
             db_user=db_user,
             db_password=db_password,
             minio_secure=minio_secure,
+            mlflow_tracking_uri=mlflow_tracking_uri,
+            model_uri=model_uri,
         )
 
         # Run as worker
@@ -893,7 +935,6 @@ def main():
 
     except Exception as e:
         logging.error(f"Failed to start processing service: {e}")
-        logging.error("Make sure Redis and MinIO are running and accessible")
         raise
 
 
