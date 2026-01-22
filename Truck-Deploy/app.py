@@ -32,7 +32,7 @@ class Detection:
     class_id: int
 
 class STrack:
-    """Single target track with Kalman filtering"""
+    """Single target track with Kalman filtering and class voting"""
     count = 0
     
     def __init__(self, bbox, score, class_id):
@@ -44,6 +44,11 @@ class STrack:
         self.tracklet_len = 0
         self.frame_id = 0
         self.state = 'tracked'  # tracked, lost, removed
+        
+        # Class voting for stability
+        self.class_votes = defaultdict(float)  # class_id -> weighted score
+        self.class_votes[class_id] = score
+        self.max_votes = 10  # Keep last N votes
         
         # Initialize Kalman state
         self._tlwh = self._bbox_to_tlwh(bbox)
@@ -80,10 +85,24 @@ class STrack:
         self.bbox = self._tlwh_to_bbox(self.mean[:4])
     
     def update(self, new_track):
-        """Update track with new detection"""
+        """Update track with new detection and class voting"""
         self.bbox = new_track.bbox
         self.score = new_track.score
-        self.class_id = new_track.class_id
+        
+        # Update class voting with decay
+        for cls in list(self.class_votes.keys()):
+            self.class_votes[cls] *= 0.9  # Decay old votes
+        
+        # Add new vote
+        self.class_votes[new_track.class_id] += new_track.score
+        
+        # Get most voted class
+        self.class_id = max(self.class_votes.items(), key=lambda x: x[1])[0]
+        
+        # Cleanup old votes
+        if len(self.class_votes) > self.max_votes:
+            sorted_votes = sorted(self.class_votes.items(), key=lambda x: x[1], reverse=True)
+            self.class_votes = dict(sorted_votes[:self.max_votes])
         
         self._tlwh = self._bbox_to_tlwh(new_track.bbox)
         
@@ -566,16 +585,68 @@ def flush_batch_if_needed(engine, force=False):
 # PREPROCESSING & POSTPROCESSING
 # =============================================================================
 def preprocess_frame(frame_bgr, input_size=(640, 640)):
-    """Preprocess BGR frame for ONNX model"""
+    """Preprocess BGR frame for ONNX model with better quality"""
+    # Convert to RGB
     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    frame_resized = cv2.resize(frame_rgb, input_size)
+    
+    # High-quality resize with anti-aliasing
+    frame_resized = cv2.resize(frame_rgb, input_size, interpolation=cv2.INTER_LINEAR)
+    
+    # Apply slight sharpening for better edge detection
+    kernel = np.array([[-0.5, -0.5, -0.5],
+                       [-0.5,  5.0, -0.5],
+                       [-0.5, -0.5, -0.5]]) / 1.0
+    frame_resized = cv2.filter2D(frame_resized, -1, kernel)
+    frame_resized = np.clip(frame_resized, 0, 255).astype(np.uint8)
+    
+    # Normalize
     frame_norm = frame_resized.astype(np.float32) / 255.0
+    
+    # Convert to CHW format
     frame_chw = np.transpose(frame_norm, (2, 0, 1))
     frame_chw = np.expand_dims(frame_chw, axis=0)
+    
     return frame_chw
 
-def postprocess_yolo_detection(outputs, conf_thresh=0.3, img_shape=(640, 640)):
-    """Postprocess YOLO output to get detections with bounding boxes"""
+def nms(boxes, scores, iou_threshold=0.5):
+    """Non-Maximum Suppression to remove duplicate detections"""
+    if len(boxes) == 0:
+        return []
+    
+    boxes = np.array(boxes)
+    scores = np.array(scores)
+    
+    x1 = boxes[:, 0]
+    y1 = boxes[:, 1]
+    x2 = boxes[:, 2]
+    y2 = boxes[:, 3]
+    
+    areas = (x2 - x1) * (y2 - y1)
+    order = scores.argsort()[::-1]
+    
+    keep = []
+    while order.size > 0:
+        i = order[0]
+        keep.append(i)
+        
+        xx1 = np.maximum(x1[i], x1[order[1:]])
+        yy1 = np.maximum(y1[i], y1[order[1:]])
+        xx2 = np.minimum(x2[i], x2[order[1:]])
+        yy2 = np.minimum(y2[i], y2[order[1:]])
+        
+        w = np.maximum(0.0, xx2 - xx1)
+        h = np.maximum(0.0, yy2 - yy1)
+        inter = w * h
+        
+        iou = inter / (areas[i] + areas[order[1:]] - inter)
+        
+        inds = np.where(iou <= iou_threshold)[0]
+        order = order[inds + 1]
+    
+    return keep
+
+def postprocess_yolo_detection(outputs, conf_thresh=0.5, nms_thresh=0.45, img_shape=(640, 640)):
+    """Postprocess YOLO output with NMS for better accuracy"""
     output = outputs[0][0]  # [84, 8400]
     
     boxes = output[:4, :].T
@@ -584,12 +655,17 @@ def postprocess_yolo_detection(outputs, conf_thresh=0.3, img_shape=(640, 640)):
     class_ids = np.argmax(class_probs, axis=1)
     confidences = np.max(class_probs, axis=1)
     
+    # Higher confidence threshold
     mask = confidences > conf_thresh
     boxes = boxes[mask]
     class_ids = class_ids[mask]
     confidences = confidences[mask]
     
-    detections = []
+    # Convert to x1,y1,x2,y2 format
+    bbox_list = []
+    score_list = []
+    class_list = []
+    
     for box, class_id, conf in zip(boxes, class_ids, confidences):
         x_center, y_center, w, h = box
         x1 = max(0, min(x_center - w / 2, img_shape[1]))
@@ -597,20 +673,36 @@ def postprocess_yolo_detection(outputs, conf_thresh=0.3, img_shape=(640, 640)):
         x2 = max(0, min(x_center + w / 2, img_shape[1]))
         y2 = max(0, min(y_center + h / 2, img_shape[0]))
         
-        detections.append(Detection(
-            bbox=np.array([x1, y1, x2, y2], dtype=np.float32),
-            score=float(conf),
-            class_id=int(class_id)
-        ))
+        bbox_list.append([x1, y1, x2, y2])
+        score_list.append(conf)
+        class_list.append(class_id)
     
-    return detections
+    # Apply NMS per class
+    final_detections = []
+    unique_classes = set(class_list)
+    
+    for cls in unique_classes:
+        cls_mask = [i for i, c in enumerate(class_list) if c == cls]
+        cls_boxes = [bbox_list[i] for i in cls_mask]
+        cls_scores = [score_list[i] for i in cls_mask]
+        
+        keep_indices = nms(cls_boxes, cls_scores, iou_threshold=nms_thresh)
+        
+        for idx in keep_indices:
+            final_detections.append(Detection(
+                bbox=np.array(cls_boxes[idx], dtype=np.float32),
+                score=float(cls_scores[idx]),
+                class_id=int(cls)
+            ))
+    
+    return final_detections
 
 # =============================================================================
 # INFERENCE FUNCTION
 # =============================================================================
 def run_inference_batch(session, frames_batch):
     """
-    Run inference on a batch of frames
+    Run inference on a batch of frames with improved accuracy
     
     Args:
         session: ONNX runtime session
@@ -626,7 +718,12 @@ def run_inference_batch(session, frames_batch):
         input_name = session.get_inputs()[0].name
         outputs = session.run(None, {input_name: input_tensor})
         
-        detections = postprocess_yolo_detection(outputs, conf_thresh=0.3)
+        # Higher confidence and apply NMS
+        detections = postprocess_yolo_detection(
+            outputs, 
+            conf_thresh=0.5,  # Stricter confidence
+            nms_thresh=0.45   # NMS threshold
+        )
         all_detections.append(detections)
     
     return all_detections
@@ -641,11 +738,11 @@ def process_redis_queue_realtime(session, redis_client, engine):
     """Real-time saving with strong de-duplication"""
     print("🚀 Starting Redis consumer with Real-time De-duplication...")
     
-    # Relaxed tracker
+    # Stricter tracker for better accuracy
     trackers = defaultdict(lambda: ByteTracker(
-        track_thresh=0.25,
+        track_thresh=0.5,  # Higher confidence threshold
         track_buffer=90,
-        match_thresh=0.6
+        match_thresh=0.7   # Stricter matching
     ))
     
     # Per-camera vehicle registry with spatial and class info
@@ -739,7 +836,10 @@ def process_redis_queue_realtime(session, redis_client, engine):
                 online_tracks = tracker.update(detections)
                 
                 for track in online_tracks:
-                    if track.score >= 0.4 and track.class_id < len(VEHICLE_CLASSES):
+                    # Require higher confidence and minimum tracklet length for stability
+                    if (track.score >= 0.5 and 
+                        track.class_id < len(VEHICLE_CLASSES) and
+                        track.tracklet_len >= 3):  # At least 3 frames confirmed
                         
                         # Check if this is a duplicate
                         is_dup, existing_db_id = is_duplicate(
