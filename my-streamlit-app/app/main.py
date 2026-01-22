@@ -1,18 +1,48 @@
 import streamlit as st
 import pandas as pd
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
 import os
-from datetime import datetime
+from datetime import datetime, date
+from typing import Optional, Dict, Any
 import pytz
 import streamlit.components.v1 as components
 
-# ==================== CONFIGURATION ====================
-ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'Admin1234')
-DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://postgres:postgres1234@db:5432/mydb')
+# ==================== CONSTANTS ====================
+# Database Configuration
+DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://user:password@db:5432/mydb')
 THAILAND_TZ = pytz.timezone('Asia/Bangkok')
 
+# UI Configuration
+CACHE_TTL_SECONDS = 5
+DEFAULT_CAMERA_OPTIONS = ["1", "2", "3", "➕ Add New"]
+ADD_NEW_OPTION = "➕ Add New"
+
+# Validation Constants
+MIN_FEE = 0.0
+FEE_STEP = 10.0
+MAX_CAMERA_ID_LENGTH = 50
+MAX_TRACK_ID_LENGTH = 100
+
+# Display Name Mapping for Vehicle Classes
+CLASS_NAME_DISPLAY = {
+    "car": "รถยนต์",
+    "other": "รถประเภทอื่น(เช่น รถบัส รถตุ๊กตุ๊ก)",
+    "other_truck": "รถบรรทุกประเภทอื่น(เช่น รถบรรทุกของเหลว)",
+    "pickup_truck": "รถกระบะ",
+    "truck_20_back": "รถบรรทุกที่มีตู้ขนาด 20 อยู่ด้านหลัง",
+    "truck_20_front": "รถบรรทุกที่มีตู้ขนาด 20 อยู่ด้านหน้า",
+    "truck_40": "รถบรรทุกที่มีตู้ขนาด 40",
+    "truck_roro": "รถบรรทุกขนรถ",
+    "truck_tail": "รถบรรทุกที่มีหาง",
+    "motorcycle": "มอเตอร์ไซค์",
+    "truck_head": "รถบรรทุกที่แต่หัว",
+    "truck_20x2": "รถบรรทุกที่มีตู้ขนาด 20 อยู่ 2 ตู้"
+}
+
 # ==================== CUSTOM CSS ====================
-def load_custom_css():
+def load_custom_css() -> None:
+    """Load custom CSS styling for the application"""
     st.markdown("""
     <style>
         /* Global Styles */
@@ -23,7 +53,7 @@ def load_custom_css():
         /* Header Styles */
         .main-header {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding: 2rem;
+            padding: 1.5rem 2rem;
             border-radius: 15px;
             margin-bottom: 2rem;
             box-shadow: 0 8px 32px rgba(102, 126, 234, 0.3);
@@ -31,35 +61,51 @@ def load_custom_css():
         
         .header-title {
             color: white;
-            font-size: 2.5em;
+            font-size: 2em;
             font-weight: 800;
             margin: 0;
-            text-align: center;
             text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+            line-height: 1.2;
         }
         
         .datetime-box {
             background: rgba(255,255,255,0.15);
             backdrop-filter: blur(10px);
-            padding: 1rem;
+            padding: 0.75rem 1.25rem;
             border-radius: 12px;
-            margin-top: 1rem;
-            text-align: center;
+            border: 1px solid rgba(255,255,255,0.2);
         }
         
         .date-text {
             color: white;
-            font-size: 1.2em;
             font-weight: 600;
-            margin-bottom: 8px;
+            line-height: 1.4;
         }
         
         .time-text {
             color: #ffd700;
-            font-size: 2em;
             font-weight: 700;
             font-family: 'Courier New', monospace;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.3);
+            line-height: 1.4;
+        }
+        
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .main-header {
+                padding: 1rem;
+            }
+            
+            .header-title {
+                font-size: 1.5em;
+                text-align: center;
+                margin-bottom: 1rem;
+            }
+            
+            .datetime-box {
+                width: 100%;
+                margin-top: 1rem;
+            }
         }
         
         /* Card Styles */
@@ -93,13 +139,63 @@ def load_custom_css():
             border-radius: 15px;
             border: 1px solid rgba(255,255,255,0.1);
         }
+        
+        /* Image Container - สำหรับรูป 640x640 */
+        .vehicle-image-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+            background: rgba(255,255,255,0.05);
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .vehicle-image-container img {
+            max-width: 640px;
+            max-height: 640px;
+            width: 100%;
+            height: auto;
+            object-fit: contain;
+            border-radius: 8px;
+        }
     </style>
     """, unsafe_allow_html=True)
 
+
+# ==================== HELPER FUNCTIONS ====================
+def translate_class_name(class_name: str) -> str:
+    """
+    Translate class name from database to display name
+    
+    Args:
+        class_name: Original class name from database
+        
+    Returns:
+        Translated display name
+    """
+    if pd.isna(class_name):
+        return class_name
+    
+    # Try to get translated name, if not found return original with warning indicator
+    translated = CLASS_NAME_DISPLAY.get(class_name.lower(), None)
+    if translated is None:
+        print(f"⚠️ Warning: No translation found for '{class_name}'")
+        return f"{class_name} ⚠️"
+    return translated
+
 # ==================== DATABASE CONNECTION ====================
 @st.cache_resource
-def get_database_engine():
-    """Create and return database engine"""
+def get_database_engine() -> Engine:
+    """
+    Create and return database engine with connection validation
+    
+    Returns:
+        Engine: SQLAlchemy database engine
+        
+    Raises:
+        Exception: If database connection fails
+    """
     try:
         engine = create_engine(DATABASE_URL)
         with engine.connect() as conn:
@@ -122,13 +218,17 @@ def get_database_engine():
 engine = get_database_engine()
 
 # ==================== DATABASE INITIALIZATION ====================
-def init_database():
-    """Initialize database tables if not exist"""
+def init_database() -> None:
+    """
+    Initialize database tables if they don't exist
+    Creates vehicle_classes and vehicle_transactions tables
+    """
     try:
         with engine.connect() as conn:
             # Set timezone for this session
             conn.execute(text("SET TIME ZONE 'Asia/Bangkok'"))
             
+            # Check if vehicle_classes table exists
             result = conn.execute(text("""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
@@ -147,6 +247,7 @@ def init_database():
                     );
                 """))
                 conn.commit()
+                print("✅ vehicle_classes table created")
             
             # Check if vehicle_transactions table exists
             result = conn.execute(text("""
@@ -157,7 +258,6 @@ def init_database():
             """))
             
             if not result.scalar():
-                # Create table matching your existing schema
                 conn.execute(text("""
                     CREATE TABLE IF NOT EXISTS vehicle_transactions (
                         id SERIAL PRIMARY KEY,
@@ -171,41 +271,142 @@ def init_database():
                     );
                 """))
                 conn.commit()
+                print("✅ vehicle_transactions table created")
+                
     except Exception as e:
-        st.error(f"Error initializing database: {e}")
-
-# ==================== AUTHENTICATION ====================
-def check_authentication():
-    """Check and initialize authentication state"""
-    if 'is_admin' not in st.session_state:
-        st.session_state.is_admin = False
+        st.error(f"❌ Error initializing database: {e}")
+        print(f"❌ Database initialization error: {e}")
 
 # ==================== DATA LOADING ====================
-@st.cache_data(ttl=5)
-def load_vehicle_classes():
-    """Load vehicle classes from database"""
+@st.cache_data(ttl=CACHE_TTL_SECONDS)
+def load_vehicle_classes() -> pd.DataFrame:
+    """
+    Load vehicle classes from database with caching
+    
+    Returns:
+        pd.DataFrame: DataFrame containing vehicle class information
+    """
     try:
-        query = "SELECT class_id, class_name, entry_fee, xray_fee, total_fee FROM vehicle_classes ORDER BY class_id"
+        query = """
+            SELECT class_id, class_name, entry_fee, xray_fee, total_fee 
+            FROM vehicle_classes 
+            ORDER BY class_id
+        """
         df = pd.read_sql(text(query), engine)
         return df
     except Exception as e:
-        st.error(f"Error loading vehicle classes: {e}")
+        st.error(f"❌ Error loading vehicle classes: {e}")
+        print(f"❌ Error loading vehicle classes: {e}")
         return pd.DataFrame()
 
+# ==================== VALIDATION FUNCTIONS ====================
+def validate_camera_id(camera_id: str) -> tuple[bool, str]:
+    """
+    Validate camera ID input
+    
+    Args:
+        camera_id: Camera ID to validate
+        
+    Returns:
+        tuple: (is_valid, error_message)
+    """
+    if not camera_id or not camera_id.strip():
+        return False, "Camera ID cannot be empty"
+    
+    if len(camera_id) > MAX_CAMERA_ID_LENGTH:
+        return False, f"Camera ID too long (max {MAX_CAMERA_ID_LENGTH} characters)"
+    
+    return True, ""
+
+def validate_fee(fee: float, fee_name: str) -> tuple[bool, str]:
+    """
+    Validate fee value
+    
+    Args:
+        fee: Fee amount to validate
+        fee_name: Name of the fee for error message
+        
+    Returns:
+        tuple: (is_valid, error_message)
+    """
+    if fee < MIN_FEE:
+        return False, f"{fee_name} cannot be negative"
+    
+    return True, ""
+
+def validate_class_name(class_name: str) -> tuple[bool, str]:
+    """
+    Validate vehicle class name
+    
+    Args:
+        class_name: Class name to validate
+        
+    Returns:
+        tuple: (is_valid, error_message)
+    """
+    if not class_name or not class_name.strip():
+        return False, "Vehicle type cannot be empty"
+    
+    if len(class_name.strip()) < 2:
+        return False, "Vehicle type must be at least 2 characters"
+    
+    return True, ""
+
+# ==================== TIMEZONE HELPERS ====================
+def get_thailand_time() -> datetime:
+    """
+    Get current time in Thailand timezone
+    
+    Returns:
+        datetime: Current datetime in Thailand timezone
+    """
+    return datetime.now(THAILAND_TZ)
+
+def convert_to_thailand_tz(timestamp: pd.Timestamp) -> datetime:
+    """
+    Convert timestamp to Thailand timezone
+    
+    Args:
+        timestamp: Timestamp to convert
+        
+    Returns:
+        datetime: Converted datetime in Thailand timezone
+    """
+    if timestamp.tzinfo is None:
+        timestamp = pytz.utc.localize(timestamp)
+    return timestamp.astimezone(THAILAND_TZ)
+
 # ==================== HEADER ====================
-def render_header():
+def render_header() -> None:
     """Render animated header with real-time clock"""
     load_custom_css()
     
-    now_thailand = datetime.now(THAILAND_TZ)
+    now_thailand = get_thailand_time()
     current_date = now_thailand.strftime('%d %B %Y')
     
     st.markdown(f"""
     <div class="main-header">
-        <h1 class="header-title">🚗 Vehicle Entry System</h1>
-        <div class="datetime-box">
-            <div class="date-text">📅 {current_date}</div>
-            <div class="time-text" id="clock">🕐 Loading...</div>
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 300px;">
+                <h1 class="header-title" style="margin: 0; text-align: left;">🚗 Vehicle Entry System</h1>
+            </div>
+            <div class="datetime-box" style="flex: 0 0 auto; min-width: 280px; margin-top: 0;">
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 1.5rem;">
+                    <div style="text-align: left;">
+                        <div style="color: rgba(255,255,255,0.7); font-size: 0.75em; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px;">
+                            Date
+                        </div>
+                        <div class="date-text" style="font-size: 1em; margin: 0;">📅 {current_date}</div>
+                    </div>
+                    <div style="width: 1px; height: 40px; background: rgba(255,255,255,0.2);"></div>
+                    <div style="text-align: left;">
+                        <div style="color: rgba(255,255,255,0.7); font-size: 0.75em; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px;">
+                            Time
+                        </div>
+                        <div class="time-text" id="clock" style="font-size: 1.1em; margin: 0;">🕐 Loading...</div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -236,104 +437,74 @@ def render_header():
     )
 
 # ==================== ENTRY TAB ====================
-def render_entry_tab(df_classes):
-    """Render vehicle entry form"""
-    st.markdown("### 📝 New Vehicle Entry")
+# Manual entry removed - system now only accepts data from cameras
+
+
+# ==================== IMAGE CLEANUP ====================
+def cleanup_old_images() -> None:
+    """Delete images that are not from today"""
+    import os
+    from pathlib import Path
     
-    if df_classes.empty:
-        st.warning("⚠️ No vehicle classes available. Please add some in Master Data tab.")
-        return
-    
-    # Selection section (outside form for real-time update)
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Camera selection dropdown
-        camera_options = ["1", "2", "3", "➕ Add New"]
-        camera_selection = st.selectbox("📷 Camera ID", camera_options, key="camera_select")
+    try:
+        now_thailand = get_thailand_time()
+        today = now_thailand.date()
         
-        # Show text input if "Add New" is selected
-        if camera_selection == "➕ Add New":
-            camera_id = st.text_input("🆕 New Camera ID", placeholder="e.g., CAM-001", key="new_camera")
-        else:
-            camera_id = camera_selection
-    
-    with col2:
-        class_options = df_classes['class_name'].tolist()
-        selected_class = st.selectbox("🚗 Vehicle Type", class_options, key="vehicle_type_select")
-    
-    # Display fees (updates in real-time when vehicle type changes)
-    if selected_class:
-        class_data = df_classes[df_classes['class_name'] == selected_class].iloc[0]
+        # Query to get img_path of old images (not today)
+        query = """
+            SELECT img_path 
+            FROM vehicle_transactions 
+            WHERE DATE(time_stamp) < :today 
+            AND img_path IS NOT NULL 
+            AND img_path != ''
+        """
         
-        st.markdown("---")
-        col_fee1, col_fee2, col_fee3 = st.columns(3)
+        with engine.connect() as conn:
+            result = conn.execute(text(query), {"today": today})
+            old_images = [row[0] for row in result]
         
-        with col_fee1:
-            st.metric("💵 Entry Fee", f"{class_data['entry_fee']:.0f} ฿")
-        with col_fee2:
-            st.metric("🔍 X-Ray Fee", f"{class_data['xray_fee']:.0f} ฿")
-        with col_fee3:
-            st.metric("💰 Total Fee", f"{class_data['total_fee']:.0f} ฿")
-    
-    st.markdown("---")
-    
-    # Save button (outside form)
-    _, col_btn2, _ = st.columns([1, 1, 1])
-    with col_btn2:
-        if st.button("✅ Save Entry", use_container_width=True, type="primary", key="save_entry_btn"):
-            # Validate camera ID
-            if camera_selection == "➕ Add New" and not camera_id.strip():
-                st.error("❌ Please enter Camera ID")
-            elif not camera_id or camera_id == "➕ Add New":
-                st.error("❌ Please select or enter Camera ID")
-            else:
+        deleted_count = 0
+        for img_path in old_images:
+            if img_path and os.path.exists(img_path):
                 try:
-                    class_data = df_classes[df_classes['class_name'] == selected_class].iloc[0]
-                    
-                    # Get Thailand time and convert to naive datetime
-                    current_time_thailand = datetime.now(THAILAND_TZ)
-                    
-                    # Generate track_id (manual entry uses timestamp)
-                    track_id = f"MANUAL_{current_time_thailand.strftime('%Y%m%d%H%M%S')}"
-                    
-                    with engine.connect() as conn:
-                        # Set timezone to Bangkok for this session
-                        conn.execute(text("SET TIME ZONE 'Asia/Bangkok'"))
-                        
-                        conn.execute(text("""
-                            INSERT INTO vehicle_transactions 
-                            (camera_id, track_id, class_id, total_fee, time_stamp)
-                            VALUES (:camera_id, :track_id, :class_id, :total, :time_stamp)
-                        """), {
-                            "camera_id": camera_id.strip(),
-                            "track_id": track_id,
-                            "class_id": int(class_data['class_id']),
-                            "total": float(class_data['total_fee']),
-                            "time_stamp": current_time_thailand
-                        })
-                        conn.commit()
-                    
-                    st.success(f"✅ Entry saved! Camera: {camera_id} | Vehicle: {selected_class} | Total: {class_data['total_fee']:.0f} ฿")
-                    st.balloons()
-                    st.rerun()
+                    os.remove(img_path)
+                    deleted_count += 1
+                    print(f"🗑️ Deleted old image: {img_path}")
                 except Exception as e:
-                    st.error(f"❌ Error: {e}")
+                    print(f"❌ Error deleting {img_path}: {e}")
+        
+        if deleted_count > 0:
+            print(f"✅ Cleaned up {deleted_count} old images")
+        
+        # Update database to clear img_path for old records
+        with engine.connect() as conn:
+            conn.execute(text("""
+                UPDATE vehicle_transactions 
+                SET img_path = NULL 
+                WHERE DATE(time_stamp) < :today
+            """), {"today": today})
+            conn.commit()
+            
+    except Exception as e:
+        print(f"❌ Error during image cleanup: {e}")
+
 
 # ==================== CURRENT VEHICLE TAB ====================
-def render_current_vehicle_tab():
-    """Render current vehicle display tab"""
-    
+def render_current_vehicle_tab() -> None:
+    """Render current vehicle display tab showing the latest entry"""
     st.markdown("### 🚗 Current Vehicle")
     
-    # Get current vehicle data
     try:
+        # Run cleanup first
+        cleanup_old_images()
+        
         query = """
             SELECT 
                 t.camera_id,
                 c.class_name as vehicle_type,
                 t.total_fee,
-                t.time_stamp
+                t.time_stamp,
+                t.img_path
             FROM vehicle_transactions t
             JOIN vehicle_classes c ON t.class_id = c.class_id
             ORDER BY t.time_stamp DESC
@@ -343,12 +514,7 @@ def render_current_vehicle_tab():
         
         if not df_latest.empty:
             vehicle = df_latest.iloc[0]
-            timestamp = pd.to_datetime(vehicle['time_stamp'])
-            # Convert to Thailand timezone
-            if timestamp.tzinfo is None:
-                timestamp = pytz.utc.localize(timestamp).astimezone(THAILAND_TZ)
-            else:
-                timestamp = timestamp.astimezone(THAILAND_TZ)
+            timestamp = convert_to_thailand_tz(pd.to_datetime(vehicle['time_stamp']))
             formatted_time = timestamp.strftime('%d/%m/%Y %H:%M:%S')
             total_fee = vehicle['total_fee'] if vehicle['total_fee'] is not None else 0.0
             
@@ -424,6 +590,19 @@ def render_current_vehicle_tab():
                 </div>
                 """, unsafe_allow_html=True)
             
+            # Display image if available (640x640)
+            if 'img_path' in vehicle and vehicle['img_path'] and vehicle['img_path'] != '':
+                import os
+                if os.path.exists(vehicle['img_path']):
+                    st.markdown("---")
+                    st.markdown("### 📸 Vehicle Image")
+                    # ใช้ column เพื่อจัดกึ่งกลาง
+                    col_img1, col_img2, col_img3 = st.columns([1, 2, 1])
+                    with col_img2:
+                        st.image(vehicle['img_path'], use_container_width=True)
+                else:
+                    st.info("📷 Image file not found")
+            
             # Refresh button
             st.markdown("---")
             _, col2, _ = st.columns([1, 1, 1])
@@ -447,18 +626,32 @@ def render_current_vehicle_tab():
             """, unsafe_allow_html=True)
             
     except Exception as e:
-        st.error(f"❌ Error: {e}")
+        st.error(f"❌ Error loading current vehicle: {e}")
+        print(f"❌ Error loading current vehicle: {e}")
 
 # ==================== TRANSACTION HISTORY ====================
-def render_transaction_history():
-    """Render transaction history"""
+def render_transaction_history() -> None:
+    """Render transaction history for today only with filters"""
     st.markdown("---")
-    st.markdown("### 📜 Transaction History")
+    st.markdown("### 📜 Transaction History (Today)")
     
-    now_thailand = datetime.now(THAILAND_TZ)
-    date_filter = st.date_input("📅 Select Date", value=now_thailand.date())
+    now_thailand = get_thailand_time()
+    today = now_thailand.date()
+    
+    # Display current date
+    st.info(f"📅 Showing transactions for: {today.strftime('%d %B %Y')}")
     
     try:
+        # Get all vehicle classes from master data
+        query_classes = """
+            SELECT class_name 
+            FROM vehicle_classes 
+            ORDER BY class_id
+        """
+        df_classes = pd.read_sql(text(query_classes), engine)
+        all_vehicle_types = df_classes['class_name'].tolist()
+        
+        # Get all transactions for today
         query = """
             SELECT 
                 t.id,
@@ -468,50 +661,184 @@ def render_transaction_history():
                 t.total_fee,
                 t.time_stamp,
                 t.confidence,
+                t.img_path,
                 c.class_name,
                 c.entry_fee,
                 c.xray_fee
             FROM vehicle_transactions t
             JOIN vehicle_classes c ON t.class_id = c.class_id
-            WHERE DATE(t.time_stamp) = :date_filter
+            WHERE DATE(t.time_stamp) = :today
             ORDER BY t.time_stamp DESC
         """
         
-        df_transactions = pd.read_sql(text(query), engine, params={"date_filter": date_filter})
+        df_all = pd.read_sql(text(query), engine, params={"today": today})
         
-        if not df_transactions.empty:
+        if not df_all.empty:
+            # Filter options
+            st.markdown("#### 🔍 Filters")
+            
+            # Search box for Track ID
+            search_track = st.text_input("🔎 Search Track ID", placeholder="Enter track ID to search...", key="search_track")
+            
+            col_f1, col_f2, col_f3 = st.columns(3)
+            
+            with col_f1:
+                # Camera filter - dropdown
+                all_cameras = sorted(df_all['camera_id'].unique().tolist())
+                camera_options = ["All Cameras"] + all_cameras
+                selected_camera = st.selectbox(
+                    "📷 Select Camera",
+                    options=camera_options,
+                    index=0,
+                    key="camera_filter"
+                )
+            
+            with col_f2:
+                # Vehicle type filter - dropdown (ใช้จาก master data)
+                # แปลงชื่อสำหรับแสดงใน dropdown
+                translated_types = [translate_class_name(vt) for vt in all_vehicle_types]
+                vehicle_type_options = ["All Types"] + translated_types
+                selected_vehicle_type = st.selectbox(
+                    "🚗 Select Vehicle Type",
+                    options=vehicle_type_options,
+                    index=0,
+                    key="vehicle_type_filter"
+                )
+            
+            # Apply filters based on dropdown selection
+            if selected_camera == "All Cameras":
+                selected_cameras = all_cameras
+            else:
+                selected_cameras = [selected_camera]
+            
+            if selected_vehicle_type == "All Types":
+                selected_vehicle_types = all_vehicle_types
+            else:
+                # แปลงกลับเป็นชื่อเดิมสำหรับ filter
+                selected_vehicle_types = [vt for vt in all_vehicle_types 
+                                         if translate_class_name(vt) == selected_vehicle_type]
+            
+            with col_f3:
+                # Time period filter
+                time_periods = ["All Day", "Morning (06:00-12:00)", "Afternoon (12:00-18:00)", "Evening (18:00-00:00)", "Night (00:00-06:00)"]
+                selected_period = st.selectbox(
+                    "⏰ Time Period",
+                    options=time_periods,
+                    index=0,
+                    key="time_period_filter"
+                )
+            
+            # Apply filters
+            df_transactions = df_all[
+                (df_all['camera_id'].isin(selected_cameras)) & 
+                (df_all['class_name'].isin(selected_vehicle_types))
+            ]
+            
+            # Apply Track ID search
+            if search_track and search_track.strip():
+                df_transactions = df_transactions[
+                    df_transactions['track_id'].str.contains(search_track.strip(), case=False, na=False)
+                ]
+            
+            # Apply time period filter
+            if selected_period != "All Day":
+                df_transactions['hour'] = pd.to_datetime(df_transactions['time_stamp']).dt.hour
+                if selected_period == "Morning (06:00-12:00)":
+                    df_transactions = df_transactions[(df_transactions['hour'] >= 6) & (df_transactions['hour'] < 12)]
+                elif selected_period == "Afternoon (12:00-18:00)":
+                    df_transactions = df_transactions[(df_transactions['hour'] >= 12) & (df_transactions['hour'] < 18)]
+                elif selected_period == "Evening (18:00-00:00)":
+                    df_transactions = df_transactions[(df_transactions['hour'] >= 18) | (df_transactions['hour'] < 0)]
+                elif selected_period == "Night (00:00-06:00)":
+                    df_transactions = df_transactions[(df_transactions['hour'] >= 0) & (df_transactions['hour'] < 6)]
+            
+            st.markdown("---")
+            
+            # Summary metrics
             col_m1, col_m2, col_m3 = st.columns(3)
             with col_m1:
                 st.metric("📊 Total Transactions", len(df_transactions))
             with col_m2:
                 st.metric("💰 Total Revenue", f"{df_transactions['total_fee'].sum():.0f} ฿")
             with col_m3:
-                st.metric("📈 Avg/Transaction", f"{df_transactions['total_fee'].mean():.0f} ฿")
+                # Export CSV button
+                csv = df_transactions.to_csv(index=False, encoding='utf-8-sig')
+                st.download_button(
+                    label="📥 Download CSV",
+                    data=csv,
+                    file_name=f"transactions_{today.strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
             
             st.markdown("---")
             
-            for _, row in df_transactions.iterrows():
-                timestamp = pd.to_datetime(row['time_stamp'])
-                # Convert to Thailand timezone
-                if timestamp.tzinfo is None:
-                    timestamp = pytz.utc.localize(timestamp).astimezone(THAILAND_TZ)
-                else:
-                    timestamp = timestamp.astimezone(THAILAND_TZ)
+            # Statistics by Vehicle Type
+            st.markdown("#### 📊 Statistics by Vehicle Type")
+            col_s1, col_s2 = st.columns(2)
+            
+            with col_s1:
+                # Count by vehicle type
+                df_display_stats = df_transactions.copy()
+                df_display_stats['class_name_display'] = df_display_stats['class_name'].apply(translate_class_name)
+                vehicle_counts = df_display_stats['class_name_display'].value_counts()
+                
+                st.markdown("**🚗 Count by Type:**")
+                for vtype, count in vehicle_counts.items():
+                    st.write(f"• {vtype}: **{count}** คัน")
+            
+            with col_s2:
+                # Revenue by vehicle type
+                revenue_by_type = df_display_stats.groupby('class_name_display')['total_fee'].sum().sort_values(ascending=False)
+                
+                st.markdown("**💰 Revenue by Type:**")
+                for vtype, revenue in revenue_by_type.items():
+                    st.write(f"• {vtype}: **{revenue:.0f}** ฿")
+            
+            st.markdown("---")
+            
+            # Pagination
+            st.markdown("#### 📄 Transaction Details")
+            items_per_page = st.selectbox("Items per page:", [10, 25, 50, 100], index=1, key="items_per_page")
+            total_items = len(df_transactions)
+            total_pages = max(1, (total_items + items_per_page - 1) // items_per_page)
+            
+            col_p1, col_p2, col_p3 = st.columns([1, 2, 1])
+            with col_p2:
+                page = st.number_input(
+                    f"Page (1-{total_pages})", 
+                    min_value=1, 
+                    max_value=total_pages, 
+                    value=1, 
+                    key="page_number"
+                )
+            
+            # Calculate start and end indices
+            start_idx = (page - 1) * items_per_page
+            end_idx = min(start_idx + items_per_page, total_items)
+            
+            st.info(f"Showing {start_idx + 1}-{end_idx} of {total_items} transactions")
+            
+            # Transaction details (paginated)
+            for _, row in df_transactions.iloc[start_idx:end_idx].iterrows():
+                timestamp = convert_to_thailand_tz(pd.to_datetime(row['time_stamp']))
                 time_display = timestamp.strftime('%H:%M:%S')
                 conf_text = f" ({row['confidence']:.2%})" if pd.notna(row['confidence']) else ""
+                translated_name = translate_class_name(row['class_name'])
                 
                 with st.expander(
-                    f"📷 {row['camera_id']} | {row['class_name']}{conf_text} | {time_display} | {row['total_fee']:.0f} ฿",
+                    f"📷 {row['camera_id']} | {translated_name}{conf_text} | {time_display} | {row['total_fee']:.0f} ฿",
                     expanded=False
                 ):
                     st.markdown(f"**🆔 ID:** #{row['id']}")
                     st.markdown(f"**📷 Camera:** {row['camera_id']}")
                     st.markdown(f"**🔖 Track ID:** {row['track_id']}")
-                    st.markdown(f"**🚗 Vehicle:** {row['class_name']}")
+                    st.markdown(f"**🚗 Vehicle:** {translated_name}")
                     if pd.notna(row['confidence']):
                         st.markdown(f"**🎯 Confidence:** {row['confidence']:.2%}")
                     st.markdown("---")
                     
+                    # Fee breakdown
                     col_f1, col_f2, col_f3 = st.columns(3)
                     with col_f1:
                         st.metric("Entry", f"{row['entry_fee']:.0f} ฿")
@@ -520,42 +847,82 @@ def render_transaction_history():
                     with col_f3:
                         st.metric("Total", f"{row['total_fee']:.0f} ฿")
                     
-                    # Format full timestamp with Thailand timezone
-                    full_timestamp = pd.to_datetime(row['time_stamp'])
-                    if full_timestamp.tzinfo is None:
-                        full_timestamp = pytz.utc.localize(full_timestamp).astimezone(THAILAND_TZ)
-                    else:
-                        full_timestamp = full_timestamp.astimezone(THAILAND_TZ)
+                    # Full timestamp
+                    full_timestamp = convert_to_thailand_tz(pd.to_datetime(row['time_stamp']))
                     st.markdown(f"**🕐 Time:** {full_timestamp.strftime('%d/%m/%Y %H:%M:%S')} (Thailand)")
                     
-                    # Delete Button
+                    # Display image if available (640x640)
+                    if pd.notna(row['img_path']) and row['img_path'] != '':
+                        import os
+                        if os.path.exists(row['img_path']):
+                            st.markdown("---")
+                            st.markdown("**📸 Vehicle Image:**")
+                            # ใช้ column เพื่อจัดกึ่งกลาง
+                            col_img1, col_img2, col_img3 = st.columns([1, 2, 1])
+                            with col_img2:
+                                st.image(row['img_path'], use_container_width=True)
+                        else:
+                            st.info("📷 Image file not found")
+                    
+                    # Delete button with confirmation
                     st.markdown("---")
-                    _, col_d2, _ = st.columns([2, 1, 2])
+                    col_d1, col_d2, col_d3 = st.columns([2, 1, 2])
                     with col_d2:
-                        if st.button(f"🗑️ Delete", key=f"del_{row['id']}", type="secondary", use_container_width=True):
-                            try:
-                                with engine.connect() as conn:
-                                    conn.execute(text("DELETE FROM vehicle_transactions WHERE id = :id"), 
-                                               {"id": row['id']})
-                                    conn.commit()
-                                st.success("✅ Deleted!")
+                        # Use session state for confirmation
+                        confirm_key = f"confirm_del_{row['id']}"
+                        if confirm_key not in st.session_state:
+                            st.session_state[confirm_key] = False
+                        
+                        if not st.session_state[confirm_key]:
+                            if st.button(f"🗑️ Delete", key=f"del_{row['id']}", type="secondary", use_container_width=True):
+                                st.session_state[confirm_key] = True
                                 st.rerun()
-                            except Exception as e:
-                                st.error(f"❌ Error: {e}")
+                        else:
+                            st.warning("⚠️ Confirm delete?")
+                            col_y, col_n = st.columns(2)
+                            with col_y:
+                                if st.button("✅ Yes", key=f"yes_{row['id']}", use_container_width=True):
+                                    try:
+                                        with engine.connect() as conn:
+                                            conn.execute(
+                                                text("DELETE FROM vehicle_transactions WHERE id = :id"), 
+                                                {"id": row['id']}
+                                            )
+                                            conn.commit()
+                                        st.success("✅ Deleted successfully!")
+                                        st.session_state[confirm_key] = False
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"❌ Error deleting transaction: {e}")
+                                        print(f"❌ Error deleting transaction: {e}")
+                            with col_n:
+                                if st.button("❌ No", key=f"no_{row['id']}", use_container_width=True):
+                                    st.session_state[confirm_key] = False
+                                    st.rerun()
         else:
-            st.info(f"📭 No transactions found for {date_filter.strftime('%d %B %Y')}")
+            st.info(f"📭 No transactions found for today ({today.strftime('%d %B %Y')})")
     
     except Exception as e:
-        st.error(f"Error loading transactions: {e}")
+        st.error(f"❌ Error loading transactions: {e}")
+        print(f"❌ Error loading transactions: {e}")
 
 # ==================== MASTER DATA TAB ====================
-def render_master_data_tab(df_classes):
-    """Render master data management tab"""
+def render_master_data_tab(df_classes: pd.DataFrame) -> None:
+    """
+    Render master data management tab for vehicle classes
+    
+    Args:
+        df_classes: DataFrame containing current vehicle classes
+    """
     st.markdown("### ⚙️ Vehicle Classes Management")
     
     if not df_classes.empty:
+        # แปลงชื่อสำหรับแสดงผล
+        df_display = df_classes.copy()
+        df_display['class_name'] = df_display['class_name'].apply(translate_class_name)
+        
         st.dataframe(
-            df_classes,
+            df_display,
             use_container_width=True,
             hide_index=True,
             column_config={
@@ -568,52 +935,13 @@ def render_master_data_tab(df_classes):
         )
     else:
         st.info("📭 No vehicle classes defined yet")
-    
-    st.markdown("---")
-    st.markdown("#### ➕ Add/Edit Vehicle Class")
-    
-    with st.form("class_form", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            class_name = st.text_input("🚗 Vehicle Type", placeholder="e.g., Sedan, Truck")
-            entry_fee = st.number_input("💵 Entry Fee (฿)", min_value=0.0, step=10.0, value=0.0)
-        
-        with col2:
-            xray_fee = st.number_input("🔍 X-Ray Fee (฿)", min_value=0.0, step=10.0, value=0.0)
-            total_fee = entry_fee + xray_fee
-            st.metric("💰 Total Fee", f"{total_fee:.2f} ฿")
-        
-        _, col_s2, _ = st.columns([1, 1, 1])
-        with col_s2:
-            submitted = st.form_submit_button("💾 Save Class", use_container_width=True, type="primary")
-        
-        if submitted and class_name.strip():
-            try:
-                with engine.connect() as conn:
-                    conn.execute(text("""
-                        INSERT INTO vehicle_classes (class_name, entry_fee, xray_fee, total_fee)
-                        VALUES (:name, :entry, :xray, :total)
-                        ON CONFLICT (class_name) DO UPDATE 
-                        SET entry_fee = :entry, xray_fee = :xray, total_fee = :total
-                    """), {
-                        "name": class_name.strip(),
-                        "entry": entry_fee,
-                        "xray": xray_fee,
-                        "total": total_fee
-                    })
-                    conn.commit()
-                st.success(f"✅ Saved: {class_name}")
-                st.rerun()
-            except Exception as e:
-                st.error(f"❌ Error: {e}")
 
 # ==================== ANALYTICS TAB ====================
-def render_analytics_tab():
-    """Render analytics dashboard"""
+def render_analytics_tab() -> None:
+    """Render analytics dashboard with charts and statistics"""
     st.markdown("### 📊 Analytics Dashboard")
     
-    now_thailand = datetime.now(THAILAND_TZ)
+    now_thailand = get_thailand_time()
     
     col1, col2 = st.columns(2)
     with col1:
@@ -636,44 +964,148 @@ def render_analytics_tab():
             ORDER BY t.time_stamp DESC
         """
         
-        df_analytics = pd.read_sql(text(query), engine, 
-                                   params={"start_date": start_date, "end_date": end_date})
+        df_analytics = pd.read_sql(
+            text(query), 
+            engine, 
+            params={"start_date": start_date, "end_date": end_date}
+        )
         
         if not df_analytics.empty:
             st.markdown("---")
-            col1, col2, col3, col4 = st.columns(4)
+            
+            # Summary metrics
+            col1, col2, col3 = st.columns(3)
             
             with col1:
                 st.metric("📊 Total Transactions", len(df_analytics))
             with col2:
                 st.metric("💰 Total Revenue", f"{df_analytics['total_fee'].sum():.0f} ฿")
             with col3:
-                st.metric("📈 Avg/Transaction", f"{df_analytics['total_fee'].mean():.0f} ฿")
-            with col4:
-                st.metric("📷 Active Cameras", df_analytics['camera_id'].nunique())
+                st.metric("📷 Cameras", df_analytics['camera_id'].nunique())
             
             st.markdown("---")
             
+            # Charts
             col_c1, col_c2 = st.columns(2)
+            
+            # แปลงชื่อสำหรับแสดงใน chart
+            df_analytics_display = df_analytics.copy()
+            df_analytics_display['class_name'] = df_analytics_display['class_name'].apply(translate_class_name)
             
             with col_c1:
                 st.markdown("#### 🚗 Transactions by Vehicle Type")
-                vehicle_counts = df_analytics['class_name'].value_counts()
+                vehicle_counts = df_analytics_display['class_name'].value_counts()
                 st.bar_chart(vehicle_counts.to_frame("count"))
             
             with col_c2:
                 st.markdown("#### 💰 Revenue by Vehicle Type")
-                revenue_by_type = df_analytics.groupby('class_name')['total_fee'].sum().sort_values(ascending=False)
+                revenue_by_type = df_analytics_display.groupby('class_name')['total_fee'].sum().sort_values(ascending=False)
                 st.bar_chart(revenue_by_type.to_frame("revenue"))
         else:
-            st.info(f"📭 No data found between {start_date} and {end_date}")
+            st.info(f"📭 No data found between {start_date.strftime('%d %B %Y')} and {end_date.strftime('%d %B %Y')}")
     
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"❌ Error loading analytics: {e}")
+        print(f"❌ Error loading analytics: {e}")
+
+
+# ==================== DASHBOARD TAB ====================
+def render_dashboard_tab() -> None:
+    """Render dashboard with overview statistics"""
+    st.markdown("### 📊 Dashboard Overview")
+    
+    now_thailand = get_thailand_time()
+    today = now_thailand.date()
+    
+    try:
+        # Get today's data
+        query_today = """
+            SELECT 
+                t.id,
+                t.camera_id,
+                t.class_id,
+                t.total_fee,
+                t.time_stamp,
+                c.class_name
+            FROM vehicle_transactions t
+            JOIN vehicle_classes c ON t.class_id = c.class_id
+            WHERE DATE(t.time_stamp) = :today
+        """
+        df_today = pd.read_sql(text(query_today), engine, params={"today": today})
+        
+        # Get this month's data
+        first_day_month = today.replace(day=1)
+        query_month = """
+            SELECT 
+                t.id,
+                t.total_fee,
+                c.class_name
+            FROM vehicle_transactions t
+            JOIN vehicle_classes c ON t.class_id = c.class_id
+            WHERE DATE(t.time_stamp) >= :first_day
+        """
+        df_month = pd.read_sql(text(query_month), engine, params={"first_day": first_day_month})
+        
+        # Display metrics
+        st.markdown("#### 📅 Today's Summary")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("🚗 Total Vehicles", len(df_today))
+        with col2:
+            st.metric("💰 Total Revenue", f"{df_today['total_fee'].sum():.0f} ฿" if not df_today.empty else "0 ฿")
+        with col3:
+            st.metric("📷 Cameras", df_today['camera_id'].nunique() if not df_today.empty else 0)
+        with col4:
+            latest_time = pd.to_datetime(df_today['time_stamp'].max()) if not df_today.empty else None
+            if latest_time:
+                formatted_time = convert_to_thailand_tz(latest_time).strftime('%H:%M:%S')
+                st.metric("🕐 Last Entry", formatted_time)
+            else:
+                st.metric("🕐 Last Entry", "N/A")
+        
+        st.markdown("---")
+        
+        # This month summary
+        st.markdown("#### 📆 This Month's Summary")
+        col_m1, col_m2 = st.columns(2)
+        
+        with col_m1:
+            st.metric("🚗 Total Vehicles", len(df_month))
+        with col_m2:
+            st.metric("💰 Total Revenue", f"{df_month['total_fee'].sum():.0f} ฿" if not df_month.empty else "0 ฿")
+        
+        if not df_today.empty:
+            st.markdown("---")
+            st.markdown("#### 🚗 Today's Vehicle Distribution")
+            
+            # Prepare data for chart
+            df_display = df_today.copy()
+            df_display['class_name'] = df_display['class_name'].apply(translate_class_name)
+            
+            col_c1, col_c2 = st.columns(2)
+            
+            with col_c1:
+                # Pie chart would be nice but streamlit doesn't have it, use bar chart
+                vehicle_counts = df_display['class_name'].value_counts()
+                st.bar_chart(vehicle_counts)
+            
+            with col_c2:
+                # Top 5 vehicle types today
+                st.markdown("**Top 5 Vehicle Types Today:**")
+                for idx, (vtype, count) in enumerate(vehicle_counts.head(5).items(), 1):
+                    st.write(f"{idx}. {vtype}: **{count}** คัน")
+        else:
+            st.info("📭 No data for today yet")
+            
+    except Exception as e:
+        st.error(f"❌ Error loading dashboard: {e}")
+        print(f"❌ Error loading dashboard: {e}")
 
 # ==================== MAIN APPLICATION ====================
-def main():
-    """Main application"""
+def main() -> None:
+    """Main application entry point"""
+    # Page configuration
     st.set_page_config(
         page_title="Vehicle Entry System",
         page_icon="🚗",
@@ -681,24 +1113,30 @@ def main():
         initial_sidebar_state="collapsed"
     )
     
-    check_authentication()
+    # Initialize database
     init_database()
     
+    # Load vehicle classes
     df_classes = load_vehicle_classes()
     
+    # Render header
     render_header()
     
     st.markdown("---")
     
-    # Show all tabs for everyone
-    tab1, tab2, tab3, tab4 = st.tabs(["📝 Entry", "🚗 Current Vehicle", "⚙️ Master Data", "📊 Analytics"])
+    # Create tabs
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "🏠 Dashboard",
+        "📜 History", 
+        "⚙️ Master Data", 
+        "📊 Analytics"
+    ])
     
     with tab1:
-        render_entry_tab(df_classes)
-        render_transaction_history()
+        render_dashboard_tab()
     
     with tab2:
-        render_current_vehicle_tab()
+        render_transaction_history()
     
     with tab3:
         render_master_data_tab(df_classes)
