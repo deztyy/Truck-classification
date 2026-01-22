@@ -4,3 +4,8 @@ python-dotenv==1.0.0
 numpy==1.26.0
 Pillow==10.2.0
 psycopg2-binary==2.9.9
+boto3
+requests
+redis
+lap
+pytz
