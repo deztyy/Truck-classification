@@ -13,7 +13,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     ports:
-      - "5432:5432"
+      - "5429:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
       - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro # <-- เพิ่มบรรทัดนี้
@@ -46,6 +46,52 @@ services:
       - minio_data:/data
     networks:
       - analytics_network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live || exit 1"]
+      interval: 3s
+      timeout: 2s
+      retries: 3
+      start_period: 5s
+
+  create-bucket:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512MB
+        reservations:
+          cpus: '0.1'
+          memory: 128MB
+    networks:
+      - analytics_network
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    entrypoint: >
+      /bin/sh -c "
+      MAX_RETRIES=10;
+      RETRY=0;
+      until [ $$RETRY -eq $$MAX_RETRIES ]; do
+        if /usr/bin/mc alias set myminio http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD 2>/dev/null; then
+          echo 'MinIO connected';
+          /usr/bin/mc mb myminio/video-frames --ignore-existing 2>/dev/null || true;
+          /usr/bin/mc mb myminio/mlflow-bucket --ignore-existing 2>/dev/null || true;
+          /usr/bin/mc anonymous set download myminio/video-frames 2>/dev/null || true;
+          /usr/bin/mc anonymous set download myminio/mlflow-bucket 2>/dev/null || true;
+          echo 'Buckets ready';
+          exit 0;
+        fi;
+        RETRY=$$((RETRY+1));
+        echo 'Retry' $$RETRY'/10...';
+        sleep 1;
+      done;
+      echo 'Failed after' $$MAX_RETRIES 'attempts';
+      exit 1;
+      "
 
   # 4. MinIO Setup (One-off task to create buckets automatically)
   # Commented out - ingestion.py creates buckets automatically if needed
@@ -60,23 +106,47 @@ services:
 
   # 5. MLflow Tracking Server
   # Commented out - not needed for video ingestion testing
-  # mlflow:
-  #   image: ghcr.io/mlflow/mlflow:v2.7.1
-  #   container_name: vid_analytics_mlflow
-  #   restart: always
-  #   depends_on:
-  #     - db
-  #     - minio
-  #   environment:
-  #     MLFLOW_S3_ENDPOINT_URL: http://minio:9000
-  #     AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
-  #     AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
-  #   command: >
-  #     mlflow server --backend-store-uri ${DB_URI} --default-artifact-root s3://mlflow-models/ --host 0.0.0.0
-  #   ports:
-  #     - "5000:5000"
-  #   networks:
-  #     - analytics_network
+  mlflow-server:
+    image: ghcr.io/mlflow/mlflow:latest
+    container_name: vid_analytics_mlflow
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 3GB
+        reservations:
+          cpus: '0.5'
+          memory: 1GB
+    depends_on:
+      create-bucket:
+        condition: service_completed_successfully
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      MLFLOW_S3_IGNORE_TLS: "true"
+    command: >
+      mlflow server 
+      --host 0.0.0.0 
+      --port 5000
+      --backend-store-uri sqlite:////mlflow_db/mlflow.db
+      --default-artifact-root s3://mlflow-bucket/
+      --artifacts-destination s3://mlflow-bucket/
+      --serve-artifacts
+      --allowed-hosts "*"
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_db:/mlflow_db
+    networks:
+      - analytics_network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
 
   # ---------------------------------------------------------------------------
   # APPLICATION LAYER (Your Custom Services)
@@ -91,7 +161,7 @@ services:
       - redis
       - minio
     environment:
-      VIDEO_FILE: /app/sample_videos/truck_highway_short.mp4
+      VIDEO_FILE: /app/sample_videos/testvid_1.mp4
       CAMERA_ID: docker_camera_01
       REDIS_HOST: redis
       REDIS_PORT: 6379
@@ -112,13 +182,25 @@ services:
     build: ./fake-processing
     container_name: vid_processing_worker
     restart: on-failure
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 4GB
+        reservations:
+          cpus: '2.0'
+          memory: 2GB
     depends_on:
-      - redis
-      - minio
-      - db
+      mlflow-server:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      db:
+        condition: service_started
     environment:
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      REDIS_DB: 0
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
@@ -128,6 +210,13 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      MLFLOW_TRACKING_URI: http://mlflow-server:5000
+      MODEL_URI: models:/Truck_classification_Model/Production
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      MLFLOW_S3_IGNORE_TLS: true
+      
     networks:
       - analytics_network
   # B. Processing Worker (Scalable: docker-compose up --scale worker=3)
@@ -195,6 +284,7 @@ services:
 volumes:
   db_data:
   minio_data:
+  mlflow_db:
 
 
 networks:
