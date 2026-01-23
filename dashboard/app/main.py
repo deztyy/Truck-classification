@@ -153,26 +153,6 @@ def load_custom_css() -> None:
             border-radius: 15px;
             border: 1px solid rgba(255,255,255,0.1);
         }
-        
-        /* Image Container - สำหรับรูป 640x640 */
-        .vehicle-image-container {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            padding: 1rem;
-            background: rgba(255,255,255,0.05);
-            border-radius: 12px;
-            border: 1px solid rgba(255,255,255,0.1);
-        }
-        
-        .vehicle-image-container img {
-            max-width: 640px;
-            max-height: 640px;
-            width: 100%;
-            height: auto;
-            object-fit: contain;
-            border-radius: 8px;
-        }
     </style>
     """,
         unsafe_allow_html=True,
@@ -679,20 +659,6 @@ def render_current_vehicle_tab() -> None:
                         {formatted_time}
                     </div>
                 </div>
-<<<<<<< HEAD:my-streamlit-app/app/main.py
-                """, unsafe_allow_html=True)
-            
-            # Display image if available (640x640)
-            if 'img_path' in vehicle and vehicle['img_path'] and vehicle['img_path'] != '':
-                import os
-                if os.path.exists(vehicle['img_path']):
-                    st.markdown("---")
-                    st.markdown("### 📸 Vehicle Image")
-                    # ใช้ column เพื่อจัดกึ่งกลาง
-                    col_img1, col_img2, col_img3 = st.columns([1, 2, 1])
-                    with col_img2:
-                        st.image(vehicle['img_path'], use_container_width=True)
-=======
                 """,
                     unsafe_allow_html=True,
                 )
@@ -710,7 +676,6 @@ def render_current_vehicle_tab() -> None:
                 image = get_image_from_minio(vehicle["img_path"])
                 if image:
                     st.image(image, use_container_width=True)
->>>>>>> origin:dashboard/app/main.py
                 else:
                     st.warning("⚠️ Image not available in MinIO storage")
                     with st.expander("🔍 Debug Info"):
@@ -1007,21 +972,6 @@ def render_transaction_history() -> None:
                         st.metric("Total", f"{row['total_fee']:.0f} ฿")
 
                     # Full timestamp
-<<<<<<< HEAD:my-streamlit-app/app/main.py
-                    full_timestamp = convert_to_thailand_tz(pd.to_datetime(row['time_stamp']))
-                    st.markdown(f"**🕐 Time:** {full_timestamp.strftime('%d/%m/%Y %H:%M:%S')} (Thailand)")
-                    
-                    # Display image if available (640x640)
-                    if pd.notna(row['img_path']) and row['img_path'] != '':
-                        import os
-                        if os.path.exists(row['img_path']):
-                            st.markdown("---")
-                            st.markdown("**📸 Vehicle Image:**")
-                            # ใช้ column เพื่อจัดกึ่งกลาง
-                            col_img1, col_img2, col_img3 = st.columns([1, 2, 1])
-                            with col_img2:
-                                st.image(row['img_path'], use_container_width=True)
-=======
                     full_timestamp = convert_to_thailand_tz(
                         pd.to_datetime(row["time_stamp"])
                     )
@@ -1038,7 +988,6 @@ def render_transaction_history() -> None:
                         image = get_image_from_minio(row["img_path"])
                         if image:
                             st.image(image, use_container_width=True)
->>>>>>> origin:dashboard/app/main.py
                         else:
                             st.warning("⚠️ Image not available in MinIO storage")
                             with st.expander("🔍 Debug Info"):
@@ -1142,8 +1091,6 @@ def render_master_data_tab(df_classes: pd.DataFrame) -> None:
         )
     else:
         st.info("📭 No vehicle classes defined yet")
-<<<<<<< HEAD:my-streamlit-app/app/main.py
-=======
 
     # st.markdown("---")
     # st.markdown("#### ➕ Add/Edit Vehicle Class")
@@ -1209,7 +1156,6 @@ def render_master_data_tab(df_classes: pd.DataFrame) -> None:
     #                 except Exception as e:
     #                     st.error(f"❌ Error saving vehicle class: {e}")
     #                     print(f"❌ Error saving vehicle class: {e}")
->>>>>>> origin:dashboard/app/main.py
 
 
 # ==================== ANALYTICS TAB ====================
@@ -1344,14 +1290,10 @@ def render_dashboard_tab() -> None:
                 f"{df_today['total_fee'].sum():.0f} ฿" if not df_today.empty else "0 ฿",
             )
         with col3:
-<<<<<<< HEAD:my-streamlit-app/app/main.py
-            st.metric("📷 Cameras", df_today['camera_id'].nunique() if not df_today.empty else 0)
-=======
             st.metric(
                 "📷 Cameras",
                 df_today["camera_id"].nunique() if not df_today.empty else 0,
             )
->>>>>>> origin:dashboard/app/main.py
         with col4:
             latest_time = (
                 pd.to_datetime(df_today["time_stamp"].max())
@@ -1371,14 +1313,6 @@ def render_dashboard_tab() -> None:
         # This month summary
         st.markdown("#### 📆 This Month's Summary")
         col_m1, col_m2 = st.columns(2)
-<<<<<<< HEAD:my-streamlit-app/app/main.py
-        
-        with col_m1:
-            st.metric("🚗 Total Vehicles", len(df_month))
-        with col_m2:
-            st.metric("💰 Total Revenue", f"{df_month['total_fee'].sum():.0f} ฿" if not df_month.empty else "0 ฿")
-        
-=======
 
         with col_m1:
             st.metric("🚗 Total Vehicles", len(df_month))
@@ -1388,7 +1322,6 @@ def render_dashboard_tab() -> None:
                 f"{df_month['total_fee'].sum():.0f} ฿" if not df_month.empty else "0 ฿",
             )
 
->>>>>>> origin:dashboard/app/main.py
         if not df_today.empty:
             st.markdown("---")
             st.markdown("#### 🚗 Today's Vehicle Distribution")
