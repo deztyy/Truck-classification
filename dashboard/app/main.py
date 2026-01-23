@@ -15,7 +15,7 @@ from sqlalchemy.engine import Engine
 
 # ==================== CONSTANTS ====================
 # Database Configuration
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@db:5432/mydb")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres1234@db:5432/vehicle_db")
 THAILAND_TZ = pytz.timezone("Asia/Bangkok")
 
 # MinIO Configuration
