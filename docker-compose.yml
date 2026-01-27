@@ -161,13 +161,15 @@ services:
   ingestion-service:
     build: ./ingestion
     container_name: vid_ingestion
-    restart: on-failure
+    restart: "on-failure"
     depends_on:
       # rtsp-server:
       #   condition: service_healthy
       redis:
         condition: service_started
       minio:
+        condition: service_healthy
+      processing-worker:  # ✅ Wait for worker to be ready!
         condition: service_healthy
     environment:
       # Format: camera_id:rtsp_url,camera_id:rtsp_url
@@ -208,6 +210,8 @@ services:
         condition: service_started
       db:
         condition: service_started
+    healthcheck:  # ✅ Add healthcheck to signal when worker is ready
+      test: ["CMD-SHELL", "pgrep -f 'python.*main.py' || exit 1"]
     environment:
       REDIS_HOST: redis
       REDIS_PORT: 6379

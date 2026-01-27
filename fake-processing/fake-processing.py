@@ -838,14 +838,21 @@ class ProcessingService:
                         # Run inference
                         class_id, total_fee, confidence = self._run_inference(frame_uint8)
 
+                        minio_path = self.convert_npy_to_jpg(
+                        npy_array=frame_uint8,
+                        frame_index=frame_idx,
+                        camera_id=task.camera_id,
+                        task_id=task.task_id,
+                        quality=JPEG_QUALITY
+                    )
+
                     # Create transaction record
                     transaction = VehicleTransaction(
                         camera_id=task.camera_id,
                         track_id=task.task_id,
                         class_id=class_id,
                         total_fee=total_fee,
-                        time_stamp=task.timestamp
-                        or datetime.datetime.now(datetime.timezone.utc),
+                        time_stamp=task.timestamp or datetime.datetime.now(datetime.timezone.utc),
                         img_path=minio_path,
                         confidence=confidence,
                     )

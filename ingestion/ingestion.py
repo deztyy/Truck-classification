@@ -73,7 +73,7 @@ class VideoIngestor:
         batch_size: int = DEFAULT_BATCH_SIZE,
         max_reconnect_attempts: int = 5,
         reconnect_delay: int = 5,
-        loop_video: bool = True,
+        loop_video: bool = False,
         frame_skip: int = 0,
     ):
         """
@@ -90,7 +90,7 @@ class VideoIngestor:
             frame_skip: Number of frames to skip between captures (0 = no skip, 1 = skip 1 frame, etc.)
         """
         self.camera_id = camera_id
-        self.video_file = video_file
+        self.video_file = video_file or os.getenv("VIDEO_FILE")
         self.rtsp_url = rtsp_url or os.getenv("RTSP_URL")
         self.loop_video = loop_video
         self.batch_size = batch_size
@@ -630,7 +630,7 @@ def main():
 
     for camera_config in camera_config_list:
         try:
-            logger.info(f"Initializing camera: {camera_config['camera_id']}")
+            # logger.info(f"Initializing camera: {camera_config['camera_id']}")
 
             video_ingestor = VideoIngestor(
                 camera_id=camera_config["camera_id"],
@@ -639,7 +639,7 @@ def main():
                 batch_size=1,
                 max_reconnect_attempts=DEFAULT_MAX_RECONNECT_ATTEMPTS,
                 reconnect_delay=DEFAULT_RECONNECT_DELAY,
-                loop_video=True,
+                loop_video=False,
                 frame_skip=DEFAULT_FRAME_SKIP,  # 0 = no skip, 1 = skip 1 frame, 2 = skip 2 frames, etc.
             )
 
