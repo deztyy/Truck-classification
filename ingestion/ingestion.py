@@ -11,9 +11,10 @@ import io
 import json
 import logging
 import os
+import threading
 import time
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -27,9 +28,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Frame preprocessing target size
-FRAME_TARGET_HEIGHT = 640
-FRAME_TARGET_WIDTH = 640
+# Defaults and constants
+DEFAULT_FRAME_SIZE: Tuple[int, int] = (640, 640)
+DEFAULT_BATCH_SIZE = 30
 
 
 class VideoIngestor:
@@ -58,10 +59,11 @@ class VideoIngestor:
         camera_id: str,
         rtsp_url: Optional[str] = None,
         video_file: Optional[str] = None,
-        batch_size: int = 30,
+        batch_size: int = DEFAULT_BATCH_SIZE,
         max_reconnect_attempts: int = 5,
         reconnect_delay: int = 5,
         loop_video: bool = True,
+        frame_skip: int = 0,
     ):
         """
         Initialize VideoIngestor with configuration from environment variables.
@@ -74,6 +76,7 @@ class VideoIngestor:
             max_reconnect_attempts: Maximum reconnection attempts
             reconnect_delay: Delay between reconnection attempts (seconds)
             loop_video: Loop video file when it ends (default: True)
+            frame_skip: Number of frames to skip between captures (0 = no skip, 1 = skip 1 frame, etc.)
         """
         self.camera_id = camera_id
         self.video_file = video_file
@@ -82,6 +85,7 @@ class VideoIngestor:
         self.batch_size = batch_size
         self.max_reconnect_attempts = max_reconnect_attempts
         self.reconnect_delay = reconnect_delay
+        self.frame_skip = frame_skip
 
         # Validate required configuration
         if not self.rtsp_url and not self.video_file:
@@ -94,8 +98,8 @@ class VideoIngestor:
         self.redis_client = self._initialize_redis()
 
         # Storage configuration
-        self.bucket_name = os.getenv("MINIO_BUCKET_NAME", "raw-frames")
-        self.redis_queue_name = os.getenv("REDIS_QUEUE_NAME", "frame_batches")
+        self.minio_bucket_name = os.getenv("MINIO_BUCKET_NAME", "raw-frames")
+        self.redis_list_name = os.getenv("REDIS_QUEUE_NAME", "frame_batches")
 
         # Ensure bucket exists
         self._ensure_bucket_exists()
@@ -104,9 +108,9 @@ class VideoIngestor:
         self.video_capture: Optional[cv2.VideoCapture] = None
 
         # Statistics
-        self.frames_processed = 0
-        self.batches_uploaded = 0
-        self.errors_count = 0
+        self.total_frames_processed = 0
+        self.total_batches_uploaded = 0
+        self.total_errors = 0
 
         logger.info(f"VideoIngestor initialized for camera: {self.camera_id}")
 
@@ -181,18 +185,18 @@ class VideoIngestor:
         Ensure the MinIO bucket exists, create if it doesn't.
         """
         try:
-            if not self.minio_client.bucket_exists(self.bucket_name):
-                self.minio_client.make_bucket(self.bucket_name)
-                logger.info(f"Created MinIO bucket: {self.bucket_name}")
+            if not self.minio_client.bucket_exists(self.minio_bucket_name):
+                self.minio_client.make_bucket(self.minio_bucket_name)
+                logger.info(f"Created MinIO bucket: {self.minio_bucket_name}")
             else:
-                logger.info(f"MinIO bucket exists: {self.bucket_name}")
+                logger.info(f"MinIO bucket exists: {self.minio_bucket_name}")
         except S3Error as e:
             logger.error(f"Error checking/creating bucket: {e}")
             raise
 
-    def _connect_to_stream(self) -> bool:
+    def _open_video_source(self) -> bool:
         """
-        Connect to the RTSP video stream or open video file.
+        Connect to the RTSP video stream or open a local video file.
 
         Returns:
             bool: True if connection successful, False otherwise
@@ -228,7 +232,7 @@ class VideoIngestor:
             logger.error(f"Error connecting to stream: {e}")
             return False
 
-    def _disconnect_from_stream(self) -> None:
+    def _close_video_source(self) -> None:
         """
         Safely disconnect from the video stream.
         """
@@ -237,7 +241,7 @@ class VideoIngestor:
             self.video_capture = None
             logger.info("Disconnected from video stream")
 
-    def _read_frame_batch(self) -> Optional[np.ndarray]:
+    def _read_next_frame_batch(self) -> Optional[np.ndarray]:
         """
         Read a batch of frames from the video stream.
 
@@ -251,10 +255,11 @@ class VideoIngestor:
         - Skip frames (e.g., process every Nth frame)
         - Add frame metadata (timestamps, frame numbers)
         """
-        frames_buffer = []
+        frames: list[np.ndarray] = []
 
         for i in range(self.batch_size):
             try:
+                # Read frame
                 ret, frame = self.video_capture.read()
 
                 # If video file ends and loop is enabled, restart
@@ -277,31 +282,57 @@ class VideoIngestor:
                     logger.warning(f"Failed to read frame {i + 1}/{self.batch_size}")
                     return None
 
+                # Skip frames if configured (frame_skip > 0)
+                for _ in range(self.frame_skip):
+                    ret, _ = self.video_capture.read()
+                    if not ret and self.video_file and self.loop_video:
+                        self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    if not ret:
+                        break
+
                 # --- CUSTOM PREPROCESSING GOES HERE ---
                 # Example: frame = cv2.resize(frame, (640, 640))
                 # Example: frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frame = cv2.resize(frame, (FRAME_TARGET_WIDTH, FRAME_TARGET_HEIGHT))
+                frame = cv2.resize(frame, DEFAULT_FRAME_SIZE)
 
-                frames_buffer.append(frame)
-                self.frames_processed += 1
+                frames.append(frame)
+                self.total_frames_processed += 1
 
+            except EOFError:
+                # Propagate EOF so the main loop can exit gracefully
+                raise
             except Exception as e:
                 logger.error(f"Error reading frame: {e}")
                 return None
 
         # Convert list of frames to NumPy array
         # Shape: (batch_size, height, width, channels)
-        frames_batch = np.array(frames_buffer)
+        frames_batch = np.array(frames)
         logger.debug(f"Created batch with shape: {frames_batch.shape}")
 
         return frames_batch
 
-    def _upload_batch_to_minio(self, batch: np.ndarray) -> Optional[str]:
+    def _serialize_numpy(self, array: np.ndarray) -> io.BytesIO:
+        """
+        Serialize a NumPy array into an in-memory BytesIO buffer.
+
+        Args:
+            array: The NumPy array to serialize
+
+        Returns:
+            BytesIO buffer positioned at start
+        """
+        buffer = io.BytesIO()
+        np.save(buffer, array, allow_pickle=False)
+        buffer.seek(0)
+        return buffer
+
+    def _upload_frame_batch(self, frame_batch: np.ndarray) -> Optional[str]:
         """
         Upload frame batch to MinIO storage using in-memory buffer.
 
         Args:
-            batch: NumPy array containing frame batch
+            frame_batch: NumPy array containing frame batch
 
         Returns:
             Optional[str]: Object name in MinIO if successful, None otherwise
@@ -315,42 +346,38 @@ class VideoIngestor:
         try:
             # Generate unique object name with timestamp
             timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
-            batch_object_key = f"{self.camera_id}/batch_{timestamp}.npy"
+            object_key = f"{self.camera_id}/batch_{timestamp}.npy"
 
             # Serialize NumPy array to bytes using io.BytesIO
-            buffer = io.BytesIO()
-            np.save(buffer, batch, allow_pickle=False)
-            buffer.seek(0)  # Reset buffer position to start
+            buffer = self._serialize_numpy(frame_batch)
 
             # Get buffer size
             buffer_size = buffer.getbuffer().nbytes
 
             # Upload to MinIO
             self.minio_client.put_object(
-                bucket_name=self.bucket_name,
-                object_name=batch_object_key,
+                bucket_name=self.minio_bucket_name,
+                object_name=object_key,
                 data=buffer,
                 length=buffer_size,
                 content_type="application/octet-stream",
             )
 
-            logger.info(
-                f"Uploaded batch to MinIO: {batch_object_key} ({buffer_size} bytes)"
-            )
-            self.batches_uploaded += 1
+            logger.info(f"Uploaded batch to MinIO: {object_key} ({buffer_size} bytes)")
+            self.total_batches_uploaded += 1
 
-            return batch_object_key
+            return object_key
 
         except S3Error as e:
             logger.error(f"MinIO upload error: {e}")
-            self.errors_count += 1
+            self.total_errors += 1
             return None
         except Exception as e:
             logger.error(f"Unexpected error during upload: {e}")
-            self.errors_count += 1
+            self.total_errors += 1
             return None
 
-    def _publish_to_redis(self, batch_object_key: str, batch_shape: tuple) -> bool:
+    def _publish_batch_metadata(self, object_key: str, batch_shape: tuple) -> bool:
         """
         Publish metadata to Redis queue for downstream processing.
 
@@ -371,11 +398,11 @@ class VideoIngestor:
             # Create metadata message
             metadata = {
                 "camera_id": self.camera_id,
-                "object_name": batch_object_key,
+                "object_name": object_key,
                 "timestamp": datetime.utcnow().isoformat(),
                 "batch_size": batch_shape[0],
                 "frame_shape": list(batch_shape[1:]),
-                "bucket_name": self.bucket_name,
+                "bucket_name": self.minio_bucket_name,
             }
 
             # --- ADD CUSTOM METADATA HERE ---
@@ -384,23 +411,23 @@ class VideoIngestor:
 
             # Serialize to JSON and push to Redis List
             message_json = json.dumps(metadata)
-            self.redis_client.rpush(self.redis_queue_name, message_json)
+            self.redis_client.rpush(self.redis_list_name, message_json)
 
-            logger.info(f"Published metadata to Redis queue: {self.redis_queue_name}")
+            logger.info(f"Published metadata to Redis list: {self.redis_list_name}")
             logger.debug(f"Metadata: {metadata}")
 
             return True
 
         except redis.RedisError as e:
             logger.error(f"Redis publish error: {e}")
-            self.errors_count += 1
+            self.total_errors += 1
             return False
         except Exception as e:
             logger.error(f"Unexpected error during publish: {e}")
-            self.errors_count += 1
+            self.total_errors += 1
             return False
 
-    def _process_batch(self) -> bool:
+    def _ingest_next_batch(self) -> bool:
         """
         Main processing loop: read batch, upload, and notify.
 
@@ -408,17 +435,17 @@ class VideoIngestor:
             bool: True if batch processed successfully, False otherwise
         """
         # Read frame batch
-        batch = self._read_frame_batch()
+        batch = self._read_next_frame_batch()
         if batch is None:
             return False
 
         # Upload to MinIO
-        batch_object_key = self._upload_batch_to_minio(batch)
-        if batch_object_key is None:
+        object_key = self._upload_frame_batch(batch)
+        if object_key is None:
             return False
 
         # Publish metadata to Redis
-        publish_ok = self._publish_to_redis(batch_object_key, batch.shape)
+        publish_ok = self._publish_batch_metadata(object_key, batch.shape)
 
         return publish_ok
 
@@ -459,7 +486,7 @@ class VideoIngestor:
                         f"Reconnection attempt {retry_count + 1}/{self.max_reconnect_attempts}"
                     )
 
-                    if self._connect_to_stream():
+                    if self._open_video_source():
                         retry_count = 0  # Reset counter on successful connection
                     else:
                         retry_count += 1
@@ -467,38 +494,41 @@ class VideoIngestor:
                         continue
 
                 # Process one batch
-                success = self._process_batch()
+                success = self._ingest_next_batch()
 
                 if not success:
                     logger.warning("Batch processing failed, will attempt reconnection")
-                    self._disconnect_from_stream()
+                    self._close_video_source()
                     retry_count += 1
                     time.sleep(self.reconnect_delay)
                 else:
                     # Log statistics periodically
-                    if self.batches_uploaded % 10 == 0:
+                    if self.total_batches_uploaded % 10 == 0:
                         logger.info(
-                            f"Statistics - Frames: {self.frames_processed}, "
-                            f"Batches: {self.batches_uploaded}, "
-                            f"Errors: {self.errors_count}"
+                            f"Statistics - Frames: {self.total_frames_processed}, "
+                            f"Batches: {self.total_batches_uploaded}, "
+                            f"Errors: {self.total_errors}"
                         )
 
+            except EOFError:
+                logger.info("End of video reached; stopping ingestion loop.")
+                break
             except KeyboardInterrupt:
                 logger.info("Received interrupt signal, shutting down...")
                 break
             except Exception as e:
                 logger.error(f"Unexpected error in main loop: {e}", exc_info=True)
-                self.errors_count += 1
-                self._disconnect_from_stream()
+                self.total_errors += 1
+                self._close_video_source()
                 time.sleep(self.reconnect_delay)
 
         # Cleanup
-        self._disconnect_from_stream()
+        self._close_video_source()
         logger.info(
             f"Ingestion stopped. Final statistics - "
-            f"Frames: {self.frames_processed}, "
-            f"Batches: {self.batches_uploaded}, "
-            f"Errors: {self.errors_count}"
+            f"Frames: {self.total_frames_processed}, "
+            f"Batches: {self.total_batches_uploaded}, "
+            f"Errors: {self.total_errors}"
         )
 
     def get_statistics(self) -> Dict[str, Any]:
@@ -510,9 +540,9 @@ class VideoIngestor:
         """
         return {
             "camera_id": self.camera_id,
-            "frames_processed": self.frames_processed,
-            "batches_uploaded": self.batches_uploaded,
-            "errors_count": self.errors_count,
+            "frames_processed": self.total_frames_processed,
+            "batches_uploaded": self.total_batches_uploaded,
+            "errors_count": self.total_errors,
             "is_connected": self.video_capture is not None
             and self.video_capture.isOpened(),
         }
@@ -520,34 +550,118 @@ class VideoIngestor:
 
 def main():
     """
-    Main entry point for the video ingestion script.
+    Main entry point for multi-camera video ingestion.
+    Reads camera configurations from environment variables.
 
-    ### CUSTOMIZATION POINT ###
-    Modify this function to:
-    - Launch multiple VideoIngestor instances for different cameras
-    - Add configuration file support (YAML, JSON)
-    - Implement multi-threading for multiple streams
-    - Add CLI argument parsing
+    Environment Variables:
+    - CAMERA_CONFIGS: Multiple cameras format "camera_01:rtsp://url1,camera_02:rtsp://url2"
+    - CAMERA_ID: Single camera ID (fallback)
+    - RTSP_URL: Single RTSP URL (fallback)
+    - VIDEO_FILE: Single video file (fallback)
     """
 
-    # Example: Single camera ingestion
-    camera_id = os.getenv("CAMERA_ID", "camera_01")
-    video_file = os.getenv("VIDEO_FILE", None)
+    # Configuration for multiple cameras
+    # Format: CAMERA_CONFIGS=camera_01:rtsp://localhost:8554/stream1,camera_02:rtsp://localhost:8554/stream2
+    camera_configs_str = os.getenv("CAMERA_CONFIGS", "")
 
-    try:
-        ingestor = VideoIngestor(
-            camera_id=camera_id,
-            video_file=video_file,
-            batch_size=30,  # Adjust based on your needs
-            max_reconnect_attempts=5,
-            reconnect_delay=5,
-            loop_video=True,
+    cameras = []
+
+    if camera_configs_str:
+        # Parse multiple camera configurations
+        logger.info("Parsing multiple camera configurations")
+        for config in camera_configs_str.split(","):
+            parts = config.strip().split(":", 1)
+            if len(parts) >= 2:
+                camera_id = parts[0]
+                rtsp_url = parts[1]
+                cameras.append({"camera_id": camera_id, "rtsp_url": rtsp_url})
+                logger.info(f"Added camera: {camera_id} -> {rtsp_url}")
+    else:
+        # Fallback to single camera (backward compatible)
+        logger.info("Using single camera configuration (backward compatible mode)")
+        camera_id = os.getenv("CAMERA_ID", "camera_01")
+        rtsp_url = os.getenv("RTSP_URL", None)
+        video_file = os.getenv("VIDEO_FILE", None)
+
+        cameras.append(
+            {"camera_id": camera_id, "rtsp_url": rtsp_url, "video_file": video_file}
         )
 
-        ingestor.run()
+    if not cameras:
+        logger.error("No camera configurations found")
+        return 1
 
+    logger.info(f"Starting ingestion for {len(cameras)} camera(s)")
+
+    # Create and start threads for each camera
+    threads = []
+    ingestors = []
+
+    for cam_config in cameras:
+        try:
+            logger.info(f"Initializing camera: {cam_config['camera_id']}")
+
+            ingestor = VideoIngestor(
+                camera_id=cam_config["camera_id"],
+                rtsp_url=cam_config.get("rtsp_url"),
+                video_file=cam_config.get("video_file"),
+                batch_size=1,
+                max_reconnect_attempts=5,
+                reconnect_delay=5,
+                loop_video=True,
+                frame_skip=0,  # 0 = no skip, 1 = skip 1 frame, 2 = skip 2 frames, etc.
+            )
+
+            ingestors.append(ingestor)
+
+            # Create and start thread
+            thread = threading.Thread(
+                target=ingestor.run,
+                name=f"Ingestor-{cam_config['camera_id']}",
+                daemon=True,
+            )
+            thread.start()
+            threads.append(thread)
+
+            logger.info(f"Started thread for camera: {cam_config['camera_id']}")
+
+        except Exception as e:
+            logger.error(
+                f"Failed to initialize camera {cam_config.get('camera_id')}: {e}",
+                exc_info=True,
+            )
+
+    if not threads:
+        logger.error("No cameras initialized successfully")
+        return 1
+
+    logger.info(f"All {len(threads)} camera thread(s) started successfully")
+
+    # Keep main thread alive and handle interrupts
+    try:
+        while True:
+            # Print statistics every 60 seconds
+            time.sleep(60)
+            logger.info("=== Camera Statistics ===")
+            for ingestor in ingestors:
+                stats = ingestor.get_statistics()
+                logger.info(
+                    f"{stats['camera_id']}: "
+                    f"Frames={stats['frames_processed']}, "
+                    f"Batches={stats['batches_uploaded']}, "
+                    f"Errors={stats['errors_count']}, "
+                    f"Connected={stats['is_connected']}"
+                )
+    except KeyboardInterrupt:
+        logger.info("Received interrupt signal, waiting for threads to finish...")
+
+        # Wait for all threads to complete
+        for thread in threads:
+            thread.join(timeout=5)
+
+        logger.info("All threads stopped")
     except Exception as e:
-        logger.error(f"Fatal error: {e}", exc_info=True)
+        logger.error(f"Fatal error in main loop: {e}", exc_info=True)
         return 1
 
     return 0
@@ -555,24 +669,20 @@ def main():
 
 if __name__ == "__main__":
     """
-    Example usage for multiple cameras (commented out):
+    Multi-camera ingestion is now supported by default.
 
-    import threading
+    Usage examples:
 
-    cameras = [
-        {'camera_id': 'camera_01', 'rtsp_url': 'rtsp://cam1.example.com/stream'},
-        {'camera_id': 'camera_02', 'rtsp_url': 'rtsp://cam2.example.com/stream'},
-    ]
+    1. Multiple cameras via CAMERA_CONFIGS environment variable:
+       CAMERA_CONFIGS="camera_01:rtsp://localhost:8554/stream1,camera_02:rtsp://localhost:8554/stream2"
 
-    threads = []
-    for cam_config in cameras:
-        ingestor = VideoIngestor(**cam_config)
-        thread = threading.Thread(target=ingestor.run, daemon=True)
-        thread.start()
-        threads.append(thread)
+    2. Single camera (backward compatible):
+       CAMERA_ID="camera_01"
+       RTSP_URL="rtsp://localhost:8554/stream"
 
-    for thread in threads:
-        thread.join()
+    3. Video file:
+       CAMERA_ID="camera_01"
+       VIDEO_FILE="/path/to/video.mp4"
     """
 
     exit(main())
