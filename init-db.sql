@@ -21,18 +21,18 @@ CREATE TABLE IF NOT EXISTS vehicle_transactions (
 
 -- Insert Vehicle Classes Reference Data
 INSERT INTO vehicle_classes (class_id, class_name, entry_fee, xray_fee, total_fee) VALUES
-(1, 'car', 0.00, 0.00, 0.00),
-(2, 'other', 0.00, 0.00, 0.00),
-(3, 'other_truck', 100.00, 50.00, 150.00),
-(4, 'pickup_truck', 0.00, 0.00, 0.00),
-(5, 'truck_20_back', 100.00, 250.00, 350.00),
-(6, 'truck_20_front', 100.00, 250.00, 350.00),
-(7, 'truck_20x2', 100.00, 500.00, 600.00),
-(8, 'truck_40', 100.00, 350.00, 450.00),
-(9, 'truck_roro', 100.00, 50.00, 150.00),
-(10, 'truck_tail', 100.00, 50.00, 150.00),
-(11, 'motorcycle', 0.00, 0.00, 0.00),
-(12, 'truck_head', 100.00, 50.00, 150.00)
+(0, 'car', 0.00, 0.00, 0.00),
+(1, 'other', 0.00, 0.00, 0.00),
+(2, 'other_truck', 100.00, 50.00, 150.00),
+(3, 'pickup_truck', 0.00, 0.00, 0.00),
+(4, 'truck_20_back', 100.00, 250.00, 350.00),
+(5, 'truck_20_front', 100.00, 250.00, 350.00),
+(6, 'truck_20x2', 100.00, 500.00, 600.00),
+(7, 'truck_40', 100.00, 350.00, 450.00),
+(8, 'truck_roro', 100.00, 50.00, 150.00),
+(9, 'truck_tail', 100.00, 50.00, 150.00),
+(10, 'motorcycle', 0.00, 0.00, 0.00),
+(11, 'truck_head', 100.00, 50.00, 150.00)
 ON CONFLICT (class_id) DO NOTHING;
 
 -- Create Indexes for Better Performance

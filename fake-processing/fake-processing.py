@@ -46,18 +46,18 @@ THAI_TZ = pytz.timezone('Asia/Bangkok')
 class VehicleClass(Enum):
     """Vehicle classification types"""
 
-    CAR = 1
-    OTHER = 2
-    OTHER_TRUCK = 3
-    PICKUP_TRUCK = 4
-    TRUCK_20_BACK = 5
-    TRUCK_20_FRONT = 6
-    TRUCK_20X2 = 7
-    TRUCK_40 = 8
-    TRUCK_RORO = 9
-    TRUCK_TAIL = 10
-    MOTORCYCLE = 11
-    TRUCK_HEAD = 12
+    CAR = 0
+    OTHER = 1
+    OTHER_TRUCK = 2
+    PICKUP_TRUCK = 3
+    TRUCK_20_BACK = 4
+    TRUCK_20_FRONT = 5
+    TRUCK_20X2 = 6
+    TRUCK_40 = 7
+    TRUCK_RORO = 8
+    TRUCK_TAIL = 9
+    MOTORCYCLE = 10
+    TRUCK_HEAD = 11
 
 
 @dataclass
@@ -627,8 +627,8 @@ class ProcessingService:
             confidence = float(confidences[best_idx])
             
             # Ensure class_id is within valid range
-            if class_id >= 12:
-                class_id = 0  # Default to "car"
+            if class_id >= len(VehicleClass):
+                class_id = VehicleClass.CAR.value
                 
             return class_id, confidence
         
