@@ -15,7 +15,7 @@ from sqlalchemy.engine import Engine
 
 # ==================== CONSTANTS ====================
 # Database Configuration
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@db:5432/mydb")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres1234@db:5432/vehicle_db")
 THAILAND_TZ = pytz.timezone("Asia/Bangkok")
 
 # MinIO Configuration
@@ -168,7 +168,9 @@ def get_thailand_time() -> datetime:
 def convert_to_thailand_tz(dt) -> datetime:
     """Convert datetime to Thailand timezone"""
     if dt.tzinfo is None:
-        dt = pytz.utc.localize(dt)
+        # If no timezone info, assume it's already in Bangkok time (from database)
+        dt = THAILAND_TZ.localize(dt)
+        return dt
     return dt.astimezone(THAILAND_TZ)
 
 
@@ -350,8 +352,17 @@ def init_database() -> None:
     """
     try:
         with engine.connect() as conn:
-            # Set timezone for this session
+            # Set timezone for this session to Asia/Bangkok
             conn.execute(text("SET TIME ZONE 'Asia/Bangkok'"))
+            
+            # Set default timezone for the database (affects all connections)
+            try:
+                conn.execute(text("ALTER DATABASE vehicle_db SET timezone TO 'Asia/Bangkok'"))
+                conn.commit()
+                print("✅ Database timezone set to Asia/Bangkok")
+            except Exception as e:
+                print(f"⚠️ Could not set database timezone: {e}")
+                # Continue anyway - session timezone is already set
 
             # Check if tables exist
             result = conn.execute(
@@ -381,7 +392,6 @@ def init_database() -> None:
 
     except Exception as e:
         st.error(f"❌ Error checking database: {e}")
-        print(f"❌ Database initialization error: {e}")
         print(f"❌ Database initialization error: {e}")
 
 
@@ -528,13 +538,7 @@ def render_header() -> None:
     )
 
 
-# ==================== ENTRY TAB ====================
-# Manual entry removed - system now only accepts data from cameras
-
-
 # ==================== IMAGE CLEANUP ====================
-# Note: With MinIO, old images are kept in object storage
-# You can implement lifecycle policies in MinIO to auto-delete old objects
 def cleanup_old_images() -> None:
     """
     Note: This function is deprecated when using MinIO.
@@ -813,20 +817,48 @@ def render_transaction_history() -> None:
                 ]
 
             with col_f3:
-                # Time period filter
-                time_periods = [
-                    "All Day",
-                    "Morning (06:00-12:00)",
-                    "Afternoon (12:00-18:00)",
-                    "Evening (18:00-00:00)",
-                    "Night (00:00-06:00)",
-                ]
-                selected_period = st.selectbox(
-                    "⏰ Time Period",
-                    options=time_periods,
+                # Time filter options
+                time_filter_type = st.selectbox(
+                    "⏰ Time Filter",
+                    options=["All Day", "Specific Time"],
                     index=0,
-                    key="time_period_filter",
+                    key="time_filter_type",
                 )
+
+            # Specific time picker (scroll wheel style)
+            if time_filter_type == "Specific Time":
+                st.markdown("**Select Specific Time:**")
+                col_t1, col_t2 = st.columns(2)
+                
+                # Initialize default hour and minute from current time if not set
+                now_thailand = get_thailand_time()
+                if "selected_hour" not in st.session_state:
+                    st.session_state.selected_hour = now_thailand.hour
+                if "selected_minute" not in st.session_state:
+                    st.session_state.selected_minute = now_thailand.minute
+                
+                with col_t1:
+                    # Hour selector (scroll wheel style)
+                    selected_hour = st.selectbox(
+                        "⏰ Hour (ชั่วโมง)",
+                        options=list(range(24)),
+                        format_func=lambda x: f"{x:02d}",
+                        index=st.session_state.selected_hour,
+                        key="selected_hour"
+                    )
+                
+                with col_t2:
+                    # Minute selector (scroll wheel style)
+                    selected_minute = st.selectbox(
+                        "⏱️ Minute (นาที)",
+                        options=list(range(60)),
+                        format_func=lambda x: f"{x:02d}",
+                        index=st.session_state.selected_minute,
+                        key="selected_minute"
+                    )
+                
+                # Display selected time
+                st.info(f"🕐 Selected Time: {selected_hour:02d}:{selected_minute:02d}")
 
             # Apply filters
             df_transactions = df_all[
@@ -842,27 +874,26 @@ def render_transaction_history() -> None:
                     )
                 ]
 
-            # Apply time period filter
-            if selected_period != "All Day":
-                df_transactions["hour"] = pd.to_datetime(
+            # Apply time filter
+            if time_filter_type == "Specific Time":
+                # แปลงเวลาใน database เป็น Bangkok timezone ก่อนแล้วค่อยดึง hour และ minute
+                df_transactions["time_bangkok"] = pd.to_datetime(
                     df_transactions["time_stamp"]
-                ).dt.hour
-                if selected_period == "Morning (06:00-12:00)":
-                    df_transactions = df_transactions[
-                        (df_transactions["hour"] >= 6) & (df_transactions["hour"] < 12)
-                    ]
-                elif selected_period == "Afternoon (12:00-18:00)":
-                    df_transactions = df_transactions[
-                        (df_transactions["hour"] >= 12) & (df_transactions["hour"] < 18)
-                    ]
-                elif selected_period == "Evening (18:00-00:00)":
-                    df_transactions = df_transactions[
-                        (df_transactions["hour"] >= 18) | (df_transactions["hour"] < 0)
-                    ]
-                elif selected_period == "Night (00:00-06:00)":
-                    df_transactions = df_transactions[
-                        (df_transactions["hour"] >= 0) & (df_transactions["hour"] < 6)
-                    ]
+                ).dt.tz_convert('Asia/Bangkok')
+                
+                df_transactions["hour"] = df_transactions["time_bangkok"].dt.hour
+                df_transactions["minute"] = df_transactions["time_bangkok"].dt.minute
+                
+                # Filter by specific hour and minute (ignore seconds)
+                df_transactions = df_transactions[
+                    (df_transactions["hour"] == selected_hour)
+                    & (df_transactions["minute"] == selected_minute)
+                ]
+                
+                if len(df_transactions) > 0:
+                    st.success(f"✅ Found {len(df_transactions)} transaction(s) at {selected_hour:02d}:{selected_minute:02d}")
+                else:
+                    st.warning(f"⚠️ No transactions found at {selected_hour:02d}:{selected_minute:02d}")
 
             st.markdown("---")
 
@@ -1092,152 +1123,6 @@ def render_master_data_tab(df_classes: pd.DataFrame) -> None:
     else:
         st.info("📭 No vehicle classes defined yet")
 
-    # st.markdown("---")
-    # st.markdown("#### ➕ Add/Edit Vehicle Class")
-
-    # with st.form("class_form", clear_on_submit=True):
-    #     col1, col2 = st.columns(2)
-
-    #     with col1:
-    #         class_name = st.text_input("🚗 Vehicle Type", placeholder="e.g., Sedan, Truck")
-    #         entry_fee = st.number_input(
-    #             "💵 Entry Fee (฿)",
-    #             min_value=MIN_FEE,
-    #             step=FEE_STEP,
-    #             value=MIN_FEE
-    #         )
-
-    #     with col2:
-    #         xray_fee = st.number_input(
-    #             "🔍 X-Ray Fee (฿)",
-    #             min_value=MIN_FEE,
-    #             step=FEE_STEP,
-    #             value=MIN_FEE
-    #         )
-    #         total_fee = entry_fee + xray_fee
-    #         st.metric("💰 Total Fee", f"{total_fee:.2f} ฿")
-
-    #     _, col_s2, _ = st.columns([1, 1, 1])
-    #     with col_s2:
-    #         submitted = st.form_submit_button("💾 Save Class", use_container_width=True, type="primary")
-
-    #     if submitted:
-    #         # Validate class name
-    #         is_valid, error_msg = validate_class_name(class_name)
-
-    #         if not is_valid:
-    #             st.error(f"❌ {error_msg}")
-    #         else:
-    #             # Validate fees
-    #             entry_valid, entry_msg = validate_fee(entry_fee, "Entry fee")
-    #             xray_valid, xray_msg = validate_fee(xray_fee, "X-Ray fee")
-
-    #             if not entry_valid:
-    #                 st.error(f"❌ {entry_msg}")
-    #             elif not xray_valid:
-    #                 st.error(f"❌ {xray_msg}")
-    #             else:
-    #                 try:
-    #                     with engine.connect() as conn:
-    #                         conn.execute(text("""
-    #                             INSERT INTO vehicle_classes (class_name, entry_fee, xray_fee, total_fee)
-    #                             VALUES (:name, :entry, :xray, :total)
-    #                             ON CONFLICT (class_name) DO UPDATE
-    #                             SET entry_fee = :entry, xray_fee = :xray, total_fee = :total
-    #                         """), {
-    #                             "name": class_name.strip(),
-    #                             "entry": entry_fee,
-    #                             "xray": xray_fee,
-    #                             "total": total_fee
-    #                         })
-    #                         conn.commit()
-    #                     st.success(f"✅ Saved: {class_name}")
-    #                     st.rerun()
-    #                 except Exception as e:
-    #                     st.error(f"❌ Error saving vehicle class: {e}")
-    #                     print(f"❌ Error saving vehicle class: {e}")
-
-
-# ==================== ANALYTICS TAB ====================
-def render_analytics_tab() -> None:
-    """Render analytics dashboard with charts and statistics"""
-    st.markdown("### 📊 Analytics Dashboard")
-
-    now_thailand = get_thailand_time()
-
-    col1, col2 = st.columns(2)
-    with col1:
-        start_date = st.date_input("📅 Start Date", value=now_thailand.date())
-    with col2:
-        end_date = st.date_input("📅 End Date", value=now_thailand.date())
-
-    try:
-        query = """
-            SELECT
-                t.id,
-                t.camera_id,
-                t.class_id,
-                t.total_fee,
-                t.time_stamp,
-                c.class_name
-            FROM vehicle_transactions t
-            JOIN vehicle_classes c ON t.class_id = c.class_id
-            WHERE DATE(t.time_stamp) BETWEEN :start_date AND :end_date
-            ORDER BY t.time_stamp DESC
-        """
-
-        df_analytics = pd.read_sql(
-            text(query), engine, params={"start_date": start_date, "end_date": end_date}
-        )
-
-        if not df_analytics.empty:
-            st.markdown("---")
-
-            # Summary metrics
-            col1, col2, col3 = st.columns(3)
-
-            with col1:
-                st.metric("📊 Total Transactions", len(df_analytics))
-            with col2:
-                st.metric(
-                    "💰 Total Revenue", f"{df_analytics['total_fee'].sum():.0f} ฿"
-                )
-            with col3:
-                st.metric("📷 Cameras", df_analytics["camera_id"].nunique())
-
-            st.markdown("---")
-
-            # Charts
-            col_c1, col_c2 = st.columns(2)
-
-            # แปลงชื่อสำหรับแสดงใน chart
-            df_analytics_display = df_analytics.copy()
-            df_analytics_display["class_name"] = df_analytics_display[
-                "class_name"
-            ].apply(translate_class_name)
-
-            with col_c1:
-                st.markdown("#### 🚗 Transactions by Vehicle Type")
-                vehicle_counts = df_analytics_display["class_name"].value_counts()
-                st.bar_chart(vehicle_counts.to_frame("count"))
-
-            with col_c2:
-                st.markdown("#### 💰 Revenue by Vehicle Type")
-                revenue_by_type = (
-                    df_analytics_display.groupby("class_name")["total_fee"]
-                    .sum()
-                    .sort_values(ascending=False)
-                )
-                st.bar_chart(revenue_by_type.to_frame("revenue"))
-        else:
-            st.info(
-                f"📭 No data found between {start_date.strftime('%d %B %Y')} and {end_date.strftime('%d %B %Y')}"
-            )
-
-    except Exception as e:
-        st.error(f"❌ Error loading analytics: {e}")
-        print(f"❌ Error loading analytics: {e}")
-
 
 # ==================== DASHBOARD TAB ====================
 def render_dashboard_tab() -> None:
@@ -1347,6 +1232,78 @@ def render_dashboard_tab() -> None:
         else:
             st.info("📭 No data for today yet")
 
+        # ==================== ANALYTICS SECTION ====================
+        st.markdown("---")
+        st.markdown("### 📊 Analytics")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            start_date = st.date_input("📅 Start Date", value=now_thailand.date())
+        with col2:
+            end_date = st.date_input("📅 End Date", value=now_thailand.date())
+
+        query = """
+            SELECT
+                t.id,
+                t.camera_id,
+                t.class_id,
+                t.total_fee,
+                t.time_stamp,
+                c.class_name
+            FROM vehicle_transactions t
+            JOIN vehicle_classes c ON t.class_id = c.class_id
+            WHERE DATE(t.time_stamp) BETWEEN :start_date AND :end_date
+            ORDER BY t.time_stamp DESC
+        """
+
+        df_analytics = pd.read_sql(
+            text(query), engine, params={"start_date": start_date, "end_date": end_date}
+        )
+
+        if not df_analytics.empty:
+            st.markdown("---")
+
+            # Summary metrics
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.metric("📊 Total Transactions", len(df_analytics))
+            with col2:
+                st.metric(
+                    "💰 Total Revenue", f"{df_analytics['total_fee'].sum():.0f} ฿"
+                )
+            with col3:
+                st.metric("📷 Cameras", df_analytics["camera_id"].nunique())
+
+            st.markdown("---")
+
+            # Charts
+            col_c1, col_c2 = st.columns(2)
+
+            # แปลงชื่อสำหรับแสดงใน chart
+            df_analytics_display = df_analytics.copy()
+            df_analytics_display["class_name"] = df_analytics_display[
+                "class_name"
+            ].apply(translate_class_name)
+
+            with col_c1:
+                st.markdown("#### 🚗 Transactions by Vehicle Type")
+                vehicle_counts = df_analytics_display["class_name"].value_counts()
+                st.bar_chart(vehicle_counts.to_frame("count"))
+
+            with col_c2:
+                st.markdown("#### 💰 Revenue by Vehicle Type")
+                revenue_by_type = (
+                    df_analytics_display.groupby("class_name")["total_fee"]
+                    .sum()
+                    .sort_values(ascending=False)
+                )
+                st.bar_chart(revenue_by_type.to_frame("revenue"))
+        else:
+            st.info(
+                f"📭 No data found between {start_date.strftime('%d %B %Y')} and {end_date.strftime('%d %B %Y')}"
+            )
+
     except Exception as e:
         st.error(f"❌ Error loading dashboard: {e}")
         print(f"❌ Error loading dashboard: {e}")
@@ -1405,8 +1362,8 @@ def main() -> None:
     st.markdown("---")
 
     # Create tabs
-    tab1, tab2, tab3, tab4 = st.tabs(
-        ["🏠 Dashboard", "📜 History", "⚙️ Master Data", "📊 Analytics"]
+    tab1, tab2, tab3 = st.tabs(
+        ["🏠 Dashboard", "📜 History", "⚙️ Master Data"]
     )
 
     with tab1:
@@ -1417,9 +1374,6 @@ def main() -> None:
 
     with tab3:
         render_master_data_tab(df_classes)
-
-    with tab4:
-        render_analytics_tab()
 
 
 if __name__ == "__main__":
