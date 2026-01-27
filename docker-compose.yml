@@ -170,11 +170,16 @@ services:
       minio:
         condition: service_healthy
     environment:
+<<<<<<< HEAD
+      VIDEO_FILE: /app/sample_videos/truck_highway_short.mp4
+      CAMERA_ID: docker_camera_01
+=======
       # Multi-camera configuration
       # Format: camera_id:rtsp_url,camera_id:rtsp_url
       CAMERA_CONFIGS: ${CAMERA_CONFIGS}
 
       # Redis configuration
+>>>>>>> 5018b108bd12c6f194e83f499e3d06cbff1319f2
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_DB: 0
