@@ -1,8 +1,3 @@
-"""
-Mock Database Writer - Simulates writing vehicle transaction data
-Generates fake data matching the vehicle_transactions table schema
-Integrates with Redis Queue and MinIO for data pipeline
-"""
 import mlflow
 import onnxruntime as ort
 import cv2
@@ -25,48 +20,32 @@ from minio.error import S3Error
 from PIL import Image
 from concurrent.futures import ProcessPoolExecutor
 
-# Configure logging
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
 )
 
-# ----------------------------------------------------------------------------
-# Module constants
-# ----------------------------------------------------------------------------
-DEFAULT_QUEUE_NAME = "frame_batches"
-PROCESSED_BUCKET_NAME = "process-frames"
-JPEG_QUALITY = 95
-THAI_TZ = pytz.timezone('Asia/Bangkok')
+QUEUE_NAME = "frame_batches"
+PROCESSED_BUCKET = "HISTORY"
+JPG_QUALITY = 95
+THAI_TIMEZONE = pytz.timezone("Asia/Bangkok")
 _worker_service = None
 
-# ============================================================================
-# DATA MODELS
-# ============================================================================
-
-def init_worker_process(config: Dict[str, Any]):
-    """
-    Runs once per CPU core when the process starts.
-    Initializes a private service instance for this specific process.
-    """
+def worker_service(config: Dict[str, Any]):
     global _worker_service
-    logging.info(f"Initializing Worker Process PID: {os.getpid()}")
     _worker_service = ProcessingService(**config)
 
 def task_handler(task_json: str):
-    """
-    The entry point for the process pool. 
-    Receives a JSON string from Redis and processes it.
-    """
     global _worker_service
     try:
         task = ProcessingTask.from_json(task_json)
         return _worker_service.process_task(task)
     except Exception as e:
+        logging.error(f"Task processing error: {e}")
         logging.error(f"Worker PID {os.getpid()} failed task: {e}")
         return {"status": "error", "error": str(e)}
 
 class VehicleClass(Enum):
-    """Vehicle classification types"""
 
     CAR = 0
     OTHER = 1
@@ -81,10 +60,8 @@ class VehicleClass(Enum):
     MOTORCYCLE = 10
     TRUCK_HEAD = 11
 
-
 @dataclass
-class VehicleTransaction:
-    """Represents a vehicle transaction record"""
+class VehicleTransaction: 
 
     camera_id: str
     track_id: str
@@ -94,8 +71,7 @@ class VehicleTransaction:
     img_path: Optional[str] = None
     confidence: Optional[float] = None
 
-    def to_dict(self) -> Dict:
-        """Convert to dictionary for database insert"""
+    def to_dict(self) -> Dict[str, Any]:
         return {
             "camera_id": self.camera_id,
             "track_id": self.track_id,
@@ -114,16 +90,9 @@ class VehicleTransaction:
             f"confidence={self.confidence})"
         )
 
-
-# ============================================================================
-# REDIS QUEUE MANAGER
-# ============================================================================
-
-
 @dataclass
 class ProcessingTask:
-    """Represents a processing task from Redis queue"""
-
+    
     task_id: str
     camera_id: str
     video_file: str
@@ -131,8 +100,7 @@ class ProcessingTask:
     object_key_or_prefix: str
     timestamp: Optional[datetime.datetime] = None
 
-    def to_dict(self) -> Dict:
-        """Convert to dictionary"""
+    def to_dict(self) -> Dict[str, Any]:
         return {
             "task_id": self.task_id,
             "camera_id": self.camera_id,
@@ -185,7 +153,6 @@ class ProcessingTask:
             f"camera_id={self.camera_id}, video_file={self.video_file})"
         )
 
-
 class RedisQueueManager:
     """Manages Redis queue for processing tasks"""
 
@@ -194,7 +161,7 @@ class RedisQueueManager:
         host: str = "localhost",
         port: int = 6379,
         db: int = 0,
-        queue_name: str = DEFAULT_QUEUE_NAME,
+        queue_name: str = QUEUE_NAME,
     ):
         """Initialize Redis connection"""
         self.host = host
@@ -241,30 +208,6 @@ class RedisQueueManager:
         except Exception as e:
             logging.error(f"✗ Pop failed: {e}")
             return None
-
-    def get_queue_size(self) -> int:
-        """Get number of tasks in queue"""
-        try:
-            return self.client.llen(self.queue_name)
-        except Exception as e:
-            logging.error(f"✗ Get queue size failed: {e}")
-            return 0
-
-    def clear_queue(self) -> bool:
-        """Clear all tasks from queue"""
-        try:
-            self.client.delete(self.queue_name)
-            logging.info(f"✓ Queue cleared: {self.queue_name}")
-            return True
-        except Exception as e:
-            logging.error(f"✗ Clear queue failed: {e}")
-            return False
-
-
-# ============================================================================
-# MINIO MANAGER (MISSING CLASS - ADDED)
-# ============================================================================
-
 
 class MinIOManager:
     """Manages MinIO operations"""
@@ -323,16 +266,6 @@ class MinIOManager:
             logging.error(f"✗ Upload failed: {e}")
             return False
 
-    def download_object(self, bucket: str, object_name: str, file_path: str) -> bool:
-        """Download object to file"""
-        try:
-            self.client.fget_object(bucket, object_name, file_path)
-            logging.info(f"✓ Downloaded: {bucket}/{object_name} -> {file_path}")
-            return True
-        except S3Error as e:
-            logging.error(f"✗ Download failed: {e}")
-            return False
-
     def list_objects(self, bucket: str, prefix: str = "") -> List[Dict]:
         """List objects in bucket with prefix"""
         try:
@@ -373,13 +306,7 @@ class MinIOManager:
             if response:
                 response.close()
                 response.release_conn()
-
-
-# ============================================================================
-# POSTGRESQL DATABASE (MISSING CLASS - ADDED)
-# ============================================================================
-
-
+        
 class PostgreSQLDatabase:
     """Manages PostgreSQL database operations"""
 
@@ -456,12 +383,81 @@ class PostgreSQLDatabase:
             self.conn.close()
             logging.info("✓ Database connection closed")
 
+class PostgreSQLDatabase:
+    """Manages PostgreSQL database operations"""
 
-# ============================================================================
-# PROCESSING SERVICE
-# ============================================================================
+    def __init__(self, host: str, port: int, database: str, user: str, password: str):
+        """Initialize database connection"""
+        self.connection_params = {
+            "host": host,
+            "port": port,
+            "database": database,
+            "user": user,
+            "password": password,
+        }
 
+        try:
+            self.conn = psycopg2.connect(**self.connection_params)
+            self.conn.autocommit = False
+            logging.info(f"✓ PostgreSQL connected: {host}:{port}/{database}")
+        except Exception as e:
+            logging.error(f"✗ Database connection failed: {e}")
+            raise
 
+    def get_vehicle_class(self, class_id: int) -> Optional[Dict]:
+        """Get vehicle class information"""
+        try:
+            with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT * FROM vehicle_classes WHERE class_id = %s",
+                    (class_id,)
+                )
+                result = cur.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            logging.error(f"✗ Get vehicle class failed: {e}")
+            return None
+
+    def insert_transaction(self, transaction: VehicleTransaction) -> bool:
+        """Insert vehicle transaction"""
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO vehicle_transactions 
+                    (camera_id, track_id, class_id, total_fee, time_stamp, img_path, confidence)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    transaction.camera_id,
+                    transaction.track_id,
+                    transaction.class_id,
+                    transaction.total_fee,
+                    transaction.time_stamp,
+                    transaction.img_path,
+                    transaction.confidence,
+                ))
+                self.conn.commit()
+                logging.info(f"✓ Transaction saved: {transaction.track_id}")
+                return True
+        except Exception as e:
+            self.conn.rollback()
+            logging.error(f"✗ Insert transaction failed: {e}")
+            return False
+
+    def get_transaction_count(self) -> int:
+        """Get total number of transactions"""
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM vehicle_transactions")
+                return cur.fetchone()[0]
+        except Exception as e:
+            logging.error(f"✗ Get transaction count failed: {e}")
+            return 0
+
+    def close(self):
+        """Close database connection"""
+        if self.conn:
+            self.conn.close()
+            logging.info("✓ Database connection closed")
 class ProcessingService:
     """Service that processes tasks from Redis queue and fetches data from MinIO"""
 
@@ -522,14 +518,10 @@ class ProcessingService:
     def _run_inference(self, frame: np.ndarray) -> Tuple[int, float, float]:
         """Run inference on frame using ONNX model"""
         try:
-            # Preprocess frame
             input_tensor = self._preprocess_frame(frame)
-            # Run inference
             input_name = self.session.get_inputs()[0].name
             outputs = self.session.run(None, {input_name: input_tensor})
-            # Post-process outputs
             class_id, confidence = self._postprocess_outputs(outputs)
-            # Get fee from database
             vehicle_info = self.db.get_vehicle_class(class_id)
             total_fee = vehicle_info["total_fee"] if vehicle_info else 0.00
             logging.info(
@@ -538,36 +530,26 @@ class ProcessingService:
             return class_id, total_fee, confidence
         except Exception as e:
             logging.error(f"✗ Inference failed: {e}")
-            # Fallback to default class
             return 0, 0.0, 0.0
 
     def _preprocess_frame(self, frame_bgr: np.ndarray, input_size=(640, 640)) -> np.ndarray:
         """Preprocess frame for ONNX model"""
-        # Convert BGR to RGB
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        # Resize
         frame_resized = cv2.resize(frame_rgb, input_size)
-        # Normalize to [0, 1]
         frame_norm = frame_resized.astype(np.float32) / 255.0
-        # Convert to CHW format (Channel, Height, Width)
         frame_chw = np.transpose(frame_norm, (2, 0, 1))
-        # Add batch dimension
         frame_chw = np.expand_dims(frame_chw, axis=0)
         return frame_chw
 
     def _postprocess_outputs(self, outputs) -> Tuple[int, float]:
         """Post-process ONNX model outputs"""
         output = outputs[0][0]  # [84, 8400] for YOLOv8
-        
-        # Extract boxes and class probabilities
         boxes = output[:4, :].T  # [8400, 4]
         class_probs = output[4:, :].T  # [8400, num_classes]
         
-        # Get class with highest confidence
         class_ids = np.argmax(class_probs, axis=1)
         confidences = np.max(class_probs, axis=1)
         
-        # Get best detection
         if len(confidences) > 0:
             best_idx = np.argmax(confidences)
             class_id = int(class_ids[best_idx])
@@ -610,20 +592,15 @@ class ProcessingService:
     ) -> Optional[str]:
    
         try:
-            # Create date-based directory structure using Thailand timezone
-            now = datetime.datetime.now(THAI_TZ)
+            now = datetime.datetime.now(THAI_TIMEZONE)
             date_str = now.strftime("%Y-%m-%d")
-            
-            # Generate unique filename with Thailand time
             timestamp = now.strftime("%Y%m%d_%H%M%S_%f")
             jpg_filename = f"{timestamp}_f{frame_index}.jpg"
-            
-            # Validate array shape
+           
             if npy_array.ndim != 3:
                 logging.error(f"Invalid array shape: {npy_array.shape}. Expected (H, W, C)")
                 return None
-            
-            # Ensure uint8 dtype
+           
             if npy_array.dtype != np.uint8:
                 if npy_array.dtype in (np.float32, np.float64) and npy_array.max() <= 1.0:
                     npy_array = (npy_array * 255).astype(np.uint8)
@@ -648,18 +625,18 @@ class ProcessingService:
             object_name = f"{date_str}/{camera_id}/{jpg_filename}"
             
             # Ensure bucket exists
-            self.minio_manager.create_bucket(PROCESSED_BUCKET_NAME)
+            self.minio_manager.create_bucket(PROCESSED_BUCKET)
             
             # Upload to MinIO
             success = self.minio_manager.upload_from_bytes(
-                bucket=PROCESSED_BUCKET_NAME,
+                bucket=PROCESSED_BUCKET,
                 object_name=object_name,
                 data=img_bytes,
                 content_type="image/jpeg",
             )
             
             if success:
-                minio_path = f"{PROCESSED_BUCKET_NAME}/{object_name}"
+                minio_path = f"{PROCESSED_BUCKET}/{object_name}"
                 logging.info(f"✓ Frame converted and uploaded: {minio_path}")
                 return minio_path
             else:
@@ -718,7 +695,7 @@ class ProcessingService:
                 frame_index=frame_idx,
                 camera_id=task.camera_id,
                 task_id=task.task_id,
-                quality=JPEG_QUALITY
+                quality=JPG_QUALITY
             )
 
             if not minio_path:
@@ -755,11 +732,6 @@ class ProcessingService:
                     logging.info(f"✓ Deleted source batch: {batch_object}")
                 except Exception as e:
                     logging.warning(f"⚠ Cleanup failed: {e}")
-
-
-# ============================================================================
-# MAIN
-# ============================================================================
 
 
 def main():
@@ -807,7 +779,6 @@ def main():
         "model_uri": os.getenv("MODEL_URI", "models:/Truck_classification_Model/Production"),
     }
 
-    # Initialize Redis Queue Manager in MAIN process only
     redis_manager = RedisQueueManager(
         host=config["redis_host"], 
         port=config["redis_port"]
@@ -820,13 +791,12 @@ def main():
     # Start the Process Pool
     with ProcessPoolExecutor(
         max_workers=num_workers,
-        initializer=init_worker_process,
+        initializer=worker_service,
         initargs=(config,)
     ) as executor:
         try:
             while True:
-                # Pull raw JSON strings from Redis
-                # blpop returns (queue_name, data)
+            
                 result = redis_manager.client.blpop(redis_manager.queue_name, timeout=5)
                 if result:
                     _, task_json = result
@@ -837,5 +807,6 @@ def main():
         except Exception as e:
             logging.error(f"Worker pool error: {e}")
             raise
+
 if __name__ == "__main__":
     main()

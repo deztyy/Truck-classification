@@ -191,6 +191,52 @@ services:
     networks:
       - analytics_network
   # B. Processing Worker (Frame Processing & Database Writer)
+  processing-worker:
+    build: ./fake-processing
+    container_name: vid_processing_worker
+    restart: on-failure
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 4GB
+        reservations:
+          cpus: '2.0'
+          memory: 2GB
+    depends_on:
+      mlflow-server:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      db:
+        condition: service_started
+    healthcheck:
+      # ✅ Add healthcheck to signal when worker is ready
+      test: [ "CMD-SHELL", "pgrep -f 'python.*main.py' || exit 1" ]
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_SECURE: "false"
+      DB_HOST: db
+      DB_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      MLFLOW_TRACKING_URI: http://mlflow-server:5000
+      MODEL_URI: models:/Truck_classification_Model/Production
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      MLFLOW_S3_IGNORE_TLS: true
+
+    networks:
+      - analytics_network
+  # B. Processing Worker (Scalable: docker-compose up --scale worker=3)
+  # Commented out - not implemented yet
   # processing-worker:
   #   build: ./fake-processing
   #   container_name: vid_processing_worker
