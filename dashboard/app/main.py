@@ -18,6 +18,11 @@ from sqlalchemy.engine import Engine
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres1234@db:5432/vehicle_db")
 THAILAND_TZ = pytz.timezone("Asia/Bangkok")
 
+# Superset Configuration
+SUPERSET_BASE_URL = os.getenv("SUPERSET_BASE_URL", "http://localhost:8088")
+SUPERSET_DASHBOARD_ID = os.getenv("SUPERSET_DASHBOARD_ID", "")
+SUPERSET_DASHBOARD_SLUG = os.getenv("SUPERSET_DASHBOARD_SLUG", "")
+
 # MinIO Configuration
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "minio:9000")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
@@ -393,6 +398,44 @@ def init_database() -> None:
     except Exception as e:
         st.error(f"❌ Error checking database: {e}")
         print(f"❌ Database initialization error: {e}")
+
+
+# ==================== SUPERSET EMBED ====================
+def build_superset_dashboard_url() -> str:
+    """Build Superset dashboard URL from environment variables."""
+    if SUPERSET_DASHBOARD_SLUG:
+        return f"{SUPERSET_BASE_URL}/superset/dashboard/p/{SUPERSET_DASHBOARD_SLUG}/"
+    if SUPERSET_DASHBOARD_ID:
+        return f"{SUPERSET_BASE_URL}/superset/dashboard/{SUPERSET_DASHBOARD_ID}/?standalone=1"
+    return ""
+
+
+def render_superset_tab() -> None:
+    """Render Superset dashboard in an embedded iframe."""
+    st.markdown("### 📊 Superset Dashboards")
+    st.caption("เปิดกราฟจาก Apache Superset ในหน้าแอพนี้")
+
+    default_url = build_superset_dashboard_url()
+    
+    if default_url:
+        st.link_button("🔗 Open Superset Dashboard", default_url, use_container_width=True)
+    
+    dashboard_url = st.text_input(
+        "Superset Dashboard URL",
+        value=default_url,
+        help="ใส่ลิงก์แดชบอร์ด เช่น http://localhost:8088/superset/dashboard/<slug-or-id>/?standalone=1",
+    )
+
+    if not dashboard_url:
+        st.info(
+            "ยังไม่ได้ตั้งค่า URL ของแดชบอร์ด Superset. ตั้งค่า SUPERSET_DASHBOARD_SLUG หรือ SUPERSET_DASHBOARD_ID หรือวาง URL เอง"
+        )
+        return
+
+    if dashboard_url != default_url:
+        st.link_button("🔗 Open Custom URL", dashboard_url, use_container_width=True)
+    
+    components.iframe(dashboard_url, height=900, scrolling=True)
 
 
 # ==================== DATA LOADING ====================
@@ -1362,8 +1405,8 @@ def main() -> None:
     st.markdown("---")
 
     # Create tabs
-    tab1, tab2, tab3 = st.tabs(
-        ["🏠 Dashboard", "📜 History", "⚙️ Master Data"]
+    tab1, tab2, tab3, tab4 = st.tabs(
+        ["🏠 Dashboard", "📜 History", "⚙️ Master Data", "📊 Superset"]
     )
 
     with tab1:
@@ -1374,6 +1417,9 @@ def main() -> None:
 
     with tab3:
         render_master_data_tab(df_classes)
+
+    with tab4:
+        render_superset_tab()
 
 
 if __name__ == "__main__":
