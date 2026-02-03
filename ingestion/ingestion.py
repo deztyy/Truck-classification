@@ -31,13 +31,13 @@ logger = logging.getLogger(__name__)
 
 # Defaults and constants
 DEFAULT_FRAME_SIZE: Tuple[int, int] = (640, 640)
-DEFAULT_BATCH_SIZE = 30
+DEFAULT_BATCH_SIZE = 5
 DEFAULT_MINIO_BUCKET_NAME = "raw-frames"
 DEFAULT_REDIS_QUEUE_NAME = "frame_batches"
 DEFAULT_REDIS_DB = 0
 DEFAULT_MAX_RECONNECT_ATTEMPTS = 5
 DEFAULT_RECONNECT_DELAY = 5
-DEFAULT_FRAME_SKIP = 0
+DEFAULT_FRAME_SKIP = 5
 STATISTICS_LOG_INTERVAL = 10  # Log stats every N batches
 STATISTICS_REPORT_INTERVAL = 60  # Report stats every N seconds
 RETRY_BACKOFF_MULTIPLIER = 5
@@ -86,7 +86,7 @@ class VideoIngestor:
         max_reconnect_attempts: int = 5,
         reconnect_delay: int = 5,
         loop_video: bool = False,
-        frame_skip: int = 0,
+        frame_skip: int = DEFAULT_FRAME_SKIP,
     ):
         """
         Initialize VideoIngestor with configuration from environment variables.
@@ -859,7 +859,7 @@ def main():
                 camera_id=camera_config["camera_id"],
                 rtsp_url=camera_config.get("rtsp_url"),
                 video_file=camera_config.get("video_file"),
-                batch_size=1,
+                batch_size=DEFAULT_BATCH_SIZE,
                 max_reconnect_attempts=DEFAULT_MAX_RECONNECT_ATTEMPTS,
                 reconnect_delay=DEFAULT_RECONNECT_DELAY,
                 loop_video=False,

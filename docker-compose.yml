@@ -169,8 +169,8 @@ services:
         condition: service_started
       minio:
         condition: service_healthy
-      processing-worker:  # ✅ Wait for worker to be ready!
-        condition: service_healthy
+      # processing-worker:  # ✅ Wait for worker to be ready!
+      #   condition: service_healthy
     environment:
       # Format: camera_id:rtsp_url,camera_id:rtsp_url
       CAMERA_CONFIGS: ${CAMERA_CONFIGS}
@@ -211,7 +211,9 @@ services:
       db:
         condition: service_started
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f python || exit 1"]
+      # Check if Redis connection works AND Python process is running
+      test: ["CMD-SHELL", "python3 -c 'import redis; r=redis.Redis(host=\"redis\", port=6379, decode_responses=True); r.ping()' && pgrep -f python3 || exit 1"]
+      start_period: 30s
     environment:
       REDIS_HOST: redis
       REDIS_PORT: 6379

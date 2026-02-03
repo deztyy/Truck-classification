@@ -125,18 +125,11 @@ class ProcessingTask:
             logging.debug(f"Parsed task data: {data}")
 
             return cls(
-                task_id=data.get("task_id")
-                or data.get("batch_id")
-                or data.get("object_name", "unknown"),
+                task_id=data.get("task_id") or data.get("batch_id") or data.get("object_name", "unknown"),
                 camera_id=data.get("camera_id", "unknown"),
                 video_file=data.get("video_file") or data.get("video_path", ""),
-                minio_bucket=data.get("minio_bucket")
-                or data.get("bucket_name")
-                or data.get("bucket", "video-frames"),
-                object_key_or_prefix=data.get("object_key_or_prefix")
-                or data.get("minio_prefix")
-                or data.get("minio_key")
-                or data.get("object_name")
+                minio_bucket=data.get("minio_bucket") or data.get("bucket_name") or data.get("bucket", "video-frames"),
+                object_key_or_prefix=data.get("object_key_or_prefix") or data.get("minio_prefix") or data.get("minio_key") or data.get("object_name")
                 or data.get("key", ""),
                 timestamp=datetime.datetime.fromisoformat(data["timestamp"])
                 if data.get("timestamp")
@@ -383,81 +376,6 @@ class PostgreSQLDatabase:
             self.conn.close()
             logging.info("✓ Database connection closed")
 
-class PostgreSQLDatabase:
-    """Manages PostgreSQL database operations"""
-
-    def __init__(self, host: str, port: int, database: str, user: str, password: str):
-        """Initialize database connection"""
-        self.connection_params = {
-            "host": host,
-            "port": port,
-            "database": database,
-            "user": user,
-            "password": password,
-        }
-
-        try:
-            self.conn = psycopg2.connect(**self.connection_params)
-            self.conn.autocommit = False
-            logging.info(f"✓ PostgreSQL connected: {host}:{port}/{database}")
-        except Exception as e:
-            logging.error(f"✗ Database connection failed: {e}")
-            raise
-
-    def get_vehicle_class(self, class_id: int) -> Optional[Dict]:
-        """Get vehicle class information"""
-        try:
-            with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(
-                    "SELECT * FROM vehicle_classes WHERE class_id = %s",
-                    (class_id,)
-                )
-                result = cur.fetchone()
-                return dict(result) if result else None
-        except Exception as e:
-            logging.error(f"✗ Get vehicle class failed: {e}")
-            return None
-
-    def insert_transaction(self, transaction: VehicleTransaction) -> bool:
-        """Insert vehicle transaction"""
-        try:
-            with self.conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO vehicle_transactions 
-                    (camera_id, track_id, class_id, total_fee, time_stamp, img_path, confidence)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    transaction.camera_id,
-                    transaction.track_id,
-                    transaction.class_id,
-                    transaction.total_fee,
-                    transaction.time_stamp,
-                    transaction.img_path,
-                    transaction.confidence,
-                ))
-                self.conn.commit()
-                logging.info(f"✓ Transaction saved: {transaction.track_id}")
-                return True
-        except Exception as e:
-            self.conn.rollback()
-            logging.error(f"✗ Insert transaction failed: {e}")
-            return False
-
-    def get_transaction_count(self) -> int:
-        """Get total number of transactions"""
-        try:
-            with self.conn.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM vehicle_transactions")
-                return cur.fetchone()[0]
-        except Exception as e:
-            logging.error(f"✗ Get transaction count failed: {e}")
-            return 0
-
-    def close(self):
-        """Close database connection"""
-        if self.conn:
-            self.conn.close()
-            logging.info("✓ Database connection closed")
 class ProcessingService:
     """Service that processes tasks from Redis queue and fetches data from MinIO"""
 
