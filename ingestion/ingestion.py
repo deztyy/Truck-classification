@@ -859,7 +859,7 @@ def main():
                 camera_id=camera_config["camera_id"],
                 rtsp_url=camera_config.get("rtsp_url"),
                 video_file=camera_config.get("video_file"),
-                batch_size=1,
+                batch_size=DEFAULT_BATCH_SIZE,
                 max_reconnect_attempts=DEFAULT_MAX_RECONNECT_ATTEMPTS,
                 reconnect_delay=DEFAULT_RECONNECT_DELAY,
                 loop_video=False,
