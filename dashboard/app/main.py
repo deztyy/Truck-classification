@@ -404,7 +404,7 @@ def init_database() -> None:
 def build_superset_dashboard_url() -> str:
     """Build Superset dashboard URL from environment variables."""
     if SUPERSET_DASHBOARD_SLUG:
-        return f"{SUPERSET_BASE_URL}/superset/dashboard/{SUPERSET_DASHBOARD_SLUG}/?standalone=1"
+        return f"{SUPERSET_BASE_URL}/superset/dashboard/p/{SUPERSET_DASHBOARD_SLUG}/"
     if SUPERSET_DASHBOARD_ID:
         return f"{SUPERSET_BASE_URL}/superset/dashboard/{SUPERSET_DASHBOARD_ID}/?standalone=1"
     return ""
@@ -416,6 +416,10 @@ def render_superset_tab() -> None:
     st.caption("เปิดกราฟจาก Apache Superset ในหน้าแอพนี้")
 
     default_url = build_superset_dashboard_url()
+    
+    if default_url:
+        st.link_button("🔗 Open Superset Dashboard", default_url, use_container_width=True)
+    
     dashboard_url = st.text_input(
         "Superset Dashboard URL",
         value=default_url,
@@ -428,7 +432,9 @@ def render_superset_tab() -> None:
         )
         return
 
-    st.markdown(f"[Open in new tab]({dashboard_url})")
+    if dashboard_url != default_url:
+        st.link_button("🔗 Open Custom URL", dashboard_url, use_container_width=True)
+    
     components.iframe(dashboard_url, height=900, scrolling=True)
 
 
