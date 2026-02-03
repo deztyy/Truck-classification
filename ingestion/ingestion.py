@@ -14,6 +14,7 @@ import os
 import threading
 import time
 from datetime import datetime
+from threading import Lock
 from typing import Any, Dict, Optional, Tuple
 
 import cv2
@@ -30,18 +31,29 @@ logger = logging.getLogger(__name__)
 
 # Defaults and constants
 DEFAULT_FRAME_SIZE: Tuple[int, int] = (640, 640)
-DEFAULT_BATCH_SIZE = 30
+DEFAULT_BATCH_SIZE = 5
 DEFAULT_MINIO_BUCKET_NAME = "raw-frames"
 DEFAULT_REDIS_QUEUE_NAME = "frame_batches"
 DEFAULT_REDIS_DB = 0
 DEFAULT_MAX_RECONNECT_ATTEMPTS = 5
 DEFAULT_RECONNECT_DELAY = 5
-DEFAULT_FRAME_SKIP = 0
+DEFAULT_FRAME_SKIP = 5
 STATISTICS_LOG_INTERVAL = 10  # Log stats every N batches
 STATISTICS_REPORT_INTERVAL = 60  # Report stats every N seconds
 RETRY_BACKOFF_MULTIPLIER = 5
 MINIO_CONTENT_TYPE = "application/octet-stream"
 THREAD_JOIN_TIMEOUT = 5
+# Health Check Constants
+HEALTH_CHECK_INTERVAL_SECONDS = 10
+FRAME_READ_TIMEOUT_SECONDS = 30
+DOWNTIME_ALERT_THRESHOLD_SECONDS = 30
+
+# Timestamp and File Formats
+TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S_%f"
+BATCH_OBJECT_NAME_TEMPLATE = "{camera_id}/batch_{timestamp}.npy"
+
+# Logging Precision
+DOWNTIME_PRECISION_DECIMALS = 1
 
 
 class VideoIngestor:
@@ -74,7 +86,7 @@ class VideoIngestor:
         max_reconnect_attempts: int = 5,
         reconnect_delay: int = 5,
         loop_video: bool = False,
-        frame_skip: int = 0,
+        frame_skip: int = DEFAULT_FRAME_SKIP,
     ):
         """
         Initialize VideoIngestor with configuration from environment variables.
@@ -86,7 +98,7 @@ class VideoIngestor:
             batch_size: Number of frames to collect before uploading
             max_reconnect_attempts: Maximum reconnection attempts
             reconnect_delay: Delay between reconnection attempts (seconds)
-            loop_video: Loop video file when it ends (default: True)
+            loop_video: Loop video file when it ends (default: False)
             frame_skip: Number of frames to skip between captures (0 = no skip, 1 = skip 1 frame, etc.)
         """
         self.camera_id = camera_id
@@ -124,6 +136,19 @@ class VideoIngestor:
         self.total_frames_processed = 0
         self.total_batches_uploaded = 0
         self.total_errors = 0
+
+        # Health Check Variables
+        self.last_frame_read_time = None  # Timestamp of last successful frame read
+        self.stream_is_healthy = True  # Current stream health status
+        self.downtime_start_time = None  # When downtime began
+        self.total_downtime_seconds = 0  # Accumulated downtime
+        self.health_check_thread: Optional[threading.Thread] = (
+            None  # Health check thread
+        )
+        self.is_running = False  # Flag to keep health check thread alive
+
+        # Thread-safe lock for health status updates
+        self.health_status_lock = Lock()
 
         logger.info(f"VideoIngestor initialized for camera: {self.camera_id}")
 
@@ -163,35 +188,50 @@ class VideoIngestor:
         Initialize Redis client from environment variables.
 
         Returns:
-            redis.Redis: Configured Redis client
+            redis.Redis: Configured Redis client with connection pooling
 
         Environment Variables Required:
             - REDIS_HOST: Redis server hostname
-            - REDIS_PORT: Redis server port
+            - REDIS_PORT: Redis server port (must be 1-65535)
             - REDIS_DB: Redis database number (default: '0')
             - REDIS_PASSWORD: Redis password (optional)
         """
         redis_host = os.getenv("REDIS_HOST")
-        redis_port = os.getenv("REDIS_PORT")
-        redis_db = int(os.getenv("REDIS_DB", str(DEFAULT_REDIS_DB)))
+        redis_port_str = os.getenv("REDIS_PORT")
+        redis_db = int(os.getenv("REDIS_DB", DEFAULT_REDIS_DB))
         redis_password = os.getenv("REDIS_PASSWORD", None)
 
         # Validate required configuration
-        if not redis_host or not redis_port:
+        if not redis_host or not redis_port_str:
             raise ValueError(
                 "Missing required Redis environment variables: REDIS_HOST, REDIS_PORT"
             )
 
-        redis_port = int(redis_port)
+        # Validate and convert port
+        try:
+            redis_port = int(redis_port_str)
+            if not (1 <= redis_port <= 65535):
+                raise ValueError(
+                    f"Redis port must be between 1-65535, got: {redis_port}"
+                )
+        except ValueError as e:
+            raise ValueError(
+                f"Invalid REDIS_PORT environment variable: {redis_port_str}. "
+                f"Must be an integer between 1-65535. Error: {e}"
+            ) from e
+
         logger.info(f"Connecting to Redis at {redis_host}:{redis_port}")
 
-        return redis.Redis(
+        # Use connection pool for thread-safe multi-threaded access
+        connection_pool = redis.ConnectionPool(
             host=redis_host,
             port=redis_port,
             db=redis_db,
             password=redis_password,
-            decode_responses=False,  # We'll handle binary data
+            decode_responses=False,
+            max_connections=10,
         )
+        return redis.Redis(connection_pool=connection_pool)
 
     def _ensure_bucket_exists(self) -> None:
         """
@@ -220,25 +260,29 @@ class VideoIngestor:
             source_type = "video file" if self.video_file else "RTSP stream"
 
             logger.info(f"Connecting to {source_type}: {video_source}")
-            self.video_capture = cv2.VideoCapture(video_source)
+            video_capture_temp = cv2.VideoCapture(video_source)
 
-            if not self.video_capture.isOpened():
+            if not video_capture_temp.isOpened():
                 logger.error(f"Failed to open {source_type}")
                 return False
 
             # Read one frame to verify stream is working
-            frame_read_success, _ = self.video_capture.read()
+            frame_read_success, _ = video_capture_temp.read()
             if not frame_read_success:
                 logger.error(f"Failed to read frame from {source_type}")
                 return False
 
             # Get video info
             if self.video_file:
-                total_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
-                frames_per_second = self.video_capture.get(cv2.CAP_PROP_FPS)
+                total_frames = int(video_capture_temp.get(cv2.CAP_PROP_FRAME_COUNT))
+                frames_per_second = video_capture_temp.get(cv2.CAP_PROP_FPS)
                 logger.info(
                     f"Video file info - Frames: {total_frames}, FPS: {frames_per_second:.2f}"
                 )
+
+            # Thread-safe assignment of video capture
+            with self.health_status_lock:
+                self.video_capture = video_capture_temp
 
             logger.info(f"Successfully connected to {source_type}")
             return True
@@ -250,11 +294,120 @@ class VideoIngestor:
     def _close_video_source(self) -> None:
         """
         Safely disconnect from the video stream.
+        Thread-safe operation with lock protection.
         """
-        if self.video_capture is not None:
-            self.video_capture.release()
-            self.video_capture = None
-            logger.info("Disconnected from video stream")
+        with self.health_status_lock:
+            if self.video_capture is not None:
+                self.video_capture.release()
+                self.video_capture = None
+                logger.info("Disconnected from video stream")
+
+    def _update_frame_read_time(self) -> None:
+        """
+        Update last successful frame read timestamp.
+        Called after each successful frame read.
+        Thread-safe operation with lock protection.
+        """
+        with self.health_status_lock:
+            self.last_frame_read_time = datetime.utcnow()
+
+            # Mark stream as healthy
+            if not self.stream_is_healthy:
+                self.stream_is_healthy = True
+                if self.downtime_start_time:
+                    downtime_duration = (
+                        datetime.utcnow() - self.downtime_start_time
+                    ).total_seconds()
+                    self.total_downtime_seconds += downtime_duration
+                    precision = DOWNTIME_PRECISION_DECIMALS
+                    logger.info(
+                        f"Stream recovered after {downtime_duration:.{precision}f}s downtime. "
+                        f"Total downtime: {self.total_downtime_seconds:.{precision}f}s"
+                    )
+                    self.downtime_start_time = None
+
+    def _health_check_stream(self) -> None:
+        """
+        Periodically check stream health by detecting stalls and timeouts.
+        Runs in a separate thread.
+        """
+        logger.info(f"Health check thread started for camera: {self.camera_id}")
+
+        while self.is_running:
+            try:
+                time.sleep(HEALTH_CHECK_INTERVAL_SECONDS)
+
+                # Check connection status and frame read time (within single lock)
+                video_capture_connected = False
+                should_check_timeout = False
+                seconds_since_last_read = 0
+
+                with self.health_status_lock:
+                    if self.video_capture is None or not self.video_capture.isOpened():
+                        if self.stream_is_healthy and self.downtime_start_time is None:
+                            self.stream_is_healthy = False
+                            self.downtime_start_time = datetime.utcnow()
+                            logger.warning(
+                                f"Stream disconnected for camera: {self.camera_id}"
+                            )
+                    else:
+                        video_capture_connected = True
+                        if self.last_frame_read_time is not None:
+                            seconds_since_last_read = (
+                                datetime.utcnow() - self.last_frame_read_time
+                            ).total_seconds()
+                            should_check_timeout = True
+
+                # Perform timeout check outside the lock (avoid nested lock deadlock)
+                if video_capture_connected and should_check_timeout:
+                    self._check_frame_read_timeout(seconds_since_last_read)
+
+            except Exception as e:
+                logger.error(f"Error in health check thread: {e}")
+
+        logger.info(f"Health check thread stopped for camera: {self.camera_id}")
+
+    def _check_frame_read_timeout(self, seconds_elapsed: float) -> None:
+        """
+        Check if frame read has timed out and update stream health status.
+        Thread-safe operation with lock protection.
+
+        Args:
+            seconds_elapsed: Seconds since last successful frame read
+        """
+        precision = DOWNTIME_PRECISION_DECIMALS
+
+        with self.health_status_lock:
+            if seconds_elapsed > FRAME_READ_TIMEOUT_SECONDS:
+                if self.stream_is_healthy:
+                    self.stream_is_healthy = False
+                    self.downtime_start_time = datetime.utcnow()
+                    logger.error(
+                        f"Stream stalled for {seconds_elapsed:.{precision}f}s "
+                        f"(timeout: {FRAME_READ_TIMEOUT_SECONDS}s) - camera: {self.camera_id}"
+                    )
+            elif (
+                seconds_elapsed > DOWNTIME_ALERT_THRESHOLD_SECONDS
+                and not self.stream_is_healthy
+            ):
+                logger.warning(
+                    f"Stream still stalled for {seconds_elapsed:.{precision}f}s - "
+                    f"camera: {self.camera_id}"
+                )
+
+    def _start_health_check_thread(self) -> None:
+        """
+        Start the health check thread if not already running.
+        """
+        if self.health_check_thread is None or not self.health_check_thread.is_alive():
+            self.is_running = True
+            self.health_check_thread = threading.Thread(
+                target=self._health_check_stream,
+                name=f"HealthCheck-{self.camera_id}",
+                daemon=True,
+            )
+            self.health_check_thread.start()
+            logger.info(f"Health check thread started for camera: {self.camera_id}")
 
     def _read_next_frame_batch(self) -> Optional[np.ndarray]:
         """
@@ -263,57 +416,48 @@ class VideoIngestor:
         Returns:
             Optional[np.ndarray]: Batch of frames as NumPy array (batch_size, height, width, channels)
                                  Returns None if stream fails
-
-        ### CUSTOMIZATION POINT ###
-        You can modify this method to:
-        - Apply pre-processing to frames (resize, normalize, color conversion)
-        - Skip frames (e.g., process every Nth frame)
-        - Add frame metadata (timestamps, frame numbers)
         """
-        frames_list: list[np.ndarray] = []
+        frames = []
 
-        for frame_index in range(self.batch_size):
+        for frame_idx in range(self.batch_size):
             try:
-                # Read frame
-                frame_read_success, current_frame = self.video_capture.read()
+                # Verify stream is still connected and read frame (within single lock context)
+                success = False
+                raw_frame = None
 
-                # If video file ends and loop is enabled, restart
-                if not frame_read_success and self.video_file and self.loop_video:
-                    logger.info("Video file ended, restarting from beginning...")
-                    self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    frame_read_success, current_frame = self.video_capture.read()
-
-                if not frame_read_success:
-                    # Distinguish between expected EOF for non-looping local files
-                    # and other read failures (e.g., RTSP/network issues).
-                    if self.video_file and not self.loop_video:
-                        logger.info(
-                            "End of video file reached and loop_video is False; "
-                            "stopping ingestion for this source."
+                with self.health_status_lock:
+                    if self.video_capture is None or not self.video_capture.isOpened():
+                        logger.warning(
+                            f"Stream disconnected during frame read at frame {frame_idx + 1}/{self.batch_size}"
                         )
-                        # Signal EOF to the caller so it can terminate cleanly
-                        raise EOFError("End of video file reached")
+                        return None
+                    # Read frame while holding lock to prevent concurrent close
+                    success, raw_frame = self.video_capture.read()
 
+                if not success:
+                    success, raw_frame = self._handle_frame_read_failure()
+                    if not success:
+                        logger.warning(
+                            f"Failed to read frame {frame_idx + 1}/{self.batch_size}"
+                        )
+                        return None
+
+                # Skip frames if configured (frame_skip > 0)
+                self._skip_configured_frames()
+
+                # Preprocess and add to batch (null check after potential restart)
+                if raw_frame is None:
                     logger.warning(
-                        f"Failed to read frame {frame_index + 1}/{self.batch_size}"
+                        f"Received None frame at index {frame_idx + 1}/{self.batch_size}"
                     )
                     return None
 
-                # Skip frames if configured (frame_skip > 0)
-                for _ in range(self.frame_skip):
-                    skip_success, _ = self.video_capture.read()
-                    if not skip_success and self.video_file and self.loop_video:
-                        self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    if not skip_success:
-                        break
-
-                # --- CUSTOM PREPROCESSING GOES HERE ---
-                # Example: current_frame = cv2.resize(current_frame, (640, 640))
-                # Example: current_frame = cv2.cvtColor(current_frame, cv2.COLOR_BGR2RGB)
-                processed_frame = cv2.resize(current_frame, DEFAULT_FRAME_SIZE)
-
-                frames_list.append(processed_frame)
+                processed_frame = cv2.resize(raw_frame, DEFAULT_FRAME_SIZE)
+                frames.append(processed_frame)
                 self.total_frames_processed += 1
+
+                # Update health check timestamp
+                self._update_frame_read_time()
 
             except EOFError:
                 # Propagate EOF so the main loop can exit gracefully
@@ -324,10 +468,56 @@ class VideoIngestor:
 
         # Convert list of frames to NumPy array
         # Shape: (batch_size, height, width, channels)
-        frame_batch_array = np.array(frames_list)
-        logger.debug(f"Created batch with shape: {frame_batch_array.shape}")
+        batch_array = np.array(frames)
+        logger.debug(f"Created batch with shape: {batch_array.shape}")
 
-        return frame_batch_array
+        return batch_array
+
+    def _handle_frame_read_failure(self) -> Tuple[bool, Optional[np.ndarray]]:
+        """
+        Handle frame read failure by attempting to restart video if configured.
+
+        Returns:
+            Tuple of (success: bool, frame: Optional[np.ndarray])
+        """
+        # If video file ends and loop is enabled, restart
+        if self.video_file and self.loop_video:
+            logger.info("Video file ended, restarting from beginning...")
+            with self.health_status_lock:
+                if self.video_capture is not None:
+                    self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    success, frame = self.video_capture.read()
+                    return success, frame if success else None
+                else:
+                    logger.warning("Video capture was closed during restart attempt")
+                    return False, None
+
+        # For non-looping local files, signal EOF
+        if self.video_file and not self.loop_video:
+            logger.info(
+                "End of video file reached and loop_video is False; "
+                "stopping ingestion for this source."
+            )
+            raise EOFError("End of video file reached")
+
+        return False, None
+
+    def _skip_configured_frames(self) -> None:
+        """
+        Skip frames as configured by frame_skip parameter.
+        Thread-safe access to video_capture.
+        """
+        for _ in range(self.frame_skip):
+            skip_success = False
+            with self.health_status_lock:
+                if self.video_capture is None:
+                    logger.warning("Video capture closed during frame skip")
+                    break
+                skip_success, _ = self.video_capture.read()
+                if not skip_success and self.video_file and self.loop_video:
+                    self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            if not skip_success:
+                break
 
     def _serialize_numpy(self, array: np.ndarray) -> io.BytesIO:
         """
@@ -353,39 +543,32 @@ class VideoIngestor:
 
         Returns:
             Optional[str]: Object name in MinIO if successful, None otherwise
-
-        ### CUSTOMIZATION POINT ###
-        You can modify this method to:
-        - Use different serialization formats (npz, pickle, msgpack)
-        - Add compression (zlib, lz4)
-        - Include additional metadata in the object
         """
         try:
             # Generate unique object name with timestamp
-            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
-            minio_object_key = f"{self.camera_id}/batch_{timestamp}.npy"
+            timestamp = datetime.utcnow().strftime(TIMESTAMP_FORMAT)
+            batch_object_key = BATCH_OBJECT_NAME_TEMPLATE.format(
+                camera_id=self.camera_id, timestamp=timestamp
+            )
 
-            # Serialize NumPy array to bytes using io.BytesIO
+            # Serialize and upload to MinIO
             serialized_buffer = self._serialize_numpy(frame_batch)
+            buffer_size = serialized_buffer.getbuffer().nbytes
 
-            # Get buffer size
-            buffer_size_bytes = serialized_buffer.getbuffer().nbytes
-
-            # Upload to MinIO
             self.minio_client.put_object(
                 bucket_name=self.minio_bucket_name,
-                object_name=minio_object_key,
+                object_name=batch_object_key,
                 data=serialized_buffer,
-                length=buffer_size_bytes,
+                length=buffer_size,
                 content_type=MINIO_CONTENT_TYPE,
             )
 
             logger.info(
-                f"Uploaded batch to MinIO: {minio_object_key} ({buffer_size_bytes} bytes)"
+                f"Uploaded batch to MinIO: {batch_object_key} ({buffer_size} bytes)"
             )
             self.total_batches_uploaded += 1
 
-            return minio_object_key
+            return batch_object_key
 
         except S3Error as e:
             logger.error(f"MinIO upload error: {e}")
@@ -474,49 +657,40 @@ class VideoIngestor:
 
     def run(self) -> None:
         """
-        Main execution loop with auto-reconnection logic.
+        Main execution loop with auto-reconnection logic and health check.
 
         This method:
         1. Connects to the RTSP stream
-        2. Continuously reads and processes frame batches
-        3. Handles errors with automatic reconnection
-        4. Runs indefinitely until interrupted
+        2. Starts health check thread for continuous monitoring
+        3. Continuously reads and processes frame batches
+        4. Handles errors with automatic reconnection
+        5. Runs indefinitely until interrupted
 
         ### CUSTOMIZATION POINT ###
         You can modify this method to:
         - Add scheduling logic (process only during certain hours)
         - Implement adaptive batch sizing based on performance
-        - Add health check reporting
+        - Add more sophisticated health check reporting
         - Implement graceful shutdown on signals
         """
         logger.info(f"Starting video ingestion for camera: {self.camera_id}")
 
-        reconnection_attempt_count = 0
+        # Start health check thread
+        self._start_health_check_thread()
+
+        reconnect_attempts = 0
 
         while True:
             try:
-                # Connect to stream if not connected
-                if self.video_capture is None or not self.video_capture.isOpened():
-                    if reconnection_attempt_count >= self.max_reconnect_attempts:
-                        logger.error(
-                            f"Max reconnection attempts ({self.max_reconnect_attempts}) reached"
-                        )
-                        logger.info("Waiting before resetting reconnection counter...")
-                        time.sleep(self.reconnect_delay * RETRY_BACKOFF_MULTIPLIER)
-                        reconnection_attempt_count = 0
-
-                    logger.info(
-                        f"Reconnection attempt {reconnection_attempt_count + 1}/{self.max_reconnect_attempts}"
+                # Connect to stream if not connected (thread-safe check)
+                with self.health_status_lock:
+                    is_connected = (
+                        self.video_capture is not None and self.video_capture.isOpened()
                     )
 
-                    if self._open_video_source():
-                        reconnection_attempt_count = (
-                            0  # Reset counter on successful connection
-                        )
-                    else:
-                        reconnection_attempt_count += 1
-                        time.sleep(self.reconnect_delay)
-                        continue
+                if not is_connected:
+                    reconnect_attempts = self._attempt_reconnection(reconnect_attempts)
+                    continue
 
                 # Process one batch
                 batch_processed_successfully = self._ingest_next_batch()
@@ -524,7 +698,7 @@ class VideoIngestor:
                 if not batch_processed_successfully:
                     logger.warning("Batch processing failed, will attempt reconnection")
                     self._close_video_source()
-                    reconnection_attempt_count += 1
+                    reconnect_attempts += 1
                     time.sleep(self.reconnect_delay)
                 else:
                     # Log statistics periodically
@@ -547,13 +721,54 @@ class VideoIngestor:
                 self._close_video_source()
                 time.sleep(self.reconnect_delay)
 
+        # Always cleanup on exit
+        self._cleanup_ingestion()
+
+    def _attempt_reconnection(self, current_attempts: int) -> int:
+        """
+        Attempt to reconnect to video source with exponential backoff.
+
+        Args:
+            current_attempts: Current number of reconnection attempts
+
+        Returns:
+            Updated attempt count
+        """
+        if current_attempts >= self.max_reconnect_attempts:
+            logger.error(
+                f"Max reconnection attempts ({self.max_reconnect_attempts}) reached"
+            )
+            logger.info("Waiting before resetting reconnection counter...")
+            time.sleep(self.reconnect_delay * RETRY_BACKOFF_MULTIPLIER)
+            return 0
+
+        logger.info(
+            f"Reconnection attempt {current_attempts + 1}/{self.max_reconnect_attempts}"
+        )
+
+        if self._open_video_source():
+            return 0  # Reset counter on successful connection
+        else:
+            time.sleep(self.reconnect_delay)
+            return current_attempts + 1
+
+    def _cleanup_ingestion(self) -> None:
+        """
+        Stop health check thread and cleanup resources gracefully.
+        """
         # Cleanup
+        self.is_running = False  # Stop health check thread
+        if self.health_check_thread and self.health_check_thread.is_alive():
+            self.health_check_thread.join(timeout=THREAD_JOIN_TIMEOUT)
+
         self._close_video_source()
+        precision = DOWNTIME_PRECISION_DECIMALS
         logger.info(
             f"Ingestion stopped. Final statistics - "
             f"Frames: {self.total_frames_processed}, "
             f"Batches: {self.total_batches_uploaded}, "
-            f"Errors: {self.total_errors}"
+            f"Errors: {self.total_errors}, "
+            f"Total Downtime: {self.total_downtime_seconds:.{precision}f}s"
         )
 
     def get_statistics(self) -> Dict[str, Any]:
@@ -561,15 +776,23 @@ class VideoIngestor:
         Get current processing statistics.
 
         Returns:
-            Dict: Statistics including frames processed, batches uploaded, errors
+            Dict: Statistics including frames processed, batches uploaded, errors, and health status
         """
+        # Thread-safe read of health status variables
+        with self.health_status_lock:
+            stream_healthy = self.stream_is_healthy
+            total_downtime = self.total_downtime_seconds
+            video_capture = self.video_capture
+            is_open = video_capture is not None and video_capture.isOpened()
+
         return {
             "camera_id": self.camera_id,
             "frames_processed": self.total_frames_processed,
             "batches_uploaded": self.total_batches_uploaded,
             "errors_count": self.total_errors,
-            "is_connected": self.video_capture is not None
-            and self.video_capture.isOpened(),
+            "is_connected": is_open,
+            "is_healthy": stream_healthy,
+            "total_downtime_seconds": total_downtime,
         }
 
 
@@ -630,13 +853,13 @@ def main():
 
     for camera_config in camera_config_list:
         try:
-            # logger.info(f"Initializing camera: {camera_config['camera_id']}")
+            logger.info(f"Initializing camera: {camera_config['camera_id']}")
 
             video_ingestor = VideoIngestor(
                 camera_id=camera_config["camera_id"],
                 rtsp_url=camera_config.get("rtsp_url"),
                 video_file=camera_config.get("video_file"),
-                batch_size=1,
+                batch_size=DEFAULT_BATCH_SIZE,
                 max_reconnect_attempts=DEFAULT_MAX_RECONNECT_ATTEMPTS,
                 reconnect_delay=DEFAULT_RECONNECT_DELAY,
                 loop_video=False,
@@ -681,7 +904,9 @@ def main():
                     f"Frames={camera_stats['frames_processed']}, "
                     f"Batches={camera_stats['batches_uploaded']}, "
                     f"Errors={camera_stats['errors_count']}, "
-                    f"Connected={camera_stats['is_connected']}"
+                    f"Connected={camera_stats['is_connected']}, "
+                    f"Healthy={camera_stats['is_healthy']}, "
+                    f"Downtime={camera_stats['total_downtime_seconds']:.1f}s"
                 )
     except KeyboardInterrupt:
         logger.info("Received interrupt signal, waiting for threads to finish...")
