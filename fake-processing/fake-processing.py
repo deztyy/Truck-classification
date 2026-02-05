@@ -1,3 +1,4 @@
+import threading
 import mlflow
 import onnxruntime as ort
 import cv2
@@ -5,12 +6,14 @@ import datetime
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, asdict
 from enum import Enum
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple
 import pytz
 
+from psycopg2 import pool
 import numpy as np
 import psycopg2
 import psycopg2.extras
@@ -36,6 +39,10 @@ TRACK_EXPIRY_SECONDS = 300  # 5 minutes - tracks expire after this
 MATCH_DISTANCE_THRESHOLD = 120  # pixels - max distance to match detection to track
 REAPPEARANCE_DISTANCE = 20  # pixels - distance to check for re-appearing vehicles
 MIN_VECTOR_STRENGTH = 5  # minimum movement frames before counting
+
+# === MinIO Retry Configuration ===
+RETRY_DELAY = 0.01  # Seconds to wait between retries (10ms)
+MAX_WAIT_TIME = 30  # Maximum seconds to wait before logging warning (not stopping)
 
 
 @dataclass
@@ -158,8 +165,8 @@ class ProcessingTask:
                 task_id=data.get("task_id") or data.get("batch_id") or "unknown",
                 camera_id=data.get("camera_id", "unknown"),
                 video_file=data.get("video_file") or data.get("video_path", ""),
-                minio_bucket=data.get("minio_bucket") or data.get("bucket", "video-frames"),
-                object_key_or_prefix=data.get("object_key_or_prefix") or data.get("key", ""),
+                minio_bucket=data.get("bucket_name") or data.get("minio_bucket") or data.get("bucket", "video-frames"),
+                object_key_or_prefix=data.get("object_name") or data.get("object_key_or_prefix") or data.get("key", ""),
                 timestamp=datetime.datetime.fromisoformat(data["timestamp"]) if data.get("timestamp") else None,
                 detection_x=data.get("detection_x"),
                 detection_y=data.get("detection_y"),
@@ -324,30 +331,95 @@ class MinIOManager:
             if response:
                 response.close()
                 response.release_conn()
+    
+    def wait_for_npy_file(self, bucket: str, prefix: str, retry_delay: float = RETRY_DELAY) -> str:
+     
+        attempt = 0
+        start_time = time.time()
+        last_warning_time = start_time
+        
+        while True:
+            attempt += 1
+            elapsed = time.time() - start_time
+            
+            try:
+                # If prefix is already a direct .npy file path, check if it exists
+                if prefix.endswith(".npy"):
+                    try:
+                        self.client.stat_object(bucket, prefix)
+                        if attempt > 1:
+                            logging.info(f"✓ Found .npy file after {attempt} attempts ({elapsed:.1f}s): {prefix}")
+                        else:
+                            logging.info(f"✓ Found .npy file: {prefix}")
+                        return prefix
+                    except S3Error:
+                        pass  # File doesn't exist yet, continue waiting
+                
+                # Otherwise, list objects under prefix
+                listed_objects = self.list_objects(bucket=bucket, prefix=prefix)
+                npy_files = [obj for obj in listed_objects 
+                           if obj["name"].endswith(".npy") and not obj["name"].endswith("/")]
+                
+                if npy_files:
+                    # Sort by last_modified to get the newest file
+                    npy_files.sort(key=lambda x: x["last_modified"], reverse=True)
+                    found_file = npy_files[0]["name"]
+                    if attempt > 1:
+                        logging.info(f"✓ Found .npy file after {attempt} attempts ({elapsed:.1f}s): {found_file}")
+                    else:
+                        logging.info(f"✓ Found .npy file: {found_file}")
+                    return found_file
+                
+                # Periodic logging to show we're still waiting
+                if elapsed - (last_warning_time - start_time) >= MAX_WAIT_TIME:
+                    logging.warning(f"⏳ Still waiting for .npy file... ({attempt} attempts, {elapsed:.1f}s elapsed)")
+                    last_warning_time = time.time()
+                
+                # Short debug log for troubleshooting (every 50 attempts = 5 seconds)
+                if attempt % 50 == 0:
+                    logging.debug(f"Waiting for .npy file in {bucket}/{prefix} (attempt {attempt})")
+                
+                # Wait before next retry
+                time.sleep(retry_delay)
+                    
+            except Exception as e:
+                logging.error(f"Error checking for .npy file (attempt {attempt}): {e}")
+                time.sleep(retry_delay)
 
 
 class PostgreSQLDatabase:
     """Manages PostgreSQL database operations"""
-
+    _pool = None
+    _lock = threading.Lock()
     def __init__(self, host: str, port: int, database: str, user: str, password: str):
         self.connection_params = {"host": host, "port": port, "database": database, "user": user, "password": password}
-        self.conn = psycopg2.connect(**self.connection_params)
-        self.conn.autocommit = False
-        logging.info(f"✓ PostgreSQL connected: {host}:{port}/{database}")
-
+        with PostgreSQLDatabase._lock:
+            if PostgreSQLDatabase._pool is None:
+                PostgreSQLDatabase._pool = pool.ThreadedConnectionPool(
+                    minconn=2,
+                    maxconn=20,
+                    **self.connection_params
+                )
+        
+        logging.info(f"✓ PostgreSQL pool initialized: {host}:{port}/{database}")
+    
     def get_vehicle_class(self, class_id: int) -> Optional[Dict]:
+        conn = self._pool.getconn()
         try:
-            with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute("SELECT * FROM vehicle_classes WHERE class_id = %s", (class_id,))
                 result = cur.fetchone()
                 return dict(result) if result else None
         except Exception as e:
             logging.error(f"✗ Get vehicle class failed: {e}")
             return None
+        finally:
+            self._pool.putconn(conn)
 
     def insert_transaction(self, transaction: VehicleTransaction) -> bool:
+        conn = self._pool.getconn()
         try:
-            with self.conn.cursor() as cur:
+            with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO vehicle_transactions 
                     (camera_id, track_id, class_id, total_fee, time_stamp, img_path, confidence)
@@ -357,17 +429,19 @@ class PostgreSQLDatabase:
                     transaction.total_fee, transaction.time_stamp, transaction.img_path,
                     transaction.confidence,
                 ))
-                self.conn.commit()
+                conn.commit()
                 logging.info(f"✓ Transaction saved: {transaction.track_id}")
                 return True
         except Exception as e:
-            self.conn.rollback()
+            conn.rollback()
             logging.error(f"✗ Insert transaction failed: {e}")
             return False
+        finally:
+            self._pool.putconn(conn)
 
     def close(self):
-        if self.conn:
-            self.conn.close()
+        if self._pool:
+            self._pool.closeall()
 
 
 class ProcessingService:
@@ -684,23 +758,35 @@ class ProcessingService:
         batch_object = None
         
         try:
+            if not task.object_key_or_prefix:
+                logging.error(f"❌ CRITICAL: Empty object_key_or_prefix for task {task.task_id}")
+                logging.error(f"Task data: camera_id={task.camera_id}, bucket={task.minio_bucket}")
+                return {"status": "error", "reason": "Missing object key"}
+            
+            # ✅ VALIDATE: Ensure object key contains camera ID
+            if task.camera_id not in task.object_key_or_prefix:
+                logging.error(
+                    f"❌ CRITICAL BUG DETECTED: "
+                    f"camera_id '{task.camera_id}' not in object_key '{task.object_key_or_prefix}'"
+                )
+                return {"status": "error", "reason": "Camera ID mismatch"}
+            
+            logging.info(
+                f"✅ Processing: camera={task.camera_id}, "
+                f"object={task.object_key_or_prefix}"
+            )
             logging.info(f"\n--- Processing Task: {task.task_id} ---")
             
             # Clean up stale tracks
             self._update_all_tracks(task.camera_id)
             self.tracking_manager.cleanup_stale_tracks(task.camera_id)
             
-            # Determine object name
-            if task.object_key_or_prefix.endswith(".npy"):
-                batch_object = task.object_key_or_prefix
-            else:
-                listed_objects = self.minio_manager.list_objects(
-                    bucket=task.minio_bucket, prefix=task.object_key_or_prefix
-                )
-                files = [obj for obj in listed_objects if not obj["name"].endswith("/")]
-                if not files:
-                    return {"status": "no_objects", "task_id": task.task_id}
-                batch_object = files[0]["name"]
+            # === NEW: Wait indefinitely for .npy file ===
+            logging.info(f"Waiting for .npy file in {task.minio_bucket}/{task.object_key_or_prefix}...")
+            batch_object = self.minio_manager.wait_for_npy_file(
+                bucket=task.minio_bucket,
+                prefix=task.object_key_or_prefix
+            )
 
             # Download to RAM
             logging.info(f"Downloading {batch_object} to memory...")
@@ -716,15 +802,6 @@ class ProcessingService:
             selected_frame, frame_idx = self._select_frame(batch_data)
             frame_uint8 = self._normalize_to_uint8(selected_frame)
             class_id, total_fee, confidence, bbox = self._run_inference(frame_uint8)
-
-            # # === CRITICAL: Skip frame if OTHER class detected ===
-            # if class_id == VehicleClass.OTHER.value:
-            #     logging.warning(f"⏭️  SKIPPING ENTIRE FRAME - OTHER class detected (not a real vehicle)")
-            #     return {
-            #         "status": "skipped_other_class",
-            #         "task_id": task.task_id,
-            #         "reason": "OTHER class - not a real vehicle"
-            #     }
 
             # === Skip if invalid detection ===
             if bbox is None or not self._is_valid_vehicle_class(class_id):
@@ -819,7 +896,7 @@ class ProcessingService:
 
 
 def main():
-    """Main entry point - runs with multiprocessing"""
+    """Main entry point - single queue, handles all cameras dynamically"""
     logging.info("Initializing Processing Service with Tracking...")
 
     required_vars = [
@@ -849,8 +926,11 @@ def main():
     }
 
     redis_manager = RedisQueueManager(host=config["redis_host"], port=config["redis_port"])
-    num_workers = int(os.getenv("NUM_WORKERS", 1))
-    logging.info(f"Starting Worker Pool with {num_workers} processes (Tracking Enabled)")
+    num_workers = int(os.getenv("NUM_WORKERS", 4))  # Scale workers based on camera count
+    
+    logging.info(f"Starting Worker Pool with {num_workers} processes")
+    logging.info(f"Monitoring single queue: {redis_manager.queue_name}")
+    logging.info("Will handle any camera_id dynamically from task metadata")
 
     with ProcessPoolExecutor(max_workers=num_workers, initializer=worker_service, initargs=(config,)) as executor:
         try:
@@ -858,13 +938,20 @@ def main():
                 result = redis_manager.client.blpop(redis_manager.queue_name, timeout=5)
                 if result:
                     _, task_json = result
+                    # Parse to log camera_id (optional, for monitoring)
+                    try:
+                        task_data = json.loads(task_json)
+                        camera_id = task_data.get("camera_id", "unknown")
+                        logging.debug(f"Processing task for camera: {camera_id}")
+                    except:
+                        pass
+                    
                     executor.submit(task_handler, task_json)
         except KeyboardInterrupt:
             logging.info("\nShutting down worker pool...")
         except Exception as e:
             logging.error(f"Worker pool error: {e}")
             raise
-
 
 if __name__ == "__main__":
     main()
