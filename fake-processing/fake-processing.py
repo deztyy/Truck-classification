@@ -1,3 +1,4 @@
+import atexit
 import threading
 import mlflow
 import onnxruntime as ort
@@ -24,7 +25,7 @@ from PIL import Image
 from concurrent.futures import ProcessPoolExecutor
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 
@@ -34,56 +35,16 @@ JPG_QUALITY = 95
 THAI_TIMEZONE = pytz.timezone("Asia/Bangkok")
 _worker_service = None
 
-# === NEW: Tracking Configuration ===
-TRACK_EXPIRY_SECONDS = 300  # 5 minutes - tracks expire after this
-MATCH_DISTANCE_THRESHOLD = 120  # pixels - max distance to match detection to track
-REAPPEARANCE_DISTANCE = 20  # pixels - distance to check for re-appearing vehicles
-MIN_VECTOR_STRENGTH = 5  # minimum movement frames before counting
-
 # === MinIO Retry Configuration ===
 RETRY_DELAY = 0.01  # Seconds to wait between retries (10ms)
 MAX_WAIT_TIME = 30  # Maximum seconds to wait before logging warning (not stopping)
-
-
-@dataclass
-class VehicleTrack:
-    """Represents a tracked vehicle across frames"""
-    track_id: str
-    camera_id: str
-    last_x: int
-    last_y: int
-    vector_strength: int
-    counted: bool
-    lost_frames: int
-    last_seen: datetime.datetime
-    class_id: Optional[int] = None
-    confidence: Optional[float] = None
-    last_dx: int = 0
-    last_dy: int = 0
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "track_id": self.track_id,
-            "camera_id": self.camera_id,
-            "last_x": self.last_x,
-            "last_y": self.last_y,
-            "vector_strength": self.vector_strength,
-            "counted": self.counted,
-            "lost_frames": self.lost_frames,
-            "last_seen": self.last_seen.isoformat(),
-            "class_id": self.class_id,
-            "confidence": self.confidence,
-        }
-    
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "VehicleTrack":
-        data["last_seen"] = datetime.datetime.fromisoformat(data["last_seen"])
-        return cls(**data)
+MAX_RETRIES = 3
 
 
 def worker_service(config: Dict[str, Any]):
     global _worker_service
     _worker_service = ProcessingService(**config)
+    atexit.register(lambda: _worker_service.db.close())
 
 def task_handler(task_json: str):
     global _worker_service
@@ -132,7 +93,6 @@ class VehicleTransaction:
             "confidence": round(self.confidence, 4) if self.confidence else None,
         }
 
-
 @dataclass
 class ProcessingTask:
     task_id: str
@@ -142,8 +102,8 @@ class ProcessingTask:
     object_key_or_prefix: str
     timestamp: Optional[datetime.datetime] = None
     # NEW: Optional detection coordinates for tracking
-    detection_x: Optional[int] = None
-    detection_y: Optional[int] = None
+    track_id: Optional[str] = None
+    retry_count: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -153,14 +113,18 @@ class ProcessingTask:
             "minio_bucket": self.minio_bucket,
             "object_key_or_prefix": self.object_key_or_prefix,
             "timestamp": (self.timestamp or datetime.datetime.now(datetime.timezone.utc)).isoformat(),
-            "detection_x": self.detection_x,
-            "detection_y": self.detection_y,
+            "track_id": self.track_id,
+            "retry_count": self.retry_count,
         }
 
     @classmethod
     def from_json(cls, json_str: str) -> "ProcessingTask":
         try:
             data = json.loads(json_str)
+            if not data.get("task_id"):
+                raise ValueError("Missing required field: task_id")
+            if not data.get("camera_id"):
+                raise ValueError("Missing required field: camera_id")
             return cls(
                 task_id=data.get("task_id") or data.get("batch_id") or "unknown",
                 camera_id=data.get("camera_id", "unknown"),
@@ -168,80 +132,15 @@ class ProcessingTask:
                 minio_bucket=data.get("bucket_name") or data.get("minio_bucket") or data.get("bucket", "video-frames"),
                 object_key_or_prefix=data.get("object_name") or data.get("object_key_or_prefix") or data.get("key", ""),
                 timestamp=datetime.datetime.fromisoformat(data["timestamp"]) if data.get("timestamp") else None,
-                detection_x=data.get("detection_x"),
-                detection_y=data.get("detection_y"),
+                track_id=data.get("track_id"),
+                retry_count=data.get("retry_count", 0),
             )
-        except Exception as e:
-            logging.error(f"Failed to parse task JSON: {json_str}")
+        except json.JSONDecodeError as e:
+            logging.error(f"Invalid JSON: {json_str}")
             raise
 
-class TrackingManager:
-    """Manages vehicle tracking state in Redis"""
-    
-    def __init__(self, redis_client: redis.Redis):
-        self.redis = redis_client
-        self.track_prefix = "track:"
-        self.camera_tracks_prefix = "camera_tracks:"
-        self.next_id_key = "next_track_id"
-    
-    def get_next_track_id(self, camera_id: str) -> str:
-        """Generate unique track ID"""
-        track_num = self.redis.incr(f"{self.next_id_key}:{camera_id}")
-        return f"{camera_id}_track_{track_num}"
-    
-    def get_active_tracks(self, camera_id: str) -> List[VehicleTrack]:
-        """Get all active tracks for a camera"""
-        track_ids = self.redis.smembers(f"{self.camera_tracks_prefix}{camera_id}")
-        tracks = []
-        
-        for track_id in track_ids:
-            track_data = self.redis.get(f"{self.track_prefix}{track_id}")
-            if track_data:
-                try:
-                    track = VehicleTrack.from_dict(json.loads(track_data))
-                    tracks.append(track)
-                except Exception as e:
-                    logging.error(f"Failed to deserialize track {track_id}: {e}")
-        
-        return tracks
-    
-    def save_track(self, track: VehicleTrack):
-        """Save track to Redis with expiry"""
-        track_key = f"{self.track_prefix}{track.track_id}"
-        camera_set = f"{self.camera_tracks_prefix}{track.camera_id}"
-        
-        # Save track data
-        self.redis.setex(
-            track_key,
-            TRACK_EXPIRY_SECONDS,
-            json.dumps(track.to_dict())
-        )
-        
-        # Add to camera's active tracks set
-        self.redis.sadd(camera_set, track.track_id)
-        self.redis.expire(camera_set, TRACK_EXPIRY_SECONDS)
-    
-    def remove_track(self, track: VehicleTrack):
-        """Remove expired track"""
-        track_key = f"{self.track_prefix}{track.track_id}"
-        camera_set = f"{self.camera_tracks_prefix}{track.camera_id}"
-        
-        self.redis.delete(track_key)
-        self.redis.srem(camera_set, track.track_id)
-    
-    def cleanup_stale_tracks(self, camera_id: str):
-        """Remove tracks that haven't been seen recently"""
-        tracks = self.get_active_tracks(camera_id)
-        now = datetime.datetime.now(datetime.timezone.utc)
-        
-        for track in tracks:
-            time_diff = (now - track.last_seen).total_seconds()
-            max_lost_time = 60 if track.counted else 15  # Keep counted tracks longer
-            
-            if time_diff > max_lost_time or track.lost_frames > 60:
-                self.remove_track(track)
-                logging.info(f"Cleaned up stale track: {track.track_id}")
-
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict())
 
 class RedisQueueManager:
     """Manages Redis queue for processing tasks"""
@@ -274,7 +173,6 @@ class RedisQueueManager:
         except Exception as e:
             logging.error(f"✗ Push failed: {e}")
             return False
-
 
 class MinIOManager:
     """Manages MinIO operations"""
@@ -332,8 +230,20 @@ class MinIOManager:
                 response.close()
                 response.release_conn()
     
-    def wait_for_npy_file(self, bucket: str, prefix: str, retry_delay: float = RETRY_DELAY) -> str:
-     
+    def wait_for_npy_file(self, bucket: str, prefix: str, retry_delay: float = RETRY_DELAY, 
+                       timeout_seconds: int = 300) -> Optional[str]:
+        try:
+            if not self.client.bucket_exists(bucket):
+                logging.error(f"✗ Bucket '{bucket}' does not exist")
+                return None
+        except Exception as e:
+            logging.error(f"✗ Cannot access bucket: {e}")
+            return None
+
+        if not prefix or len(prefix) < 5:
+            logging.error(f"✗ Invalid prefix: '{prefix}'")
+            return None
+        
         attempt = 0
         start_time = time.time()
         last_warning_time = start_time
@@ -341,6 +251,14 @@ class MinIOManager:
         while True:
             attempt += 1
             elapsed = time.time() - start_time
+            
+            # ✅ ADD THIS: Check timeout FIRST
+            if elapsed > timeout_seconds:
+                logging.error(
+                    f"✗ TIMEOUT: .npy file not found after {timeout_seconds}s "
+                    f"({attempt} attempts) in {bucket}/{prefix}"
+                )
+                return None  # ← CRITICAL: Return None instead of blocking forever
             
             try:
                 # If prefix is already a direct .npy file path, check if it exists
@@ -358,7 +276,7 @@ class MinIOManager:
                 # Otherwise, list objects under prefix
                 listed_objects = self.list_objects(bucket=bucket, prefix=prefix)
                 npy_files = [obj for obj in listed_objects 
-                           if obj["name"].endswith(".npy") and not obj["name"].endswith("/")]
+                        if obj["name"].endswith(".npy") and not obj["name"].endswith("/")]
                 
                 if npy_files:
                     # Sort by last_modified to get the newest file
@@ -372,12 +290,16 @@ class MinIOManager:
                 
                 # Periodic logging to show we're still waiting
                 if elapsed - (last_warning_time - start_time) >= MAX_WAIT_TIME:
-                    logging.warning(f"⏳ Still waiting for .npy file... ({attempt} attempts, {elapsed:.1f}s elapsed)")
+                    remaining = timeout_seconds - elapsed
+                    logging.warning(
+                        f"⏳ Still waiting for .npy file... "
+                        f"({attempt} attempts, {elapsed:.1f}s elapsed, {remaining:.1f}s remaining)"
+                    )
                     last_warning_time = time.time()
                 
-                # Short debug log for troubleshooting (every 50 attempts = 5 seconds)
+                # Short debug log for troubleshooting (every 50 attempts)
                 if attempt % 50 == 0:
-                    logging.debug(f"Waiting for .npy file in {bucket}/{prefix} (attempt {attempt})")
+                    logging.debug(f"Waiting for .npy file in {bucket}/{prefix} (attempt {attempt}, {elapsed:.1f}s)")
                 
                 # Wait before next retry
                 time.sleep(retry_delay)
@@ -404,8 +326,9 @@ class PostgreSQLDatabase:
         logging.info(f"✓ PostgreSQL pool initialized: {host}:{port}/{database}")
     
     def get_vehicle_class(self, class_id: int) -> Optional[Dict]:
-        conn = self._pool.getconn()
+        conn = None
         try:
+            conn = self._pool.getconn()
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute("SELECT * FROM vehicle_classes WHERE class_id = %s", (class_id,))
                 result = cur.fetchone()
@@ -414,9 +337,11 @@ class PostgreSQLDatabase:
             logging.error(f"✗ Get vehicle class failed: {e}")
             return None
         finally:
-            self._pool.putconn(conn)
+            if conn:
+                self._pool.putconn(conn)
 
     def insert_transaction(self, transaction: VehicleTransaction) -> bool:
+        """Insert a vehicle transaction record"""
         conn = self._pool.getconn()
         try:
             with conn.cursor() as cur:
@@ -434,14 +359,22 @@ class PostgreSQLDatabase:
                 return True
         except Exception as e:
             conn.rollback()
-            logging.error(f"✗ Insert transaction failed: {e}")
-            return False
+            raise
+        else:
+            conn.commit()
         finally:
             self._pool.putconn(conn)
 
     def close(self):
-        if self._pool:
-            self._pool.closeall()
+        """Close all connections in the pool"""
+        with PostgreSQLDatabase._lock:
+            if PostgreSQLDatabase._pool:
+                try:
+                    PostgreSQLDatabase._pool.closeall()
+                    PostgreSQLDatabase._pool = None
+                    logging.info("✓ PostgreSQL pool closed")
+                except Exception as e:
+                    logging.error(f"✗ Failed to close PostgreSQL pool: {e}")
 
 
 class ProcessingService:
@@ -462,15 +395,16 @@ class ProcessingService:
         minio_secure: bool = False,
         mlflow_tracking_uri: str = os.getenv("MLFLOW_TRACKING_URI"),
         model_uri: str = os.getenv("MODEL_URI"),
+        npy_timeout_seconds: int = int(os.getenv("NPY_TIMEOUT_SECONDS", "300")),
     ):
         # Initialize Redis for tracking
         self.redis_client = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
-        self.tracking_manager = TrackingManager(self.redis_client)
         
         self.minio_manager = MinIOManager(endpoint=minio_endpoint, access_key=minio_access_key, 
                                          secret_key=minio_secret_key, secure=minio_secure)
         self.db = PostgreSQLDatabase(host=db_host, port=db_port, database=db_name, 
                                      user=db_user, password=db_password)
+        self.npy_timeout = npy_timeout_seconds
 
         # Load model
         logging.info(f"Loading model from MLflow: {model_uri}")
@@ -502,6 +436,11 @@ class ProcessingService:
             return 0, 0.0, 0.0, None
 
     def _preprocess_frame(self, frame_bgr: np.ndarray, input_size=(640, 640)) -> np.ndarray:
+        if frame_bgr.ndim == 2:
+            frame_bgr = cv2.cvtColor(frame_bgr, cv2.COLOR_GRAY2BGR)
+        elif frame_bgr.shape[2] == 1:
+            frame_bgr = cv2.cvtColor(frame_bgr, cv2.COLOR_GRAY2BGR)
+
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         frame_resized = cv2.resize(frame_rgb, input_size)
         frame_norm = frame_resized.astype(np.float32) / 255.0
@@ -545,157 +484,12 @@ class ProcessingService:
         
         return center_x, center_y
 
-    def _match_or_create_track(
-        self, 
-        camera_id: str, 
-        det_x: int, 
-        det_y: int,
-        class_id: int,
-        confidence: float
-    ) -> Tuple[VehicleTrack, bool]:
-        """
-        Match detection to existing track or create new one.
-        Returns: (track, is_new_vehicle)
-        """
-        # === NEW: Validate vehicle class ===
-        if not self._is_valid_vehicle_class(class_id):
-            logging.warning(f"⏭️  Invalid vehicle class {class_id} - skipping")
-            return None, False
-        
-        active_tracks = self.tracking_manager.get_active_tracks(camera_id)
-        now = datetime.datetime.now(datetime.timezone.utc)
-        
-        # Try to match to existing track (PRIORITIZE UNCOUNTED TRACKS)
-        best_match = None
-        best_match_uncounted = None
-        min_distance = float('inf')
-        min_distance_uncounted = float('inf')
-        
-        for track in active_tracks:
-            dist = np.sqrt((det_x - track.last_x)**2 + (det_y - track.last_y)**2)
-            
-            if dist <= MATCH_DISTANCE_THRESHOLD:
-                # Prioritize uncounted tracks (active vehicles being tracked)
-                if not track.counted and dist < min_distance_uncounted:
-                    min_distance_uncounted = dist
-                    best_match_uncounted = track
-                # Also track best counted match as fallback
-                elif track.counted and dist < min_distance:
-                    min_distance = dist
-                    best_match = track
-        
-        # Use uncounted track if available, otherwise use counted track
-        if best_match_uncounted:
-            track = best_match_uncounted
-            logging.debug(f"Matching to UNCOUNTED track: {track.track_id}")
-        elif best_match:
-            track = best_match
-            logging.debug(f"Matching to COUNTED track: {track.track_id}")
-        else:
-            track = None
-        
-        if track:
-            # Update existing track
-            dy = det_y - track.last_y
-            dx = det_x - track.last_x
-            track.last_x = det_x
-            track.last_y = det_y
-            track.lost_frames = 0
-            track.last_seen = now
-            track.class_id = class_id
-            track.confidence = confidence
-            
-            # Update movement vector - require vertical movement to indicate true vehicle
-            # FIXED - Track movement AND store velocity
-            if not track.counted:
-                # Store velocity for prediction
-                track.last_dx = dx
-                track.last_dy = dy
-                
-                # Increment vector strength if moving
-                if abs(dy) >= 2:
-                    track.vector_strength += 1
-                    logging.info(f"📍 Track {track.track_id} - Movement: dy={dy}, strength={track.vector_strength}/{MIN_VECTOR_STRENGTH}")
-                else:
-                    logging.debug(f"📍 Track {track.track_id} - Minimal movement: dy={dy}")
-            
-            # Check if should be counted
-            is_new_vehicle = False
-            if not track.counted and track.vector_strength >= MIN_VECTOR_STRENGTH:
-                track.counted = True
-                is_new_vehicle = True
-                logging.info(f"🎯 VEHICLE #{track.track_id} COUNTED! (Class: {class_id}, Movement confirmed)")
-            
-            self.tracking_manager.save_track(track)
-            return track, is_new_vehicle
-        
-        # === NEW: Check for re-appearance near RECENTLY COUNTED tracks (SAME CLASS ONLY) ===
-        for track in active_tracks:
-            if track.counted and track.class_id == class_id:
-                dist = np.sqrt((det_x - track.last_x)**2 + (det_y - track.last_y)**2)
-                if dist < REAPPEARANCE_DISTANCE:
-                    logging.warning(f"⚠️  Same class detection {class_id} near recently-counted track {track.track_id} - skipping (distance: {dist:.1f}px)")
-                    track.lost_frames = 0
-                    self.tracking_manager.save_track(track)
-                    return track, False  # Don't count again
-        
-        # === Create new track ===
-        new_track = VehicleTrack(
-            track_id=self.tracking_manager.get_next_track_id(camera_id),
-            camera_id=camera_id,
-            last_x=det_x,
-            last_y=det_y,
-            vector_strength=0,
-            counted=False,
-            lost_frames=0,
-            last_seen=now,
-            class_id=class_id,
-            confidence=confidence,
-            last_dx=0,
-            last_dy=0,
-        )
-        
-        self.tracking_manager.save_track(new_track)
-        logging.info(f"🆕 NEW TRACK: {new_track.track_id} (class: {class_id}) at ({det_x}, {det_y})")
-        return new_track, False  # New track, not yet counted
-
-    def _is_valid_vehicle_class(self, class_id: int) -> bool:
-        """Check if class_id is a valid vehicle (not OTHER)"""
-        if class_id == VehicleClass.OTHER.value:
-            return False
-        try:
-            VehicleClass(class_id)
-            return True
-        except ValueError:
-            return False
-        
-    def _update_all_tracks(self, camera_id: str):
-        """Update all tracks - increment lost_frames for missing vehicles"""
-        active_tracks = self.tracking_manager.get_active_tracks(camera_id)
-        
-        for track in active_tracks:
-            track.lost_frames += 1
-            
-            # Optional: Add simple position prediction based on last movement
-            # This helps bridge detection gaps
-            if hasattr(track, 'last_dx') and hasattr(track, 'last_dy'):
-                track.last_x += track.last_dx
-                track.last_y += track.last_dy
-
-                # Continue building vector strength during prediction
-                if not track.counted and abs(track.last_dy) >= 3:
-                    track.vector_strength += 1
-            
-            self.tracking_manager.save_track(track)
-        
-        logging.debug(f"Updated {len(active_tracks)} tracks for camera {camera_id}")
-
-    @staticmethod
-    def _select_frame(batch: np.ndarray) -> Tuple[np.ndarray, int]:
-        if batch.ndim == 4:
-            frame_idx = len(batch) // 2
-            return batch[frame_idx], frame_idx
-        return batch, 0
+    # @staticmethod
+    # def _select_frame(batch: np.ndarray) -> Tuple[np.ndarray, int]:
+    #     if batch.ndim == 4:
+    #         frame_idx = len(batch) // 2
+    #         return batch[frame_idx], frame_idx
+    #     return batch, 0
 
     @staticmethod
     def _normalize_to_uint8(arr: np.ndarray) -> np.ndarray:
@@ -754,147 +548,155 @@ class ProcessingService:
             return None
 
     def process_task(self, task: ProcessingTask) -> Dict[str, Any]:
-        """Process task with tracking to prevent double-counting"""
+        """Process task - just do inference and save to DB"""
         batch_object = None
-        
+
         try:
             if not task.object_key_or_prefix:
-                logging.error(f"❌ CRITICAL: Empty object_key_or_prefix for task {task.task_id}")
-                logging.error(f"Task data: camera_id={task.camera_id}, bucket={task.minio_bucket}")
+                logging.error(f"Empty object_key_or_prefix for task {task.task_id}")
                 return {"status": "error", "reason": "Missing object key"}
             
-            # ✅ VALIDATE: Ensure object key contains camera ID
             if task.camera_id not in task.object_key_or_prefix:
-                logging.error(
-                    f"❌ CRITICAL BUG DETECTED: "
-                    f"camera_id '{task.camera_id}' not in object_key '{task.object_key_or_prefix}'"
-                )
+                logging.error(f"Camera ID mismatch in object_key")
                 return {"status": "error", "reason": "Camera ID mismatch"}
             
-            logging.info(
-                f"✅ Processing: camera={task.camera_id}, "
-                f"object={task.object_key_or_prefix}"
-            )
-            logging.info(f"\n--- Processing Task: {task.task_id} ---")
-            
-            # Clean up stale tracks
-            self._update_all_tracks(task.camera_id)
-            self.tracking_manager.cleanup_stale_tracks(task.camera_id)
-            
-            # === NEW: Wait indefinitely for .npy file ===
-            logging.info(f"Waiting for .npy file in {task.minio_bucket}/{task.object_key_or_prefix}...")
+            # Wait for .npy file
             batch_object = self.minio_manager.wait_for_npy_file(
                 bucket=task.minio_bucket,
-                prefix=task.object_key_or_prefix
+                prefix=task.object_key_or_prefix,
+                timeout_seconds=self.npy_timeout
             )
 
+            if batch_object is None:
+                logging.error(f"Failed to retrieve .npy file - timeout")
+                return {"status": "timeout_npy_file", "task_id": task.task_id}
+
             # Download to RAM
-            logging.info(f"Downloading {batch_object} to memory...")
             data_bytes = self.minio_manager.get_object_data(
                 bucket=task.minio_bucket,
                 object_name=batch_object
             )
 
-            with BytesIO(data_bytes) as bio:
-                batch_data = np.load(bio)
+            try:
+                with BytesIO(data_bytes) as bio:
+                    batch_data = np.load(bio)
+                
+                if batch_data.size == 0:
+                    return {"status": "empty_batch", "task_id": task.task_id}
+                    
+                if batch_data.ndim not in (3, 4):
+                    return {"status": "invalid_shape", "task_id": task.task_id}
+                    
+            except Exception as e:
+                logging.error(f"Failed to load batch: {e}")
+                return {"status": "corrupt_batch", "task_id": task.task_id}
 
-            # Extract frame and run inference
-            selected_frame, frame_idx = self._select_frame(batch_data)
-            frame_uint8 = self._normalize_to_uint8(selected_frame)
-            class_id, total_fee, confidence, bbox = self._run_inference(frame_uint8)
+            # Process frame(s)
+            if batch_data.ndim == 4:
+                # Multiple frames
+                for frame_idx, frame in enumerate(batch_data):
+                    frame_uint8 = self._normalize_to_uint8(frame)
+                    class_id, total_fee, confidence, bbox = self._run_inference(frame_uint8)
+                    
+                    # Skip invalid detections
+                    if bbox is None or class_id == VehicleClass.OTHER.value:
+                        continue
 
-            # === Skip if invalid detection ===
-            if bbox is None or not self._is_valid_vehicle_class(class_id):
-                logging.warning(f"⏭️  Skipping frame - invalid detection")
+                    # Convert and upload image
+                    minio_path = self.convert_npy_to_jpg(
+                        npy_array=frame_uint8,
+                        frame_index=frame_idx,
+                        camera_id=task.camera_id,
+                        task_id=task.task_id,
+                        quality=JPG_QUALITY
+                    )
+
+                    if not minio_path:
+                        continue
+
+                    # Generate unique track_id if not provided
+                    track_id = task.track_id or f"{task.camera_id}_{task.task_id}_f{frame_idx}"
+
+                    # Save transaction
+                    transaction = VehicleTransaction(
+                        camera_id=task.camera_id,
+                        track_id=track_id,
+                        class_id=class_id,
+                        total_fee=total_fee,
+                        time_stamp=task.timestamp or datetime.datetime.now(datetime.timezone.utc),
+                        img_path=minio_path,
+                        confidence=confidence,
+                    )
+                    
+                    try:
+                        self.db.insert_transaction(transaction)
+                        logging.info(f"✅ Saved transaction for {track_id}")
+                    except Exception as e:
+                        logging.error(f"DB insert failed: {e}")
+                
                 return {
-                    "status": "skipped_invalid_class",
+                    "status": "success",
                     "task_id": task.task_id,
-                    "class_id": class_id,
-                    "reason": "Invalid detection"
+                    "frames_processed": len(batch_data)
                 }
+                
+            else:  # Single frame
+                frame_uint8 = self._normalize_to_uint8(batch_data)
+                class_id, total_fee, confidence, bbox = self._run_inference(frame_uint8)
 
-            # Get detection center (or use provided coordinates)
-            if task.detection_x is not None and task.detection_y is not None:
-                det_x, det_y = task.detection_x, task.detection_y
-            else:
-                det_x, det_y = self._get_detection_center_from_bbox(bbox)
+                if bbox is None or class_id == VehicleClass.OTHER.value:
+                    return {"status": "skipped_invalid_class", "task_id": task.task_id}
 
-            logging.info(f"🎯 Detection at ({det_x}, {det_y}) - Class: {class_id}, Conf: {confidence:.2f}")
+                # Convert and upload image
+                minio_path = self.convert_npy_to_jpg(
+                    npy_array=frame_uint8,
+                    frame_index=0,
+                    camera_id=task.camera_id,
+                    task_id=task.task_id,
+                    quality=JPG_QUALITY
+                )
 
-            # === TRACKING LOGIC ===
-            track, is_new_vehicle = self._match_or_create_track(
-                camera_id=task.camera_id,
-                det_x=det_x,
-                det_y=det_y,
-                class_id=class_id,
-                confidence=confidence
-            )
+                if not minio_path:
+                    return {"status": "upload_failed", "task_id": task.task_id}
 
-            # === Handle invalid track ===
-            if track is None:
+                # Generate unique track_id if not provided
+                track_id = task.track_id or f"{task.camera_id}_{task.task_id}"
+
+                # Save transaction
+                transaction = VehicleTransaction(
+                    camera_id=task.camera_id,
+                    track_id=track_id,
+                    class_id=class_id,
+                    total_fee=total_fee,
+                    time_stamp=task.timestamp or datetime.datetime.now(datetime.timezone.utc),
+                    img_path=minio_path,
+                    confidence=confidence,
+                )
+                
+                try:
+                    self.db.insert_transaction(transaction)
+                except Exception as e:
+                    logging.error(f"DB insert exception: {e}")
+                    return {"status": "db_insert_exception", "task_id": task.task_id}
+
                 return {
-                    "status": "skipped_invalid_class",
+                    "status": "success",
                     "task_id": task.task_id,
-                    "reason": "Invalid vehicle class"
+                    "track_id": track_id,
+                    "output_image": minio_path,
+                    "transaction": transaction.to_dict(),
                 }
-
-            # Only save transaction if this is a NEW counted vehicle
-            if not is_new_vehicle:
-                logging.info(f"⏭️  NOT COUNTING YET: {track.track_id} (vector_strength: {track.vector_strength}/{MIN_VECTOR_STRENGTH})")
-                return {
-                    "status": "skipped_not_ready",
-                    "task_id": task.task_id,
-                    "track_id": track.track_id,
-                    "vector_strength": track.vector_strength,
-                    "reason": "Vehicle still building movement history"
-                }
-
-            # Convert and upload image
-            minio_path = self.convert_npy_to_jpg(
-                npy_array=frame_uint8,
-                frame_index=frame_idx,
-                camera_id=task.camera_id,
-                task_id=task.task_id,
-                quality=JPG_QUALITY
-            )
-
-            if not minio_path:
-                return {"status": "upload_failed", "task_id": task.task_id}
-
-            # Save transaction
-            transaction = VehicleTransaction(
-                camera_id=task.camera_id,
-                track_id=track.track_id,
-                class_id=class_id,
-                total_fee=total_fee,
-                time_stamp=task.timestamp or datetime.datetime.now(datetime.timezone.utc),
-                img_path=minio_path,
-                confidence=confidence,
-            )
-            self.db.insert_transaction(transaction)
-
-            return {
-                "status": "success",
-                "task_id": task.task_id,
-                "track_id": track.track_id,
-                "output_image": minio_path,
-                "transaction": transaction.to_dict(),
-                "new_vehicle": True
-            }
 
         except Exception as e:
-            logging.error(f"✗ Batch processing failed: {e}")
+            logging.error(f"Batch processing failed: {e}")
             return {"status": "error", "task_id": task.task_id, "error": str(e)}
 
         finally:
             if batch_object and task.minio_bucket:
                 try:
                     self.minio_manager.delete_object(task.minio_bucket, batch_object)
-                    logging.info(f"✓ Deleted source batch: {batch_object}")
                 except Exception as e:
-                    logging.warning(f"⚠ Cleanup failed: {e}")
-
-
+                    logging.warning(f"Cleanup failed: {e}")
 def main():
     """Main entry point - single queue, handles all cameras dynamically"""
     logging.info("Initializing Processing Service with Tracking...")
@@ -923,6 +725,7 @@ def main():
         "db_password": os.getenv("POSTGRES_PASSWORD"),
         "mlflow_tracking_uri": os.getenv("MLFLOW_TRACKING_URI", "http://mlflow-server:5000"),
         "model_uri": os.getenv("MODEL_URI", "models:/Truck_classification_Model/Production"),
+        "npy_timeout_seconds": int(os.getenv("NPY_TIMEOUT_SECONDS")),
     }
 
     redis_manager = RedisQueueManager(host=config["redis_host"], port=config["redis_port"])
@@ -938,15 +741,41 @@ def main():
                 result = redis_manager.client.blpop(redis_manager.queue_name, timeout=5)
                 if result:
                     _, task_json = result
-                    # Parse to log camera_id (optional, for monitoring)
-                    try:
-                        task_data = json.loads(task_json)
-                        camera_id = task_data.get("camera_id", "unknown")
-                        logging.debug(f"Processing task for camera: {camera_id}")
-                    except:
-                        pass
                     
-                    executor.submit(task_handler, task_json)
+                    # Submit task and track result
+                    future = executor.submit(task_handler, task_json)
+                  
+                    def handle_result(future):
+                        try:
+                            result = future.result()
+                           
+                            if result.get("status") == "timeout_npy_file":
+                                task_data = json.loads(task_json)
+                                retry_count = task_data.get("retry_count", 0)
+                                
+                                if retry_count < MAX_RETRIES:
+                                    logging.warning(
+                                        f"Task timed out (attempt {retry_count + 1}/{MAX_RETRIES}), "
+                                        f"re-pushing to queue: {result.get('task_id')}"
+                                    )       
+                                    # Increment retry counter
+                                    task_data["retry_count"] = retry_count + 1
+                                    updated_task_json = json.dumps(task_data)    
+                                    # Re-push with updated counter
+                                    redis_manager.client.rpush(redis_manager.queue_name, updated_task_json)
+                                else:
+                                    logging.error(
+                                        f"❌ Task {result.get('task_id')} FAILED after {MAX_RETRIES} retries - "
+                                        f"ingestion service may be broken!"
+                                    )
+                                    # Optional: Push to dead-letter queue for manual inspection
+                                    redis_manager.client.rpush("failed_tasks", task_json)
+                                    
+                        except Exception as e:
+                            logging.error(f"Task failed: {e}")
+                    
+                    future.add_done_callback(handle_result)
+                    
         except KeyboardInterrupt:
             logging.info("\nShutting down worker pool...")
         except Exception as e:

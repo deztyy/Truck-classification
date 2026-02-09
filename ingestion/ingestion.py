@@ -25,7 +25,8 @@ from minio.error import S3Error
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.WARNING, 
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -150,7 +151,7 @@ class VideoIngestor:
         # Thread-safe lock for health status updates
         self.health_status_lock = Lock()
 
-        logger.info(f"VideoIngestor initialized for camera: {self.camera_id}")
+        logger.warning(f"VideoIngestor initialized for camera: {self.camera_id}")
 
     def _initialize_minio(self) -> Minio:
         """
@@ -177,7 +178,7 @@ class VideoIngestor:
                 "MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY"
             )
 
-        logger.info(f"Connecting to MinIO at {endpoint} (secure={secure})")
+        logger.warning(f"Connecting to MinIO at {endpoint} (secure={secure})")
 
         return Minio(
             endpoint, access_key=access_key, secret_key=secret_key, secure=secure
@@ -240,9 +241,9 @@ class VideoIngestor:
         try:
             if not self.minio_client.bucket_exists(self.minio_bucket_name):
                 self.minio_client.make_bucket(self.minio_bucket_name)
-                logger.info(f"Created MinIO bucket: {self.minio_bucket_name}")
+                logger.debug(f"Created MinIO bucket: {self.minio_bucket_name}")
             else:
-                logger.info(f"MinIO bucket exists: {self.minio_bucket_name}")
+                logger.debug(f"MinIO bucket exists: {self.minio_bucket_name}")
         except S3Error as e:
             logger.error(f"Error checking/creating bucket: {e}")
             raise
@@ -331,7 +332,7 @@ class VideoIngestor:
         Periodically check stream health by detecting stalls and timeouts.
         Runs in a separate thread.
         """
-        logger.info(f"Health check thread started for camera: {self.camera_id}")
+        logger.warning(f"Health check thread started for camera: {self.camera_id}")
 
         while self.is_running:
             try:
@@ -563,7 +564,7 @@ class VideoIngestor:
                 content_type=MINIO_CONTENT_TYPE,
             )
 
-            logger.info(
+            logger.debug(
                 f"Uploaded batch to MinIO: {batch_object_key} ({buffer_size} bytes)"
             )
             self.total_batches_uploaded += 1
@@ -617,7 +618,7 @@ class VideoIngestor:
             metadata_json = json.dumps(batch_metadata)
             self.redis_client.rpush(self.redis_list_name, metadata_json)
 
-            logger.info(f"Published metadata to Redis list: {self.redis_list_name}")
+            logger.debug(f"Published metadata to Redis list: {self.redis_list_name}")
             logger.debug(f"Metadata: {batch_metadata}")
 
             return True
@@ -673,7 +674,7 @@ class VideoIngestor:
         - Add more sophisticated health check reporting
         - Implement graceful shutdown on signals
         """
-        logger.info(f"Starting video ingestion for camera: {self.camera_id}")
+        logger.warning(f"Starting video ingestion for camera: {self.camera_id}")
 
         # Start health check thread
         self._start_health_check_thread()
@@ -763,7 +764,7 @@ class VideoIngestor:
 
         self._close_video_source()
         precision = DOWNTIME_PRECISION_DECIMALS
-        logger.info(
+        logger.warning(
             f"Ingestion stopped. Final statistics - "
             f"Frames: {self.total_frames_processed}, "
             f"Batches: {self.total_batches_uploaded}, "
