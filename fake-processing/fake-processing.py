@@ -25,7 +25,7 @@ from PIL import Image
 from concurrent.futures import ProcessPoolExecutor
 
 logging.basicConfig(
-    level=logging.WARNING,
+    level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 
@@ -55,7 +55,6 @@ def task_handler(task_json: str):
         logging.error(f"Task processing error: {e}")
         logging.error(f"Worker PID {os.getpid()} failed task: {e}")
         return {"status": "error", "error": str(e)}
-
 
 class VehicleClass(Enum):
     CAR = 0
@@ -121,10 +120,6 @@ class ProcessingTask:
     def from_json(cls, json_str: str) -> "ProcessingTask":
         try:
             data = json.loads(json_str)
-            if not data.get("task_id"):
-                raise ValueError("Missing required field: task_id")
-            if not data.get("camera_id"):
-                raise ValueError("Missing required field: camera_id")
             return cls(
                 task_id=data.get("task_id") or data.get("batch_id") or "unknown",
                 camera_id=data.get("camera_id", "unknown"),
@@ -160,18 +155,18 @@ class RedisQueueManager:
         try:
             self.client = redis.Redis(host=host, port=port, db=db, decode_responses=True)
             self.client.ping()
-            logging.info(f"✓ Redis connected: {host}:{port}/{db}")
+            # logging.info(f"✓ Redis connected: {host}:{port}/{db}")
         except Exception as e:
-            logging.error(f"✗ Redis connection failed: {e}")
+            # logging.error(f"✗ Redis connection failed: {e}")
             raise
 
     def push_task(self, task: ProcessingTask) -> bool:
         try:
             self.client.rpush(self.queue_name, task.to_json())
-            logging.info(f"✓ Task pushed: {task.task_id}")
+            # logging.info(f"✓ Task pushed: {task.task_id}")
             return True
         except Exception as e:
-            logging.error(f"✗ Push failed: {e}")
+            # logging.error(f"✗ Push failed: {e}")
             return False
 
 class MinIOManager:
@@ -180,7 +175,7 @@ class MinIOManager:
     def __init__(self, endpoint: str, access_key: str, secret_key: str, secure: bool = False):
         self.endpoint = endpoint
         self.client = Minio(endpoint=endpoint, access_key=access_key, secret_key=secret_key, secure=secure)
-        logging.info(f"✓ MinIO connected: {endpoint}")
+        # logging.info(f"✓ MinIO connected: {endpoint}")
 
     def create_bucket(self, bucket_name: str) -> bool:
         try:
@@ -188,16 +183,16 @@ class MinIOManager:
                 self.client.make_bucket(bucket_name)
             return True
         except S3Error as e:
-            logging.error(f"✗ Create bucket failed: {e}")
+            # logging.error(f"✗ Create bucket failed: {e}")
             return False
 
     def upload_from_bytes(self, bucket: str, object_name: str, data: bytes, content_type: str = "application/octet-stream") -> bool:
         try:
             self.client.put_object(bucket, object_name, BytesIO(data), length=len(data), content_type=content_type)
-            logging.info(f"✓ Uploaded: {bucket}/{object_name}")
+            # logging.info(f"✓ Uploaded: {bucket}/{object_name}")
             return True
         except S3Error as e:
-            logging.error(f"✗ Upload failed: {e}")
+            # logging.error(f"✗ Upload failed: {e}")
             return False
 
     def list_objects(self, bucket: str, prefix: str = "") -> List[Dict]:
@@ -205,16 +200,16 @@ class MinIOManager:
             objects = self.client.list_objects(bucket, prefix=prefix, recursive=True)
             return [{"name": obj.object_name, "size": obj.size, "last_modified": obj.last_modified} for obj in objects]
         except S3Error as e:
-            logging.error(f"✗ List objects failed: {e}")
+            # logging.error(f"✗ List objects failed: {e}")
             return []
 
     def delete_object(self, bucket: str, object_name: str) -> bool:
         try:
             self.client.remove_object(bucket, object_name)
-            logging.info(f"✓ Deleted: {bucket}/{object_name}")
+            # logging.info(f"✓ Deleted: {bucket}/{object_name}")
             return True
         except S3Error as e:
-            logging.error(f"✗ Delete failed: {e}")
+            # logging.error(f"✗ Delete failed: {e}")
             return False
 
     def get_object_data(self, bucket: str, object_name: str) -> bytes:
@@ -223,7 +218,7 @@ class MinIOManager:
             response = self.client.get_object(bucket, object_name)
             return response.read()
         except S3Error as e:
-            logging.error(f"✗ Direct download failed: {e}")
+            # logging.error(f"✗ Direct download failed: {e}")
             raise
         finally:
             if response:
@@ -232,6 +227,7 @@ class MinIOManager:
     
     def wait_for_npy_file(self, bucket: str, prefix: str, retry_delay: float = RETRY_DELAY, 
                        timeout_seconds: int = 300) -> Optional[str]:
+        logging.info(f"   - prefix: '{prefix}'")
         try:
             if not self.client.bucket_exists(bucket):
                 logging.error(f"✗ Bucket '{bucket}' does not exist")
@@ -308,7 +304,6 @@ class MinIOManager:
                 logging.error(f"Error checking for .npy file (attempt {attempt}): {e}")
                 time.sleep(retry_delay)
 
-
 class PostgreSQLDatabase:
     """Manages PostgreSQL database operations"""
     _pool = None
@@ -354,14 +349,13 @@ class PostgreSQLDatabase:
                     transaction.total_fee, transaction.time_stamp, transaction.img_path,
                     transaction.confidence,
                 ))
-                conn.commit()
-                logging.info(f"✓ Transaction saved: {transaction.track_id}")
-                return True
+            conn.commit()
+            logging.info(f"✓ Transaction saved: {transaction.track_id}")
+            return True
         except Exception as e:
             conn.rollback()
+            logging.error(f"✗ Insert failed: {e}")
             raise
-        else:
-            conn.commit()
         finally:
             self._pool.putconn(conn)
 
@@ -395,7 +389,7 @@ class ProcessingService:
         minio_secure: bool = False,
         mlflow_tracking_uri: str = os.getenv("MLFLOW_TRACKING_URI"),
         model_uri: str = os.getenv("MODEL_URI"),
-        npy_timeout_seconds: int = int(os.getenv("NPY_TIMEOUT_SECONDS", "300")),
+        npy_timeout_seconds: int = int(os.getenv("NPY_TIMEOUT_SECONDS")),
     ):
         # Initialize Redis for tracking
         self.redis_client = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
@@ -597,6 +591,8 @@ class ProcessingService:
                 for frame_idx, frame in enumerate(batch_data):
                     frame_uint8 = self._normalize_to_uint8(frame)
                     class_id, total_fee, confidence, bbox = self._run_inference(frame_uint8)
+
+                    """ Call Aik's tracking logic function"""
                     
                     # Skip invalid detections
                     if bbox is None or class_id == VehicleClass.OTHER.value:
@@ -643,6 +639,8 @@ class ProcessingService:
             else:  # Single frame
                 frame_uint8 = self._normalize_to_uint8(batch_data)
                 class_id, total_fee, confidence, bbox = self._run_inference(frame_uint8)
+
+                """ Call Aik's tracking logic function"""
 
                 if bbox is None or class_id == VehicleClass.OTHER.value:
                     return {"status": "skipped_invalid_class", "task_id": task.task_id}
@@ -704,7 +702,7 @@ def main():
     required_vars = [
         "REDIS_HOST", "REDIS_PORT", "MINIO_ENDPOINT", "MINIO_ACCESS_KEY",
         "MINIO_SECRET_KEY", "DB_HOST", "DB_PORT", "POSTGRES_DB",
-        "POSTGRES_USER", "POSTGRES_PASSWORD",
+        "POSTGRES_USER", "POSTGRES_PASSWORD","NPY_TIMEOUT_SECONDS"
     ]
 
     missing_vars = [var for var in required_vars if not os.getenv(var)]
@@ -748,7 +746,6 @@ def main():
                     def handle_result(future):
                         try:
                             result = future.result()
-                           
                             if result.get("status") == "timeout_npy_file":
                                 task_data = json.loads(task_json)
                                 retry_count = task_data.get("retry_count", 0)
