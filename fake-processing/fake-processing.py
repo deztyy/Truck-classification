@@ -151,6 +151,7 @@ class RedisQueueManager:
         self.port = port
         self.db = db
         self.queue_name = queue_name
+        self.notification_channel = f"{queue_name}:notifications"
 
         try:
             self.client = redis.Redis(host=host, port=port, db=db, decode_responses=True)
@@ -226,7 +227,7 @@ class MinIOManager:
                 response.release_conn()
     
     def wait_for_npy_file(self, bucket: str, prefix: str, retry_delay: float = RETRY_DELAY, 
-                       timeout_seconds: int = 300) -> Optional[str]:
+                       timeout_seconds: int = 10) -> Optional[str]:
         logging.info(f"   - prefix: '{prefix}'")
         try:
             if not self.client.bucket_exists(bucket):
@@ -541,6 +542,55 @@ class ProcessingService:
             logging.error(f"✗ Error converting frame: {e}")
             return None
 
+    def _process_single_frame(self, frame: np.ndarray, frame_idx: int, task: ProcessingTask) -> Optional[Dict]:
+        """Process a single frame and return transaction info or None if skipped"""
+        frame_uint8 = self._normalize_to_uint8(frame)
+        class_id, total_fee, confidence, bbox = self._run_inference(frame_uint8)
+
+        """ Call Aik's tracking logic function"""
+
+        # Skip invalid detections
+        if bbox is None or class_id == VehicleClass.OTHER.value:
+            return None
+
+        # Convert and upload image
+        minio_path = self.convert_npy_to_jpg(
+            npy_array=frame_uint8,
+            frame_index=frame_idx,
+            camera_id=task.camera_id,
+            task_id=task.task_id,
+            quality=JPG_QUALITY
+        )
+
+        if not minio_path:
+            return None
+
+        # Generate unique track_id if not provided
+        track_id = task.track_id or f"{task.camera_id}_{task.task_id}_f{frame_idx}"
+
+        # Save transaction
+        transaction = VehicleTransaction(
+            camera_id=task.camera_id,
+            track_id=track_id,
+            class_id=class_id,
+            total_fee=total_fee,
+            time_stamp=task.timestamp or datetime.datetime.now(datetime.timezone.utc),
+            img_path=minio_path,
+            confidence=confidence,
+        )
+        
+        try:
+            self.db.insert_transaction(transaction)
+            logging.info(f"✅ Saved transaction for {track_id}")
+            return {
+                "track_id": track_id,
+                "minio_path": minio_path,
+                "transaction": transaction.to_dict()
+            }
+        except Exception as e:
+            logging.error(f"DB insert failed: {e}")
+            return None
+
     def process_task(self, task: ProcessingTask) -> Dict[str, Any]:
         """Process task - just do inference and save to DB"""
         batch_object = None
@@ -586,104 +636,24 @@ class ProcessingService:
                 return {"status": "corrupt_batch", "task_id": task.task_id}
 
             # Process frame(s)
-            if batch_data.ndim == 4:
-                # Multiple frames
-                for frame_idx, frame in enumerate(batch_data):
-                    frame_uint8 = self._normalize_to_uint8(frame)
-                    class_id, total_fee, confidence, bbox = self._run_inference(frame_uint8)
-
-                    """ Call Aik's tracking logic function"""
-                    
-                    # Skip invalid detections
-                    if bbox is None or class_id == VehicleClass.OTHER.value:
-                        continue
-
-                    # Convert and upload image
-                    minio_path = self.convert_npy_to_jpg(
-                        npy_array=frame_uint8,
-                        frame_index=frame_idx,
-                        camera_id=task.camera_id,
-                        task_id=task.task_id,
-                        quality=JPG_QUALITY
-                    )
-
-                    if not minio_path:
-                        continue
-
-                    # Generate unique track_id if not provided
-                    track_id = task.track_id or f"{task.camera_id}_{task.task_id}_f{frame_idx}"
-
-                    # Save transaction
-                    transaction = VehicleTransaction(
-                        camera_id=task.camera_id,
-                        track_id=track_id,
-                        class_id=class_id,
-                        total_fee=total_fee,
-                        time_stamp=task.timestamp or datetime.datetime.now(datetime.timezone.utc),
-                        img_path=minio_path,
-                        confidence=confidence,
-                    )
-                    
-                    try:
-                        self.db.insert_transaction(transaction)
-                        logging.info(f"✅ Saved transaction for {track_id}")
-                    except Exception as e:
-                        logging.error(f"DB insert failed: {e}")
-                
-                return {
-                    "status": "success",
-                    "task_id": task.task_id,
-                    "frames_processed": len(batch_data)
-                }
-                
-            else:  # Single frame
-                frame_uint8 = self._normalize_to_uint8(batch_data)
-                class_id, total_fee, confidence, bbox = self._run_inference(frame_uint8)
-
-                """ Call Aik's tracking logic function"""
-
-                if bbox is None or class_id == VehicleClass.OTHER.value:
-                    return {"status": "skipped_invalid_class", "task_id": task.task_id}
-
-                # Convert and upload image
-                minio_path = self.convert_npy_to_jpg(
-                    npy_array=frame_uint8,
-                    frame_index=0,
-                    camera_id=task.camera_id,
-                    task_id=task.task_id,
-                    quality=JPG_QUALITY
-                )
-
-                if not minio_path:
-                    return {"status": "upload_failed", "task_id": task.task_id}
-
-                # Generate unique track_id if not provided
-                track_id = task.track_id or f"{task.camera_id}_{task.task_id}"
-
-                # Save transaction
-                transaction = VehicleTransaction(
-                    camera_id=task.camera_id,
-                    track_id=track_id,
-                    class_id=class_id,
-                    total_fee=total_fee,
-                    time_stamp=task.timestamp or datetime.datetime.now(datetime.timezone.utc),
-                    img_path=minio_path,
-                    confidence=confidence,
-                )
-                
-                try:
-                    self.db.insert_transaction(transaction)
-                except Exception as e:
-                    logging.error(f"DB insert exception: {e}")
-                    return {"status": "db_insert_exception", "task_id": task.task_id}
-
-                return {
-                    "status": "success",
-                    "task_id": task.task_id,
-                    "track_id": track_id,
-                    "output_image": minio_path,
-                    "transaction": transaction.to_dict(),
-                }
+            if batch_data.ndim == 3:
+                batch_data = np.expand_dims(batch_data, axis=0)  # Make it (1, H, W, C)
+            
+            processed_count = 0
+            results = []
+            
+            for frame_idx, frame in enumerate(batch_data):
+                result = self._process_single_frame(frame, frame_idx, task)
+                if result:
+                    processed_count += 1
+                    results.append(result)
+            
+            return {
+                "status": "success",
+                "task_id": task.task_id,
+                "frames_processed": processed_count,
+                "results": results
+            }
 
         except Exception as e:
             logging.error(f"Batch processing failed: {e}")
@@ -733,51 +703,95 @@ def main():
     logging.info(f"Monitoring single queue: {redis_manager.queue_name}")
     logging.info("Will handle any camera_id dynamically from task metadata")
 
+    # Create Pub/Sub client
+    pubsub_client = redis.Redis(
+        host=config["redis_host"], 
+        port=config["redis_port"], 
+        decode_responses=True
+    )
+    pubsub = pubsub_client.pubsub()
+    pubsub.subscribe(redis_manager.notification_channel)
+    
+    logging.info(f"📡 Subscribed to notification channel: {redis_manager.notification_channel}")
+
+    # Callback function for handling results
+    def handle_result(future, task_json):
+        try:
+            result = future.result()
+            
+            # Log the actual result
+            if result.get("status") == "success":
+                logging.info(f"✅ COMPLETED: {result.get('task_id')} - Saved to DB")
+            elif result.get("status") == "timeout_npy_file":
+                task_data = json.loads(task_json)
+                retry_count = task_data.get("retry_count", 0)
+                
+                if retry_count < MAX_RETRIES:
+                    logging.warning(
+                        f"⚠️ TIMEOUT: {result.get('task_id')} - Retrying ({retry_count + 1}/{MAX_RETRIES})"
+                    )       
+                    task_data["retry_count"] = retry_count + 1
+                    updated_task_json = json.dumps(task_data)    
+                    redis_manager.client.rpush(redis_manager.queue_name, updated_task_json)
+                    redis_manager.client.publish(redis_manager.notification_channel, "new_task")
+                else:
+                    logging.error(
+                        f"❌ FAILED: {result.get('task_id')} - Max retries exceeded"
+                    )
+                    redis_manager.client.rpush("failed_tasks", task_json)
+            else:
+                # Log other statuses
+                logging.warning(f"⚠️ INCOMPLETE: {result.get('task_id')} - Status: {result.get('status')}")
+                    
+        except Exception as e:
+            logging.error(f"❌ EXCEPTION: Task processing failed - {e}")
+
     with ProcessPoolExecutor(max_workers=num_workers, initializer=worker_service, initargs=(config,)) as executor:
         try:
+            # Check for existing tasks on startup
+            logging.info("🔍 Checking for existing tasks in queue...")
+            startup_tasks = 0
             while True:
-                result = redis_manager.client.blpop(redis_manager.queue_name, timeout=5)
-                if result:
-                    _, task_json = result
+                result = redis_manager.client.lpop(redis_manager.queue_name)
+                if not result:
+                    break
+                startup_tasks += 1
+                task_json = result
+                future = executor.submit(task_handler, task_json)
+                future.add_done_callback(lambda f, t=task_json: handle_result(f, t))
+            
+            if startup_tasks > 0:
+                logging.info(f"✅ Found and dispatched {startup_tasks} existing tasks")
+            else:
+                logging.info("✅ Queue was empty on startup")
+            
+            # Listen for notifications
+            logging.info("👂 Listening for new task notifications...")
+            for message in pubsub.listen():
+                if message['type'] == 'message':
+                    logging.info("🔔 Received notification: New task available!")
                     
-                    # Submit task and track result
-                    future = executor.submit(task_handler, task_json)
-                  
-                    def handle_result(future):
-                        try:
-                            result = future.result()
-                            if result.get("status") == "timeout_npy_file":
-                                task_data = json.loads(task_json)
-                                retry_count = task_data.get("retry_count", 0)
-                                
-                                if retry_count < MAX_RETRIES:
-                                    logging.warning(
-                                        f"Task timed out (attempt {retry_count + 1}/{MAX_RETRIES}), "
-                                        f"re-pushing to queue: {result.get('task_id')}"
-                                    )       
-                                    # Increment retry counter
-                                    task_data["retry_count"] = retry_count + 1
-                                    updated_task_json = json.dumps(task_data)    
-                                    # Re-push with updated counter
-                                    redis_manager.client.rpush(redis_manager.queue_name, updated_task_json)
-                                else:
-                                    logging.error(
-                                        f"❌ Task {result.get('task_id')} FAILED after {MAX_RETRIES} retries - "
-                                        f"ingestion service may be broken!"
-                                    )
-                                    # Optional: Push to dead-letter queue for manual inspection
-                                    redis_manager.client.rpush("failed_tasks", task_json)
-                                    
-                        except Exception as e:
-                            logging.error(f"Task failed: {e}")
+                    # Process all available tasks
+                    tasks_dispatched = 0
+                    while True:
+                        result = redis_manager.client.lpop(redis_manager.queue_name)
+                        if not result:
+                            break
+                        
+                        tasks_dispatched += 1
+                        task_json = result
+                        future = executor.submit(task_handler, task_json)
+                        future.add_done_callback(lambda f, t=task_json: handle_result(f, t))
                     
-                    future.add_done_callback(handle_result)
-                    
+                    if tasks_dispatched > 0:
+                        logging.info(f"✅ Dispatched {tasks_dispatched} task(s)")
+                        
         except KeyboardInterrupt:
             logging.info("\nShutting down worker pool...")
+            pubsub.close()
         except Exception as e:
             logging.error(f"Worker pool error: {e}")
+            pubsub.close()
             raise
-
 if __name__ == "__main__":
     main()
