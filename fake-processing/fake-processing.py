@@ -24,6 +24,12 @@ from minio.error import S3Error
 from PIL import Image
 from concurrent.futures import ProcessPoolExecutor
 
+# ==========================================
+# [NEW] Import for Aik's Tracking Logic
+# ==========================================
+import supervision as sv
+from collections import defaultdict
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -407,7 +413,19 @@ class ProcessingService:
         local_model_path = mlflow.artifacts.download_artifacts(artifact_uri=model_uri)
         onnx_path = os.path.join(local_model_path, "model.onnx")
         self.session = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
-        logging.info("✓ ProcessingService initialized with tracking")
+        
+        # =========================================================
+        # [NEW] Aik's Tracking Logic State
+        # =========================================================
+        self.trackers = {}          # Store ByteTrack instances per camera_id
+        self.track_histories = {}   # Store track positions per camera_id
+        self.counted_ids = {}       # Store counted IDs per camera_id
+        self.line_configs = {       # Line configurations
+            "line1_pos": 0.40,
+            "line2_pos": 0.70
+        }
+        
+        logging.info("✓ ProcessingService initialized with tracking & Aik's Logic")
 
     def _run_inference(self, frame: np.ndarray) -> Tuple[int, float, float, Optional[Tuple[int, int, int, int]]]:
         try:
@@ -419,7 +437,7 @@ class ProcessingService:
             
             # === NEW: Filter out OTHER class ===
             if class_id == VehicleClass.OTHER.value:
-                logging.warning(f"⏭️  Ignoring OTHER class detection - not a real vehicle")
+                # logging.warning(f"⏭️  Ignoring OTHER class detection - not a real vehicle")
                 return class_id, 0.0, 0.0, None
             
             vehicle_info = self.db.get_vehicle_class(class_id)
@@ -479,13 +497,6 @@ class ProcessingService:
         
         return center_x, center_y
 
-    # @staticmethod
-    # def _select_frame(batch: np.ndarray) -> Tuple[np.ndarray, int]:
-    #     if batch.ndim == 4:
-    #         frame_idx = len(batch) // 2
-    #         return batch[frame_idx], frame_idx
-    #     return batch, 0
-
     @staticmethod
     def _normalize_to_uint8(arr: np.ndarray) -> np.ndarray:
         if arr.dtype in (np.float32, np.float64):
@@ -542,12 +553,100 @@ class ProcessingService:
             logging.error(f"✗ Error converting frame: {e}")
             return None
 
+    # =========================================================
+    # [NEW] Aik's Tracking Logic Function
+    # =========================================================
+    def _run_aik_tracking(self, camera_id: str, class_id: int, confidence: float, 
+                          bbox: Optional[Tuple[int, int, int, int]], frame_idx: int) -> Tuple[Optional[str], bool]:
+        """
+        Aik's tracking logic: Use ByteTrack and check Line Crossing
+        """
+        if bbox is None:
+            return None, False
+
+        # Initialize Tracker for this camera if needed
+        if camera_id not in self.trackers:
+            self.trackers[camera_id] = sv.ByteTrack(
+                track_activation_threshold=0.1,
+                lost_track_buffer=60,
+                frame_rate=30
+            )
+            self.track_histories[camera_id] = defaultdict(list)
+            self.counted_ids[camera_id] = set()
+
+        # Format Detection for Supervision
+        xyxy = np.array([bbox])
+        confidences = np.array([confidence])
+        class_ids = np.array([class_id])
+        
+        detections = sv.Detections(
+            xyxy=xyxy,
+            confidence=confidences,
+            class_id=class_ids
+        )
+
+        # Update Tracker
+        tracks = self.trackers[camera_id].update_with_detections(detections)
+        
+        if len(tracks) == 0:
+            return None, False
+
+        track = tracks[0] 
+        track_id = str(track.tracker_id)
+        
+        # History and Line Crossing Logic
+        x1, y1, x2, y2 = track.xyxy[0]
+        center_y = (y1 + y2) / 2
+        
+        history = self.track_histories[camera_id][track_id]
+        history.append((frame_idx, center_y))
+        
+        if len(history) > 30:
+            history.pop(0)
+
+        is_crossed = False
+        if track_id not in self.counted_ids[camera_id] and len(history) >= 2:
+            # Assume Frame Height for line calc (adjust if needed)
+            FRAME_HEIGHT = 1080 
+            line1_y = FRAME_HEIGHT * self.line_configs["line1_pos"]
+            line2_y = FRAME_HEIGHT * self.line_configs["line2_pos"]
+            
+            curr_y = history[-1][1]
+            
+            # Check history
+            for prev_frame, prev_y in reversed(history[:-1]):
+                if (frame_idx - prev_frame) > 10: 
+                    break
+                
+                if (prev_y < line1_y <= curr_y) or (prev_y < line2_y <= curr_y):
+                    is_crossed = True
+                    self.counted_ids[camera_id].add(track_id)
+                    logging.info(f"🚀 Aik's Logic: Vehicle {track_id} crossed line at frame {frame_idx}")
+                    break
+
+        return track_id, is_crossed
+
     def _process_single_frame(self, frame: np.ndarray, frame_idx: int, task: ProcessingTask) -> Optional[Dict]:
         """Process a single frame and return transaction info or None if skipped"""
         frame_uint8 = self._normalize_to_uint8(frame)
         class_id, total_fee, confidence, bbox = self._run_inference(frame_uint8)
 
-        """ Call Aik's tracking logic function"""
+        # ==============================================================================
+        # ✅ Call Aik's tracking logic function
+        # ==============================================================================
+        track_id_from_logic, is_crossed = self._run_aik_tracking(
+            camera_id=task.camera_id,
+            class_id=class_id,
+            confidence=confidence,
+            bbox=bbox,
+            frame_idx=frame_idx
+        )
+        
+        if track_id_from_logic is None:
+            return None
+
+        # [OPTION] Uncomment below if you only want to save when crossing line
+        # if not is_crossed: return None 
 
         # Skip invalid detections
         if bbox is None or class_id == VehicleClass.OTHER.value:
@@ -566,7 +665,8 @@ class ProcessingService:
             return None
 
         # Generate unique track_id if not provided
-        track_id = task.track_id or f"{task.camera_id}_{task.task_id}_f{frame_idx}"
+        # Use Track ID from Aik's Logic
+        track_id = track_id_from_logic
 
         # Save transaction
         transaction = VehicleTransaction(
