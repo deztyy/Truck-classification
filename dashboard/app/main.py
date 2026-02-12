@@ -762,6 +762,8 @@ def render_current_vehicle_tab() -> None:
 
 
 # ==================== TRANSACTION HISTORY ====================
+# Replace the incomplete render_transaction_history() function
+
 def render_transaction_history() -> None:
     """Render transaction history for today only with filters"""
     st.markdown("---")
@@ -806,6 +808,11 @@ def render_transaction_history() -> None:
         df_all = pd.read_sql(text(query), engine, params={"today": today})
 
         if not df_all.empty:
+            # Convert timestamps to Bangkok timezone
+            df_all["time_bangkok"] = pd.to_datetime(
+                df_all["time_stamp"]
+            ).dt.tz_localize('UTC').dt.tz_convert('Asia/Bangkok')
+
             # Filter options
             st.markdown("#### 🔍 Filters")
 
@@ -819,7 +826,6 @@ def render_transaction_history() -> None:
             col_f1, col_f2, col_f3 = st.columns(3)
 
             with col_f1:
-                # Camera filter - dropdown
                 all_cameras = sorted(df_all["camera_id"].unique().tolist())
                 camera_options = ["All Cameras"] + all_cameras
                 selected_camera = st.selectbox(
@@ -830,8 +836,6 @@ def render_transaction_history() -> None:
                 )
 
             with col_f2:
-                # Vehicle type filter - dropdown (ใช้จาก master data)
-                # แปลงชื่อสำหรับแสดงใน dropdown
                 translated_types = [
                     translate_class_name(vt) for vt in all_vehicle_types
                 ]
@@ -843,7 +847,16 @@ def render_transaction_history() -> None:
                     key="vehicle_type_filter",
                 )
 
-            # Apply filters based on dropdown selection
+           # ...existing code...
+            with col_f3:
+                time_filter_type = st.selectbox(
+                    "⏰ Time Filter",
+                    options=["All Day", "Time Period"],
+                    index=0,
+                    key="time_filter_type",
+                )
+
+            # Apply filters
             if selected_camera == "All Cameras":
                 selected_cameras = all_cameras
             else:
@@ -852,58 +865,12 @@ def render_transaction_history() -> None:
             if selected_vehicle_type == "All Types":
                 selected_vehicle_types = all_vehicle_types
             else:
-                # แปลงกลับเป็นชื่อเดิมสำหรับ filter
                 selected_vehicle_types = [
                     vt
                     for vt in all_vehicle_types
                     if translate_class_name(vt) == selected_vehicle_type
                 ]
 
-            with col_f3:
-                # Time filter options
-                time_filter_type = st.selectbox(
-                    "⏰ Time Filter",
-                    options=["All Day", "Specific Time"],
-                    index=0,
-                    key="time_filter_type",
-                )
-
-            # Specific time picker (scroll wheel style)
-            if time_filter_type == "Specific Time":
-                st.markdown("**Select Specific Time:**")
-                col_t1, col_t2 = st.columns(2)
-                
-                # Initialize default hour and minute from current time if not set
-                now_thailand = get_thailand_time()
-                if "selected_hour" not in st.session_state:
-                    st.session_state.selected_hour = now_thailand.hour
-                if "selected_minute" not in st.session_state:
-                    st.session_state.selected_minute = now_thailand.minute
-                
-                with col_t1:
-                    # Hour selector (scroll wheel style)
-                    selected_hour = st.selectbox(
-                        "⏰ Hour (ชั่วโมง)",
-                        options=list(range(24)),
-                        format_func=lambda x: f"{x:02d}",
-                        index=st.session_state.selected_hour,
-                        key="selected_hour"
-                    )
-                
-                with col_t2:
-                    # Minute selector (scroll wheel style)
-                    selected_minute = st.selectbox(
-                        "⏱️ Minute (นาที)",
-                        options=list(range(60)),
-                        format_func=lambda x: f"{x:02d}",
-                        index=st.session_state.selected_minute,
-                        key="selected_minute"
-                    )
-                
-                # Display selected time
-                st.info(f"🕐 Selected Time: {selected_hour:02d}:{selected_minute:02d}")
-
-            # Apply filters
             df_transactions = df_all[
                 (df_all["camera_id"].isin(selected_cameras))
                 & (df_all["class_name"].isin(selected_vehicle_types))
@@ -918,217 +885,134 @@ def render_transaction_history() -> None:
                 ]
 
             # Apply time filter
-            if time_filter_type == "Specific Time":
-                # แปลงเวลาใน database เป็น Bangkok timezone ก่อนแล้วค่อยดึง hour และ minute
-                df_transactions["time_bangkok"] = pd.to_datetime(
-                    df_transactions["time_stamp"]
-                ).dt.tz_convert('Asia/Bangkok')
+            if time_filter_type == "Time Period":
+                st.markdown("#### ⏰ Select Time Period")
                 
-                df_transactions["hour"] = df_transactions["time_bangkok"].dt.hour
-                df_transactions["minute"] = df_transactions["time_bangkok"].dt.minute
+                col_t1, col_t2 = st.columns(2)
                 
-                # Filter by specific hour and minute (ignore seconds)
-                df_transactions = df_transactions[
-                    (df_transactions["hour"] == selected_hour)
-                    & (df_transactions["minute"] == selected_minute)
-                ]
+                with col_t1:
+                    st.markdown("**Start Time**")
+                    start_hour = st.number_input(
+                        "Hour",
+                        min_value=0,
+                        max_value=23,
+                        value=0,
+                        key="start_hour",
+                    )
+                    start_minute = st.number_input(
+                        "Minute",
+                        min_value=0,
+                        max_value=59,
+                        value=0,
+                        key="start_minute",
+                    )
                 
-                if len(df_transactions) > 0:
-                    st.success(f"✅ Found {len(df_transactions)} transaction(s) at {selected_hour:02d}:{selected_minute:02d}")
+                with col_t2:
+                    st.markdown("**End Time**")
+                    end_hour = st.number_input(
+                        "Hour",
+                        min_value=0,
+                        max_value=23,
+                        value=23,
+                        key="end_hour",
+                    )
+                    end_minute = st.number_input(
+                        "Minute",
+                        min_value=0,
+                        max_value=59,
+                        value=59,
+                        key="end_minute",
+                    )
+
+                # Validate time range
+                start_time_minutes = start_hour * 60 + start_minute
+                end_time_minutes = end_hour * 60 + end_minute
+                
+                if start_time_minutes > end_time_minutes:
+                    st.error("⚠️ Start time must be before end time!")
                 else:
-                    st.warning(f"⚠️ No transactions found at {selected_hour:02d}:{selected_minute:02d}")
+                    st.info(f"📊 Filtering from {start_hour:02d}:{start_minute:02d} to {end_hour:02d}:{end_minute:02d}")
+                    
+                    # Extract hour and minute for filtering
+                    df_transactions["hour"] = df_transactions["time_bangkok"].dt.hour
+                    df_transactions["minute"] = df_transactions["time_bangkok"].dt.minute
+                    df_transactions["time_minutes"] = df_transactions["hour"] * 60 + df_transactions["minute"]
+                    
+                    # Filter by time period
+                    df_transactions = df_transactions[
+                        (df_transactions["time_minutes"] >= start_time_minutes)
+                        & (df_transactions["time_minutes"] <= end_time_minutes)
+                    ]
+                    
+                    # Clean up temporary columns
+                    df_transactions = df_transactions.drop(columns=["hour", "minute", "time_minutes"])
 
             st.markdown("---")
+            # ...existing code...
 
             # Summary metrics
             col_m1, col_m2, col_m3 = st.columns(3)
             with col_m1:
-                st.metric("📊 Total Transactions", len(df_transactions))
+                st.metric("📊 Total Vehicles", len(df_transactions))
             with col_m2:
-                st.metric(
-                    "💰 Total Revenue", f"{df_transactions['total_fee'].sum():.0f} ฿"
-                )
+                total_revenue = df_transactions["total_fee"].sum()
+                st.metric("💰 Total Revenue", f"{total_revenue:.2f} ฿")
             with col_m3:
-                # Export CSV button
-                csv = df_transactions.to_csv(index=False, encoding="utf-8-sig")
-                st.download_button(
-                    label="📥 Download CSV",
-                    data=csv,
-                    file_name=f"transactions_{today.strftime('%Y%m%d')}.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                )
+                avg_confidence = df_transactions["confidence"].mean()
+                st.metric("🎯 Avg Confidence", f"{avg_confidence:.2f}%")
 
             st.markdown("---")
 
-            # Statistics by Vehicle Type
-            st.markdown("#### 📊 Statistics by Vehicle Type")
-            col_s1, col_s2 = st.columns(2)
+            # Display transactions table
+            st.markdown(f"#### 📋 Records Found: {len(df_transactions)}")
+            
+            # Prepare display dataframe
+            df_display = df_transactions[[
+                "time_bangkok",
+                "camera_id",
+                "track_id",
+                "class_name",
+                "total_fee",
+                "confidence",
+            ]].copy()
 
-            with col_s1:
-                # Count by vehicle type
-                df_display_stats = df_transactions.copy()
-                df_display_stats["class_name_display"] = df_display_stats[
-                    "class_name"
-                ].apply(translate_class_name)
-                vehicle_counts = df_display_stats["class_name_display"].value_counts()
+            df_display.columns = [
+                "⏰ Time",
+                "📷 Camera",
+                "🔖 Track ID",
+                "🚗 Vehicle Type",
+                "💰 Fee",
+                "🎯 Confidence",
+            ]
 
-                st.markdown("**🚗 Count by Type:**")
-                for vtype, count in vehicle_counts.items():
-                    st.write(f"• {vtype}: **{count}** คัน")
+            # Format columns
+            df_display["⏰ Time"] = df_display["⏰ Time"].dt.strftime("%H:%M:%S")
+            df_display["💰 Fee"] = df_display["💰 Fee"].apply(lambda x: f"{x:.2f} ฿")
+            df_display["🎯 Confidence"] = df_display["🎯 Confidence"].apply(lambda x: f"{x:.2f}%")
 
-            with col_s2:
-                # Revenue by vehicle type
-                revenue_by_type = (
-                    df_display_stats.groupby("class_name_display")["total_fee"]
-                    .sum()
-                    .sort_values(ascending=False)
-                )
+            st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-                st.markdown("**💰 Revenue by Type:**")
-                for vtype, revenue in revenue_by_type.items():
-                    st.write(f"• {vtype}: **{revenue:.0f}** ฿")
-
-            st.markdown("---")
-
-            # Pagination
-            st.markdown("#### 📄 Transaction Details")
-            items_per_page = st.selectbox(
-                "Items per page:", [10, 25, 50, 100], index=1, key="items_per_page"
-            )
-            total_items = len(df_transactions)
-            total_pages = max(1, (total_items + items_per_page - 1) // items_per_page)
-
-            col_p1, col_p2, col_p3 = st.columns([1, 2, 1])
-            with col_p2:
-                page = st.number_input(
-                    f"Page (1-{total_pages})",
-                    min_value=1,
-                    max_value=total_pages,
-                    value=1,
-                    key="page_number",
-                )
-
-            # Calculate start and end indices
-            start_idx = (page - 1) * items_per_page
-            end_idx = min(start_idx + items_per_page, total_items)
-
-            st.info(f"Showing {start_idx + 1}-{end_idx} of {total_items} transactions")
-
-            # Transaction details (paginated)
-            for _, row in df_transactions.iloc[start_idx:end_idx].iterrows():
-                timestamp = convert_to_thailand_tz(pd.to_datetime(row["time_stamp"]))
-                time_display = timestamp.strftime("%H:%M:%S")
-                conf_text = (
-                    f" ({row['confidence']:.2%})" if pd.notna(row["confidence"]) else ""
-                )
-                translated_name = translate_class_name(row["class_name"])
-
-                with st.expander(
-                    f"📷 {row['camera_id']} | {translated_name}{conf_text} | {time_display} | {row['total_fee']:.0f} ฿",
-                    expanded=False,
-                ):
-                    st.markdown(f"**🆔 ID:** #{row['id']}")
-                    st.markdown(f"**📷 Camera:** {row['camera_id']}")
-                    st.markdown(f"**🔖 Track ID:** {row['track_id']}")
-                    st.markdown(f"**🚗 Vehicle:** {translated_name}")
-                    if pd.notna(row["confidence"]):
-                        st.markdown(f"**🎯 Confidence:** {row['confidence']:.2%}")
-                    st.markdown("---")
-
-                    # Fee breakdown
-                    col_f1, col_f2, col_f3 = st.columns(3)
-                    with col_f1:
-                        st.metric("Entry", f"{row['entry_fee']:.0f} ฿")
-                    with col_f2:
-                        st.metric("X-Ray", f"{row['xray_fee']:.0f} ฿")
-                    with col_f3:
-                        st.metric("Total", f"{row['total_fee']:.0f} ฿")
-
-                    # Full timestamp
-                    full_timestamp = convert_to_thailand_tz(
-                        pd.to_datetime(row["time_stamp"])
-                    )
-                    st.markdown(
-                        f"**🕐 Time:** {full_timestamp.strftime('%d/%m/%Y %H:%M:%S')} (Thailand)"
-                    )
-
-                    # Display image if available
-                    if pd.notna(row["img_path"]) and row["img_path"] != "":
-                        st.markdown("---")
-                        st.markdown("**📸 Vehicle Image:**")
-
-                        # Try to get image from MinIO
-                        image = get_image_from_minio(row["img_path"])
-                        if image:
-                            st.image(image, use_container_width=True)
-                        else:
-                            st.warning("⚠️ Image not available in MinIO storage")
-                            with st.expander("🔍 Debug Info"):
-                                st.code(f"Path: {row['img_path']}", language="text")
-                                st.info(
-                                    "Image should be in format: 'bucket-name/object-key' (e.g., 'process-frames/output_123.jpg')"
-                                )
-
-                    # Delete button with confirmation
-                    st.markdown("---")
-                    col_d1, col_d2, col_d3 = st.columns([2, 1, 2])
-                    with col_d2:
-                        # Use session state for confirmation
-                        confirm_key = f"confirm_del_{row['id']}"
-                        if confirm_key not in st.session_state:
-                            st.session_state[confirm_key] = False
-
-                        if not st.session_state[confirm_key]:
-                            if st.button(
-                                "🗑️ Delete",
-                                key=f"del_{row['id']}",
-                                type="secondary",
-                                use_container_width=True,
-                            ):
-                                st.session_state[confirm_key] = True
-                                st.rerun()
-                        else:
-                            st.warning("⚠️ Confirm delete?")
-                            col_y, col_n = st.columns(2)
-                            with col_y:
-                                if st.button(
-                                    "✅ Yes",
-                                    key=f"yes_{row['id']}",
-                                    use_container_width=True,
-                                ):
-                                    try:
-                                        with engine.connect() as conn:
-                                            conn.execute(
-                                                text(
-                                                    "DELETE FROM vehicle_transactions WHERE id = :id"
-                                                ),
-                                                {"id": row["id"]},
-                                            )
-                                            conn.commit()
-                                        st.success("✅ Deleted successfully!")
-                                        st.session_state[confirm_key] = False
-                                        st.rerun()
-                                    except Exception as e:
-                                        st.error(f"❌ Error deleting transaction: {e}")
-                                        print(f"❌ Error deleting transaction: {e}")
-                            with col_n:
-                                if st.button(
-                                    "❌ No",
-                                    key=f"no_{row['id']}",
-                                    use_container_width=True,
-                                ):
-                                    st.session_state[confirm_key] = False
-                                    st.rerun()
         else:
-            st.info(
-                f"📭 No transactions found for today ({today.strftime('%d %B %Y')})"
+            st.markdown(
+                """
+            <div style="text-align: center; padding: 4rem 2rem;
+                 background: rgba(102, 126, 234, 0.05); border-radius: 20px;
+                 border: 2px dashed rgba(102, 126, 234, 0.3);">
+                <div style="font-size: 5em; opacity: 0.5;">📜📭</div>
+                <div style="color: #667eea; font-size: 1.8em; font-weight: 700;">
+                    No Transactions Yet
+                </div>
+                <div style="color: #999; font-size: 1.1em;">
+                    No vehicle transactions recorded for today.
+                </div>
+            </div>
+            """,
+                unsafe_allow_html=True,
             )
 
     except Exception as e:
         st.error(f"❌ Error loading transactions: {e}")
         print(f"❌ Error loading transactions: {e}")
-
 
 # ==================== MASTER DATA TAB ====================
 def render_master_data_tab(df_classes: pd.DataFrame) -> None:

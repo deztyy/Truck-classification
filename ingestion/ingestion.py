@@ -1,12 +1,3 @@
-"""
-Video Ingestion Script for Computer Vision Pipeline
-====================================================
-This script reads video streams from RTSP sources, batches frames,
-uploads them to MinIO (S3-compatible storage), and publishes metadata to Redis.
-
-Date: January 2026
-"""
-
 import io
 import json
 import logging
@@ -58,25 +49,6 @@ DOWNTIME_PRECISION_DECIMALS = 1
 
 
 class VideoIngestor:
-    """
-    Video Ingestion Class for Computer Vision Pipeline
-
-    This class handles:
-    - Reading RTSP video streams
-    - Batching frames into NumPy arrays
-    - Uploading batches to MinIO storage
-    - Publishing metadata to Redis queue
-    - Auto-reconnection on stream failures
-
-    Attributes:
-        camera_id (str): Unique identifier for the camera
-        rtsp_url (str): RTSP stream URL
-        batch_size (int): Number of frames per batch
-        minio_client (Minio): MinIO client instance
-        redis_client (redis.Redis): Redis client instance
-        bucket_name (str): MinIO bucket name for storage
-        redis_queue_name (str): Redis list name for queue
-    """
 
     def __init__(
         self,
@@ -89,19 +61,7 @@ class VideoIngestor:
         loop_video: bool = False,
         frame_skip: int = DEFAULT_FRAME_SKIP,
     ):
-        """
-        Initialize VideoIngestor with configuration from environment variables.
-
-        Args:
-            camera_id: Unique identifier for this camera/stream
-            rtsp_url: RTSP stream URL (defaults to env variable)
-            video_file: Path to video file (alternative to RTSP)
-            batch_size: Number of frames to collect before uploading
-            max_reconnect_attempts: Maximum reconnection attempts
-            reconnect_delay: Delay between reconnection attempts (seconds)
-            loop_video: Loop video file when it ends (default: False)
-            frame_skip: Number of frames to skip between captures (0 = no skip, 1 = skip 1 frame, etc.)
-        """
+       
         self.camera_id = camera_id
         self.video_file = video_file or os.getenv("VIDEO_FILE")
         self.rtsp_url = rtsp_url or os.getenv("RTSP_URL")
@@ -154,18 +114,7 @@ class VideoIngestor:
         logger.warning(f"VideoIngestor initialized for camera: {self.camera_id}")
 
     def _initialize_minio(self) -> Minio:
-        """
-        Initialize MinIO client from environment variables.
-
-        Returns:
-            Minio: Configured MinIO client
-
-        Environment Variables Required:
-            - MINIO_ENDPOINT: MinIO server endpoint (e.g., 'minio:9000')
-            - MINIO_ACCESS_KEY: Access key for authentication
-            - MINIO_SECRET_KEY: Secret key for authentication
-            - MINIO_SECURE: Use HTTPS (default: 'false')
-        """
+       
         endpoint = os.getenv("MINIO_ENDPOINT")
         access_key = os.getenv("MINIO_ACCESS_KEY")
         secret_key = os.getenv("MINIO_SECRET_KEY")
@@ -185,18 +134,7 @@ class VideoIngestor:
         )
 
     def _initialize_redis(self) -> redis.Redis:
-        """
-        Initialize Redis client from environment variables.
-
-        Returns:
-            redis.Redis: Configured Redis client with connection pooling
-
-        Environment Variables Required:
-            - REDIS_HOST: Redis server hostname
-            - REDIS_PORT: Redis server port (must be 1-65535)
-            - REDIS_DB: Redis database number (default: '0')
-            - REDIS_PASSWORD: Redis password (optional)
-        """
+       
         redis_host = os.getenv("REDIS_HOST")
         redis_port_str = os.getenv("REDIS_PORT")
         redis_db = int(os.getenv("REDIS_DB", DEFAULT_REDIS_DB))
@@ -249,12 +187,7 @@ class VideoIngestor:
             raise
 
     def _open_video_source(self) -> bool:
-        """
-        Connect to the RTSP video stream or open a local video file.
-
-        Returns:
-            bool: True if connection successful, False otherwise
-        """
+        
         try:
             # Determine source
             video_source = self.video_file if self.video_file else self.rtsp_url
@@ -293,10 +226,7 @@ class VideoIngestor:
             return False
 
     def _close_video_source(self) -> None:
-        """
-        Safely disconnect from the video stream.
-        Thread-safe operation with lock protection.
-        """
+        
         with self.health_status_lock:
             if self.video_capture is not None:
                 self.video_capture.release()
@@ -304,11 +234,7 @@ class VideoIngestor:
                 logger.info("Disconnected from video stream")
 
     def _update_frame_read_time(self) -> None:
-        """
-        Update last successful frame read timestamp.
-        Called after each successful frame read.
-        Thread-safe operation with lock protection.
-        """
+        
         with self.health_status_lock:
             self.last_frame_read_time = datetime.utcnow()
 
@@ -328,10 +254,7 @@ class VideoIngestor:
                     self.downtime_start_time = None
 
     def _health_check_stream(self) -> None:
-        """
-        Periodically check stream health by detecting stalls and timeouts.
-        Runs in a separate thread.
-        """
+        
         logger.warning(f"Health check thread started for camera: {self.camera_id}")
 
         while self.is_running:
@@ -369,13 +292,7 @@ class VideoIngestor:
         logger.info(f"Health check thread stopped for camera: {self.camera_id}")
 
     def _check_frame_read_timeout(self, seconds_elapsed: float) -> None:
-        """
-        Check if frame read has timed out and update stream health status.
-        Thread-safe operation with lock protection.
-
-        Args:
-            seconds_elapsed: Seconds since last successful frame read
-        """
+        
         precision = DOWNTIME_PRECISION_DECIMALS
 
         with self.health_status_lock:
@@ -397,9 +314,7 @@ class VideoIngestor:
                 )
 
     def _start_health_check_thread(self) -> None:
-        """
-        Start the health check thread if not already running.
-        """
+       
         if self.health_check_thread is None or not self.health_check_thread.is_alive():
             self.is_running = True
             self.health_check_thread = threading.Thread(
@@ -411,13 +326,7 @@ class VideoIngestor:
             logger.info(f"Health check thread started for camera: {self.camera_id}")
 
     def _read_next_frame_batch(self) -> Optional[np.ndarray]:
-        """
-        Read a batch of frames from the video stream.
-
-        Returns:
-            Optional[np.ndarray]: Batch of frames as NumPy array (batch_size, height, width, channels)
-                                 Returns None if stream fails
-        """
+       
         frames = []
 
         for frame_idx in range(self.batch_size):
@@ -475,12 +384,7 @@ class VideoIngestor:
         return batch_array
 
     def _handle_frame_read_failure(self) -> Tuple[bool, Optional[np.ndarray]]:
-        """
-        Handle frame read failure by attempting to restart video if configured.
-
-        Returns:
-            Tuple of (success: bool, frame: Optional[np.ndarray])
-        """
+       
         # If video file ends and loop is enabled, restart
         if self.video_file and self.loop_video:
             logger.info("Video file ended, restarting from beginning...")
@@ -504,10 +408,7 @@ class VideoIngestor:
         return False, None
 
     def _skip_configured_frames(self) -> None:
-        """
-        Skip frames as configured by frame_skip parameter.
-        Thread-safe access to video_capture.
-        """
+       
         for _ in range(self.frame_skip):
             skip_success = False
             with self.health_status_lock:
@@ -521,30 +422,14 @@ class VideoIngestor:
                 break
 
     def _serialize_numpy(self, array: np.ndarray) -> io.BytesIO:
-        """
-        Serialize a NumPy array into an in-memory BytesIO buffer.
-
-        Args:
-            array: The NumPy array to serialize
-
-        Returns:
-            BytesIO buffer positioned at start
-        """
+        
         serialized_buffer = io.BytesIO()
         np.save(serialized_buffer, array, allow_pickle=False)
         serialized_buffer.seek(0)
         return serialized_buffer
 
     def _upload_frame_batch(self, frame_batch: np.ndarray) -> Optional[str]:
-        """
-        Upload frame batch to MinIO storage using in-memory buffer.
-
-        Args:
-            frame_batch: NumPy array containing frame batch
-
-        Returns:
-            Optional[str]: Object name in MinIO if successful, None otherwise
-        """
+        
         try:
             # Generate unique object name with timestamp
             timestamp = datetime.utcnow().strftime(TIMESTAMP_FORMAT)
@@ -583,25 +468,12 @@ class VideoIngestor:
     def _publish_batch_metadata(
         self, minio_object_key: str, batch_shape: tuple
     ) -> bool:
-        """
-        Publish metadata to Redis queue for downstream processing.
-
-        Args:
-            minio_object_key: Name of the object in MinIO
-            batch_shape: Shape of the uploaded batch
-
-        Returns:
-            bool: True if publish successful, False otherwise
-
-        ### CUSTOMIZATION POINT ###
-        You can modify this method to:
-        - Add more metadata fields (FPS, resolution, codec info)
-        - Use different Redis data structures (Streams, Pub/Sub)
-        - Add priority queuing logic
-        """
+        
         try:
+            task_id = minio_object_key.replace("/", "_").replace(".npy", "")
             # Create metadata message
             batch_metadata = {
+                "task_id": task_id,
                 "camera_id": self.camera_id,
                 "object_name": minio_object_key,
                 "timestamp": datetime.utcnow().isoformat(),
@@ -618,6 +490,9 @@ class VideoIngestor:
             metadata_json = json.dumps(batch_metadata)
             self.redis_client.rpush(self.redis_list_name, metadata_json)
 
+            notification_channel = f"{self.redis_list_name}:notifications"
+            self.redis_client.publish(notification_channel, "new_task")
+
             logger.debug(f"Published metadata to Redis list: {self.redis_list_name}")
             logger.debug(f"Metadata: {batch_metadata}")
 
@@ -633,12 +508,7 @@ class VideoIngestor:
             return False
 
     def _ingest_next_batch(self) -> bool:
-        """
-        Main processing loop: read batch, upload, and notify.
-
-        Returns:
-            bool: True if batch processed successfully, False otherwise
-        """
+       
         # Read frame batch
         frame_batch = self._read_next_frame_batch()
         if frame_batch is None:
@@ -657,23 +527,7 @@ class VideoIngestor:
         return metadata_published
 
     def run(self) -> None:
-        """
-        Main execution loop with auto-reconnection logic and health check.
-
-        This method:
-        1. Connects to the RTSP stream
-        2. Starts health check thread for continuous monitoring
-        3. Continuously reads and processes frame batches
-        4. Handles errors with automatic reconnection
-        5. Runs indefinitely until interrupted
-
-        ### CUSTOMIZATION POINT ###
-        You can modify this method to:
-        - Add scheduling logic (process only during certain hours)
-        - Implement adaptive batch sizing based on performance
-        - Add more sophisticated health check reporting
-        - Implement graceful shutdown on signals
-        """
+        
         logger.warning(f"Starting video ingestion for camera: {self.camera_id}")
 
         # Start health check thread
@@ -726,15 +580,7 @@ class VideoIngestor:
         self._cleanup_ingestion()
 
     def _attempt_reconnection(self, current_attempts: int) -> int:
-        """
-        Attempt to reconnect to video source with exponential backoff.
-
-        Args:
-            current_attempts: Current number of reconnection attempts
-
-        Returns:
-            Updated attempt count
-        """
+        
         if current_attempts >= self.max_reconnect_attempts:
             logger.error(
                 f"Max reconnection attempts ({self.max_reconnect_attempts}) reached"
@@ -773,12 +619,7 @@ class VideoIngestor:
         )
 
     def get_statistics(self) -> Dict[str, Any]:
-        """
-        Get current processing statistics.
-
-        Returns:
-            Dict: Statistics including frames processed, batches uploaded, errors, and health status
-        """
+        
         # Thread-safe read of health status variables
         with self.health_status_lock:
             stream_healthy = self.stream_is_healthy
@@ -798,16 +639,7 @@ class VideoIngestor:
 
 
 def main():
-    """
-    Main entry point for multi-camera video ingestion.
-    Reads camera configurations from environment variables.
-
-    Environment Variables:
-    - CAMERA_CONFIGS: Multiple cameras format "camera_01:rtsp://url1,camera_02:rtsp://url2"
-    - CAMERA_ID: Single camera ID (fallback)
-    - RTSP_URL: Single RTSP URL (fallback)
-    - VIDEO_FILE: Single video file (fallback)
-    """
+    
 
     # Configuration for multiple cameras
     # Format: CAMERA_CONFIGS=camera_01:rtsp://localhost:8554/stream1,camera_02:rtsp://localhost:8554/stream2
@@ -925,21 +757,5 @@ def main():
 
 
 if __name__ == "__main__":
-    """
-    Multi-camera ingestion is now supported by default.
-
-    Usage examples:
-
-    1. Multiple cameras via CAMERA_CONFIGS environment variable:
-       CAMERA_CONFIGS="camera_01:rtsp://localhost:8554/stream1,camera_02:rtsp://localhost:8554/stream2"
-
-    2. Single camera (backward compatible):
-       CAMERA_ID="camera_01"
-       RTSP_URL="rtsp://localhost:8554/stream"
-
-    3. Video file:
-       CAMERA_ID="camera_01"
-       VIDEO_FILE="/path/to/video.mp4"
-    """
 
     exit(main())
