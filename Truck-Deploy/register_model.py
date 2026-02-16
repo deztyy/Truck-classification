@@ -16,8 +16,8 @@ os.environ["MLFLOW_S3_IGNORE_TLS"] = "true"
 mlflow.set_tracking_uri("http://localhost:5000")
 client = MlflowClient()
 
-model_name = "Truck_classification_Model"
-onnx_path = "truck_classification.onnx"  # Make sure this file exists!
+model_name = "Truck_classification_Model_v2"
+onnx_path = "truck_classification_v2.onnx"  # Make sure this file exists!
 
 print(f"{'='*60}")
 print(f"MLflow Model Registration (with S3/MinIO)")

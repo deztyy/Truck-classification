@@ -1,0 +1,10 @@
+# Dockerfile.deletion  (lightweight, no GPU needed)
+FROM python:3.11-slim
+
+WORKDIR /app
+COPY requirements_deletion.txt .
+RUN pip install --no-cache-dir redis minio
+
+COPY deletion_service.py minio_helper.py ./
+ENV PYTHONUNBUFFERED=1
+CMD ["python", "deletion_service.py"]
