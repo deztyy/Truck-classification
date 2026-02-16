@@ -199,7 +199,7 @@ services:
       - analytics_network
   # B. Processing Worker (Frame Processing & Database Writer)
   processing-worker:
-    build: ./fake-processing
+    build: ./processing
     container_name: vid_processing_worker
     env_file:
       - .env
@@ -334,7 +334,7 @@ services:
 
   deletion-service:
     build:
-      context: ./fake-processing
+      context: ./processing
       dockerfile: Dockerfile.deletion 
     container_name: vid_deletion_service
     command: python deletion_service.py
