@@ -23,12 +23,10 @@ from minio import Minio
 from minio.error import S3Error
 from PIL import Image
 from concurrent.futures import ProcessPoolExecutor
-
-# ==========================================
-# [NEW] Import for Aik's Tracking Logic
-# ==========================================
 import supervision as sv
 from collections import defaultdict
+import csv
+import atexit
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,7 +47,12 @@ MAX_RETRIES = 3
 
 def worker_service(config: Dict[str, Any]):
     global _worker_service
-    _worker_service = ProcessingService(**config)
+    redis_conf = config.get('redis', {'host': 'redis', 'port': 6379})
+    _worker_service = ProcessingService(
+        db_config=config['postgres'], 
+        minio_config=config['minio'],
+        redis_config=redis_conf
+    )
     atexit.register(lambda: _worker_service.db.close())
 
 def task_handler(task_json: str):
@@ -232,8 +235,7 @@ class MinIOManager:
                 response.close()
                 response.release_conn()
     
-    def wait_for_npy_file(self, bucket: str, prefix: str, retry_delay: float = RETRY_DELAY, 
-                       timeout_seconds: int = 10) -> Optional[str]:
+    def wait_for_npy_file(self, bucket: str, prefix: str, retry_delay: float = RETRY_DELAY, timeout_seconds: int = 10) -> Optional[str]:
         logging.info(f"   - prefix: '{prefix}'")
         try:
             if not self.client.bucket_exists(bucket):
@@ -343,9 +345,40 @@ class PostgreSQLDatabase:
                 self._pool.putconn(conn)
 
     def insert_transaction(self, transaction: VehicleTransaction) -> bool:
-        """Insert a vehicle transaction record"""
+        """Insert a vehicle transaction record and log to CSV"""
+        
+        # === [ส่วนที่ 1] เขียนลงไฟล์ CSV (เพิ่มใหม่) ===
+        try:
+            # หา Path ของโฟลเดอร์ที่ไฟล์ Python นี้อยู่
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            csv_file = os.path.join(current_dir, "debug_transactions.csv")
+            # เช็คว่ามีไฟล์อยู่แล้วไหม (เพื่อเขียน Header แค่ครั้งเดียว)
+            file_exists = os.path.isfile(csv_file)
+            
+            with open(csv_file, mode='a', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                
+                # ถ้าเพิ่งสร้างไฟล์ใหม่ ให้เขียนหัวตารางก่อน
+                if not file_exists:
+                    writer.writerow(['Timestamp', 'Camera ID', 'Track ID', 'Class ID', 'Fee', 'Confidence', 'Image Path'])
+                
+                # เขียนข้อมูล Transaction ลงไป
+                writer.writerow([
+                    transaction.time_stamp,
+                    transaction.camera_id,
+                    transaction.track_id,
+                    transaction.class_id,
+                    transaction.total_fee,
+                    transaction.confidence,
+                    transaction.img_path
+                ])
+        except Exception as e:
+            logging.error(f"⚠️ Failed to write CSV log: {e}")
+        # =================================================
+        
         conn = self._pool.getconn()
         try:
+            # ... (โค้ด Insert ลง DB เดิมของคุณอยู่ตรงนี้) ...
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO vehicle_transactions 
@@ -357,7 +390,7 @@ class PostgreSQLDatabase:
                     transaction.confidence,
                 ))
             conn.commit()
-            logging.info(f"✓ Transaction saved: {transaction.track_id}")
+            logging.info(f"✅ Transaction saved: {transaction.track_id}")
             return True
         except Exception as e:
             conn.rollback()
@@ -381,61 +414,86 @@ class PostgreSQLDatabase:
 class ProcessingService:
     """Service that processes tasks with tracking to prevent double-counting"""
 
-    def __init__(
-        self,
-        minio_endpoint: str,
-        minio_access_key: str,
-        minio_secret_key: str,
-        db_host: str,
-        db_port: int,
-        db_name: str,
-        db_user: str,
-        db_password: str,
-        redis_host: str = "localhost",
-        redis_port: int = 6379,
-        minio_secure: bool = False,
-        mlflow_tracking_uri: str = os.getenv("MLFLOW_TRACKING_URI"),
-        model_uri: str = os.getenv("MODEL_URI"),
-        npy_timeout_seconds: int = int(os.getenv("NPY_TIMEOUT_SECONDS")),
-    ):
-        # Initialize Redis for tracking
-        self.redis_client = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
+    def __init__(self, db_config: Dict[str, Any], minio_config: Dict[str, Any], redis_config: Dict[str, Any]):
+        # 1. เชื่อมต่อ Database & MinIO
+        self.db = PostgreSQLDatabase(**db_config) # ใช้ **db_config เพื่อแตก dict เข้า params
+        self.minio_client = Minio(**minio_config)
+        self.bucket_name = PROCESSED_BUCKET
         
-        self.minio_manager = MinIOManager(endpoint=minio_endpoint, access_key=minio_access_key, 
-                                         secret_key=minio_secret_key, secure=minio_secure)
-        self.db = PostgreSQLDatabase(host=db_host, port=db_port, database=db_name, 
-                                     user=db_user, password=db_password)
-        self.npy_timeout = npy_timeout_seconds
+        # 2. เชื่อมต่อ Redis (สำหรับกันซ้ำ)
+        self.redis_client = redis.Redis(
+            host=redis_config.get('host', 'redis'),
+            port=redis_config.get('port', 6379),
+            db=0,
+            decode_responses=True
+        )
 
-        # Load model
-        logging.info(f"Loading model from MLflow: {model_uri}")
-        mlflow.set_tracking_uri(mlflow_tracking_uri)
-        local_model_path = mlflow.artifacts.download_artifacts(artifact_uri=model_uri)
-        onnx_path = os.path.join(local_model_path, "model.onnx")
-        self.session = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+        self.minio_manager = MinIOManager(
+            endpoint=minio_config['endpoint'],
+            access_key=minio_config['access_key'],
+            secret_key=minio_config['secret_key'],
+            secure=minio_config.get('secure', False)
+        )
         
-        # =========================================================
-        # [NEW] Aik's Tracking Logic State
-        # =========================================================
-        self.trackers = {}          # Store ByteTrack instances per camera_id
-        self.track_histories = {}   # Store track positions per camera_id
-        self.counted_ids = {}       # Store counted IDs per camera_id
-        self.line_configs = {       # Line configurations
+        # โหลด Model
+        try:
+            model_path = "model/truck_classification.onnx"
+            providers = ['CPUExecutionProvider']
+            self.session = ort.InferenceSession(model_path, providers=providers)
+            logging.info(f"✓ Model loaded: {model_path}")
+        except Exception as e:
+            logging.error(f"✗ Model load failed: {e}")
+            raise
+
+        # ตัวแปรสำหรับ Tracker
+        self.trackers = {}
+        self.track_positions = {}
+        self.line1_crossings = {}
+        self.counted_ids = {} # Local cache (optional)
+        
+        self.track_last_seen = defaultdict(dict)
+        self.track_classes = defaultdict(dict)
+        self.line_configs = {
             "line1_pos": 0.40,
-            "line2_pos": 0.70
+            "line2_pos": 0.70,
         }
-        
-        logging.info("✓ ProcessingService initialized with tracking & Aik's Logic")
+        self.npy_timeout = int(os.getenv("NPY_TIMEOUT_SECONDS", 10))
 
     def _run_inference(self, frame: np.ndarray) -> Tuple[int, float, float, Optional[Tuple[int, int, int, int]]]:
         try:
+            # 1. เก็บขนาดภาพจริงไว้ก่อน
+            original_h, original_w = frame.shape[:2]
+            
             input_tensor = self._preprocess_frame(frame)
             input_name = self.session.get_inputs()[0].name
             outputs = self.session.run(None, {input_name: input_tensor})
             
             class_id, confidence, bbox = self._postprocess_outputs(outputs)
             
-            # === NEW: Filter out OTHER class ===
+            # === [FIX] แปลงสเกล bbox จาก 640x640 กลับเป็นขนาดภาพจริง ===
+            if bbox is not None:
+                # คำนวณอัตราส่วน (Scale Factor)
+                scale_x = original_w / 640.0
+                scale_y = original_h / 640.0
+                
+                x1, y1, x2, y2 = bbox
+                
+                # คูณสเกลกลับเข้าไป
+                x1 = int(x1 * scale_x)
+                y1 = int(y1 * scale_y)
+                x2 = int(x2 * scale_x)
+                y2 = int(y2 * scale_y)
+                
+                # กันไม่ให้กล่องล้นขอบภาพ (Clip)
+                x1 = max(0, min(x1, original_w))
+                y1 = max(0, min(y1, original_h))
+                x2 = max(0, min(x2, original_w))
+                y2 = max(0, min(y2, original_h))
+                
+                bbox = (x1, y1, x2, y2)
+            # =========================================================
+
+            # ... (ส่วนกรอง OTHER class เหมือนเดิม) ...
             if class_id == VehicleClass.OTHER.value:
                 # logging.warning(f"⏭️  Ignoring OTHER class detection - not a real vehicle")
                 return class_id, 0.0, 0.0, None
@@ -497,6 +555,13 @@ class ProcessingService:
         
         return center_x, center_y
 
+    # @staticmethod
+    # def _select_frame(batch: np.ndarray) -> Tuple[np.ndarray, int]:
+    #     if batch.ndim == 4:
+    #         frame_idx = len(batch) // 2
+    #         return batch[frame_idx], frame_idx
+    #     return batch, 0
+
     @staticmethod
     def _normalize_to_uint8(arr: np.ndarray) -> np.ndarray:
         if arr.dtype in (np.float32, np.float64):
@@ -507,8 +572,7 @@ class ProcessingService:
             return arr.astype(np.uint8)
         return arr
 
-    def convert_npy_to_jpg(self, npy_array: np.ndarray, frame_index: int, 
-                          camera_id: str, task_id: str, quality: int = 85) -> Optional[str]:
+    def convert_npy_to_jpg(self, npy_array: np.ndarray, frame_index: int, camera_id: str, task_id: str, quality: int = 85) -> Optional[str]:
         try:
             now = datetime.datetime.now(THAI_TIMEZONE)
             date_str = now.strftime("%Y-%m-%d")
@@ -553,106 +617,134 @@ class ProcessingService:
             logging.error(f"✗ Error converting frame: {e}")
             return None
 
-    # =========================================================
-    # [NEW] Aik's Tracking Logic Function
-    # =========================================================
-    def _run_aik_tracking(self, camera_id: str, class_id: int, confidence: float, 
-                          bbox: Optional[Tuple[int, int, int, int]], frame_idx: int) -> Tuple[Optional[str], bool]:
+def _run_truck_tracker(self, camera_id, class_id, confidence, bbox, frame_idx, frame_height):
         """
-        Aik's tracking logic: Use ByteTrack and check Line Crossing
+        Track vehicles and determine if they cross the defined lines.
+        Returns: (track_id, class_id, confidence, line1_frame, line1_time, status_count)
         """
         if bbox is None:
-            return None, False
+            return None, class_id, confidence, None, None, False
 
-        # Initialize Tracker for this camera if needed
-        if camera_id not in self.trackers:
-            self.trackers[camera_id] = sv.ByteTrack(
-                track_activation_threshold=0.1,
-                lost_track_buffer=60,
-                frame_rate=30
-            )
-            self.track_histories[camera_id] = defaultdict(list)
-            self.counted_ids[camera_id] = set()
-
-        # Format Detection for Supervision
-        xyxy = np.array([bbox])
-        confidences = np.array([confidence])
-        class_ids = np.array([class_id])
-        
+        # แปลง bbox เป็น format ที่ supervision ต้องการ [x1, y1, x2, y2]
+        x1, y1, x2, y2 = bbox
         detections = sv.Detections(
-            xyxy=xyxy,
-            confidence=confidences,
-            class_id=class_ids
+            xyxy=np.array([[x1, y1, x2, y2]]),
+            confidence=np.array([confidence]),
+            class_id=np.array([class_id])
         )
 
-        # Update Tracker
-        tracks = self.trackers[camera_id].update_with_detections(detections)
+        # อัปเดต Tracker (ByteTrack)
+        # หมายเหตุ: ในโค้ดจริงต้องมีการจัดการ Tracker แยกตามกล้อง (self.trackers[camera_id])
+        # แต่เพื่อความง่าย ผมจะสมมติว่าใช้ Tracker กลาง หรือคุณต้องเพิ่ม Logic สร้าง Tracker ถ้ายังไม่มี
+        if camera_id not in self.trackers:
+            self.trackers[camera_id] = sv.ByteTrack(track_thresh=0.25, track_buffer=30, match_thresh=0.8, frame_rate=30)
         
-        if len(tracks) == 0:
-            return None, False
+        tracker = self.trackers[camera_id]
+        detections = tracker.update_with_detections(detections)
 
-        track = tracks[0] 
-        track_id = str(track.tracker_id)
+        if len(detections) == 0:
+            return None, class_id, confidence, None, None, False
+
+        # ดึงข้อมูล Track ID
+        track_id = detections.tracker_id[0]
         
-        # History and Line Crossing Logic
-        x1, y1, x2, y2 = track.xyxy[0]
-        center_y = (y1 + y2) / 2
+        # คำนวณตำแหน่งเส้น (Line Positions)
+        line1_y = int(frame_height * self.line_configs["line1_pos"])
+        line2_y = int(frame_height * self.line_configs["line2_pos"])
         
-        history = self.track_histories[camera_id][track_id]
-        history.append((frame_idx, center_y))
+        # จุด Center ของรถ (ใช้ขอบล่าง y2 ตามมาตรฐาน)
+        _, _, _, y_curr = detections.xyxy[0]
         
-        if len(history) > 30:
-            history.pop(0)
+        # --- Logic การตรวจสอบการข้ามเส้น (Line Crossing) ---
+        # 1. สร้าง Dictionary เก็บข้อมูลข้ามเส้นของกล้องนี้ถ้ายังไม่มี
+        if camera_id not in self.line1_crossings:
+            self.line1_crossings[camera_id] = {}
+        
+        # 2. เช็คการข้ามเส้นที่ 1 (บน)
+        if y_curr > line1_y:
+            if track_id not in self.line1_crossings[camera_id]:
+                self.line1_crossings[camera_id][track_id] = {
+                    "frame": frame_idx,
+                    "time": datetime.datetime.now(THAI_TIMEZONE)
+                }
+        
+        # 3. เช็คการข้ามเส้นที่ 2 (ล่าง) -> เพื่อยืนยันว่า "นับ" (Count)
+        status_count = False
+        if y_curr > line2_y:
+            # ต้องเคยผ่านเส้น 1 มาก่อนถึงจะนับ
+            if track_id in self.line1_crossings[camera_id]:
+                status_count = True
+        
+        # ดึงเวลาที่ผ่านเส้น 1 มาใช้
+        line1_info = self.line1_crossings[camera_id].get(track_id)
+        line1_frame = line1_info["frame"] if line1_info else None
+        line1_time = line1_info["time"] if line1_info else None
 
-        is_crossed = False
-        if track_id not in self.counted_ids[camera_id] and len(history) >= 2:
-            # Assume Frame Height for line calc (adjust if needed)
-            FRAME_HEIGHT = 1080 
-            line1_y = FRAME_HEIGHT * self.line_configs["line1_pos"]
-            line2_y = FRAME_HEIGHT * self.line_configs["line2_pos"]
-            
-            curr_y = history[-1][1]
-            
-            # Check history
-            for prev_frame, prev_y in reversed(history[:-1]):
-                if (frame_idx - prev_frame) > 10: 
-                    break
-                
-                if (prev_y < line1_y <= curr_y) or (prev_y < line2_y <= curr_y):
-                    is_crossed = True
-                    self.counted_ids[camera_id].add(track_id)
-                    logging.info(f"🚀 Aik's Logic: Vehicle {track_id} crossed line at frame {frame_idx}")
-                    break
+        return track_id, class_id, confidence, line1_frame, line1_time, status_count
+    
+def _cleanup_stale_tracks(self, camera_id: str, current_frame: int, max_age: int = 150):
+        """ลบ ID ที่หายไปนานๆ ออกจาก Memory ของกล้องนั้นๆ"""
+        if camera_id not in self.track_last_seen:
+            return
 
-        return track_id, is_crossed
+        stale_ids = []
+        # เช็คว่า ID ไหนไม่ได้อัปเดตเกิน max_age เฟรม
+        for tid, last_seen in self.track_last_seen[camera_id].items():
+            if (current_frame - last_seen) > max_age:
+                stale_ids.append(tid)
+        
+        # ลบข้อมูลขยะ
+        for tid in stale_ids:
+            self.track_positions[camera_id].pop(tid, None)
+            self.track_last_seen[camera_id].pop(tid, None)
+            self.track_classes[camera_id].pop(tid, None)
+            self.line1_crossings[camera_id].pop(tid, None)
+            # ไม่ลบ counted_ids เพื่อกันนับซ้ำ (หรือแล้วแต่นโยบาย)
 
-    def _process_single_frame(self, frame: np.ndarray, frame_idx: int, task: ProcessingTask) -> Optional[Dict]:
+        if stale_ids:
+            logging.info(f"🧹 Cleaned {len(stale_ids)} stale tracks for {camera_id}")
+
+def _process_single_frame(self, frame: np.ndarray, frame_idx: int, task: ProcessingTask) -> Optional[Dict]:
         """Process a single frame and return transaction info or None if skipped"""
         frame_uint8 = self._normalize_to_uint8(frame)
+        
+        # 1. Inference
         class_id, total_fee, confidence, bbox = self._run_inference(frame_uint8)
-
-        # ==============================================================================
-        # ✅ Call Aik's tracking logic function
-        # ==============================================================================
-        track_id_from_logic, is_crossed = self._run_aik_tracking(
+        
+        # 2. Tracking
+        (
+            track_id, 
+            class_id, 
+            confidence, 
+            line1_frame, 
+            line1_time, 
+            status_count, 
+        ) = self._run_truck_tracker(
             camera_id=task.camera_id,
             class_id=class_id,
             confidence=confidence,
             bbox=bbox,
-            frame_idx=frame_idx
+            frame_idx=frame_idx,
+            frame_height=frame_uint8.shape[0],
         )
+
+        if track_id is None or not status_count:
+            return None
+
+        # === [Logic กันซ้ำด้วย Redis] ===
+        # สร้าง Key: "dedup:กล้อง:คลาสรถ" (ตัด Track ID ออกไป เพราะ ID อาจเปลี่ยน)
+        dedup_key = f"dedup:{task.camera_id}:{class_id}"
         
-        if track_id_from_logic is None:
+        # เช็คว่ามี Key นี้ใน Redis ไหม?
+        if self.redis_client.exists(dedup_key):
+            logging.warning(f"🚫 REDIS SKIP: Found duplicate vehicle (Class {class_id}) within cooldown.")
             return None
+            
+        # ถ้ายังไม่มี -> สั่ง Redis ให้จำไว้ 5 วินาที
+        self.redis_client.set(dedup_key, "1", ex=5)
+        # ==============================
 
-        # [OPTION] Uncomment below if you only want to save when crossing line
-        # if not is_crossed: return None 
-
-        # Skip invalid detections
-        if bbox is None or class_id == VehicleClass.OTHER.value:
-            return None
-
-        # Convert and upload image
+        # 3. Convert Image & Upload
         minio_path = self.convert_npy_to_jpg(
             npy_array=frame_uint8,
             frame_index=frame_idx,
@@ -664,97 +756,68 @@ class ProcessingService:
         if not minio_path:
             return None
 
-        # Generate unique track_id if not provided
-        # Use Track ID from Aik's Logic
-        track_id = track_id_from_logic
-
-        # Save transaction
-        transaction = VehicleTransaction(
+        # 4. Prepare Transaction
+        tx = VehicleTransaction(
             camera_id=task.camera_id,
-            track_id=track_id,
+            track_id=str(track_id),
             class_id=class_id,
             total_fee=total_fee,
-            time_stamp=task.timestamp or datetime.datetime.now(datetime.timezone.utc),
+            time_stamp=line1_time or datetime.datetime.now(THAI_TIMEZONE),
             img_path=minio_path,
-            confidence=confidence,
+            confidence=confidence
         )
-        
+
+        # 5. Insert to DB (and CSV Log)
         try:
-            self.db.insert_transaction(transaction)
+            self.db.insert_transaction(tx)
             logging.info(f"✅ Saved transaction for {track_id}")
-            return {
-                "track_id": track_id,
-                "minio_path": minio_path,
-                "transaction": transaction.to_dict()
-            }
+            return tx.to_dict()
         except Exception as e:
             logging.error(f"DB insert failed: {e}")
             return None
 
-    def process_task(self, task: ProcessingTask) -> Dict[str, Any]:
-        """Process task - just do inference and save to DB"""
-        batch_object = None
-
+def process_task(self, task: ProcessingTask) -> Dict[str, Any]:
+        """Main entry point for processing a task"""
+        logging.info(f"🚀 Processing task: {task.task_id} for camera {task.camera_id}")
+        
         try:
-            if not task.object_key_or_prefix:
-                logging.error(f"Empty object_key_or_prefix for task {task.task_id}")
-                return {"status": "error", "reason": "Missing object key"}
-            
-            if task.camera_id not in task.object_key_or_prefix:
-                logging.error(f"Camera ID mismatch in object_key")
-                return {"status": "error", "reason": "Camera ID mismatch"}
-            
-            # Wait for .npy file
-            batch_object = self.minio_manager.wait_for_npy_file(
-                bucket=task.minio_bucket,
-                prefix=task.object_key_or_prefix,
-                timeout_seconds=self.npy_timeout
+            # 1. รอและโหลดไฟล์ .npy จาก MinIO
+            npy_data = self.minio_manager.wait_for_npy_file(
+                bucket_name=task.bucket_name,
+                object_name=task.object_name
             )
-
-            if batch_object is None:
-                logging.error(f"Failed to retrieve .npy file - timeout")
-                return {"status": "timeout_npy_file", "task_id": task.task_id}
-
-            # Download to RAM
-            data_bytes = self.minio_manager.get_object_data(
-                bucket=task.minio_bucket,
-                object_name=batch_object
-            )
-
-            try:
-                with BytesIO(data_bytes) as bio:
-                    batch_data = np.load(bio)
-                
-                if batch_data.size == 0:
-                    return {"status": "empty_batch", "task_id": task.task_id}
-                    
-                if batch_data.ndim not in (3, 4):
-                    return {"status": "invalid_shape", "task_id": task.task_id}
-                    
-            except Exception as e:
-                logging.error(f"Failed to load batch: {e}")
-                return {"status": "corrupt_batch", "task_id": task.task_id}
-
-            # Process frame(s)
-            if batch_data.ndim == 3:
-                batch_data = np.expand_dims(batch_data, axis=0)  # Make it (1, H, W, C)
             
-            processed_count = 0
+            if npy_data is None:
+                raise FileNotFoundError(f"Could not fetch {task.object_name} from MinIO")
+
+            # 2. โหลดข้อมูลเข้า Numpy Array
+            with BytesIO(npy_data) as f:
+                frames = np.load(f)
+            
+            logging.info(f"🎞️ Loaded {len(frames)} frames. Shape: {frames.shape}")
+            
+            # 3. วนลูปประมวลผลทีละเฟรม
             results = []
-            
-            for frame_idx, frame in enumerate(batch_data):
-                result = self._process_single_frame(frame, frame_idx, task)
+            for i, frame in enumerate(frames):
+                # เรียกใช้ _process_single_frame (ที่มี Logic Redis กันซ้ำอยู่ข้างใน)
+                result = self._process_single_frame(frame, i, task)
                 if result:
-                    processed_count += 1
                     results.append(result)
-            
+
+            logging.info(f"✅ Task {task.task_id} completed. Generated {len(results)} transactions.")
             return {
                 "status": "success",
                 "task_id": task.task_id,
-                "frames_processed": processed_count,
-                "results": results
+                "transactions": results
             }
 
+        except Exception as e:
+            logging.error(f"💥 Error processing task {task.task_id}: {e}")
+            return {
+                "status": "error", 
+                "task_id": task.task_id, 
+                "error": str(e)
+            }
         except Exception as e:
             logging.error(f"Batch processing failed: {e}")
             return {"status": "error", "task_id": task.task_id, "error": str(e)}
@@ -766,131 +829,71 @@ class ProcessingService:
                 except Exception as e:
                     logging.warning(f"Cleanup failed: {e}")
 def main():
-    """Main entry point - single queue, handles all cameras dynamically"""
-    logging.info("Initializing Processing Service with Tracking...")
-
-    required_vars = [
-        "REDIS_HOST", "REDIS_PORT", "MINIO_ENDPOINT", "MINIO_ACCESS_KEY",
-        "MINIO_SECRET_KEY", "DB_HOST", "DB_PORT", "POSTGRES_DB",
-        "POSTGRES_USER", "POSTGRES_PASSWORD","NPY_TIMEOUT_SECONDS"
-    ]
-
-    missing_vars = [var for var in required_vars if not os.getenv(var)]
-    if missing_vars:
-        raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
-
-    config = {
-        "redis_host": os.getenv("REDIS_HOST"),
-        "redis_port": int(os.getenv("REDIS_PORT")),
-        "minio_endpoint": os.getenv("MINIO_ENDPOINT"),
-        "minio_access_key": os.getenv("MINIO_ACCESS_KEY"),
-        "minio_secret_key": os.getenv("MINIO_SECRET_KEY"),
-        "minio_secure": os.getenv("MINIO_SECURE", "false").lower() == "true",
-        "db_host": os.getenv("DB_HOST"),
-        "db_port": int(os.getenv("DB_PORT")),
-        "db_name": os.getenv("POSTGRES_DB"),
-        "db_user": os.getenv("POSTGRES_USER"),
-        "db_password": os.getenv("POSTGRES_PASSWORD"),
-        "mlflow_tracking_uri": os.getenv("MLFLOW_TRACKING_URI", "http://mlflow-server:5000"),
-        "model_uri": os.getenv("MODEL_URI", "models:/Truck_classification_Model/Production"),
-        "npy_timeout_seconds": int(os.getenv("NPY_TIMEOUT_SECONDS")),
+    # 1. Config Database
+    db_config = {
+        "host": os.getenv("DB_HOST", "postgres"),
+        "port": int(os.getenv("DB_PORT", 5432)),
+        "database": os.getenv("POSTGRES_DB", "vehicle_db"),
+        "user": os.getenv("POSTGRES_USER", "postgres"),
+        "password": os.getenv("POSTGRES_PASSWORD", "postgres1234"),
+    }
+    
+    # 2. Config MinIO
+    minio_config = {
+        "endpoint": os.getenv("MINIO_ENDPOINT", "minio:9000"),
+        "access_key": os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
+        "secret_key": os.getenv("MINIO_SECRET_KEY", "minioadmin"),
+        "secure": os.getenv("MINIO_SECURE", "false").lower() == "true"
     }
 
-    redis_manager = RedisQueueManager(host=config["redis_host"], port=config["redis_port"])
-    num_workers = int(os.getenv("NUM_WORKERS", 4))  # Scale workers based on camera count
-    
-    logging.info(f"Starting Worker Pool with {num_workers} processes")
-    logging.info(f"Monitoring single queue: {redis_manager.queue_name}")
-    logging.info("Will handle any camera_id dynamically from task metadata")
+    # 3. Config Redis
+    redis_config = {
+        "host": os.getenv("REDIS_HOST", "redis"),
+        "port": int(os.getenv("REDIS_PORT", 6379))
+    }
 
-    # Create Pub/Sub client
-    pubsub_client = redis.Redis(
-        host=config["redis_host"], 
-        port=config["redis_port"], 
-        decode_responses=True
+    # 4. รวม Config (จุดที่เกิด Error)
+    worker_config = {
+        "postgres": db_config,  # ✅ ต้องมี Key นี้
+        "minio": minio_config,
+        "redis": redis_config
+    }
+
+    # Setup Redis Manager สำหรับ Main Process
+    redis_manager = RedisQueueManager(
+        host=redis_config["host"], 
+        port=redis_config["port"]
     )
-    pubsub = pubsub_client.pubsub()
-    pubsub.subscribe(redis_manager.notification_channel)
     
-    logging.info(f"📡 Subscribed to notification channel: {redis_manager.notification_channel}")
-
-    # Callback function for handling results
-    def handle_result(future, task_json):
+    # เริ่มต้น Worker Pool
+    num_workers = int(os.getenv("NUM_WORKERS", 4))
+    logging.info(f"🚀 Starting Worker Pool with {num_workers} workers...")
+    
+    with ProcessPoolExecutor(max_workers=num_workers, initializer=worker_service, initargs=(worker_config,)) as executor:
+        # ส่วน PubSub Logic
+        pubsub = redis_manager.client.pubsub()
+        pubsub.subscribe(redis_manager.queue_name)
+        
+        logging.info(f"👂 Listening for tasks on queue: {redis_manager.queue_name}")
+        
         try:
-            result = future.result()
-            
-            # Log the actual result
-            if result.get("status") == "success":
-                logging.info(f"✅ COMPLETED: {result.get('task_id')} - Saved to DB")
-            elif result.get("status") == "timeout_npy_file":
-                task_data = json.loads(task_json)
-                retry_count = task_data.get("retry_count", 0)
-                
-                if retry_count < MAX_RETRIES:
-                    logging.warning(
-                        f"⚠️ TIMEOUT: {result.get('task_id')} - Retrying ({retry_count + 1}/{MAX_RETRIES})"
-                    )       
-                    task_data["retry_count"] = retry_count + 1
-                    updated_task_json = json.dumps(task_data)    
-                    redis_manager.client.rpush(redis_manager.queue_name, updated_task_json)
-                    redis_manager.client.publish(redis_manager.notification_channel, "new_task")
-                else:
-                    logging.error(
-                        f"❌ FAILED: {result.get('task_id')} - Max retries exceeded"
-                    )
-                    redis_manager.client.rpush("failed_tasks", task_json)
-            else:
-                # Log other statuses
-                logging.warning(f"⚠️ INCOMPLETE: {result.get('task_id')} - Status: {result.get('status')}")
-                    
-        except Exception as e:
-            logging.error(f"❌ EXCEPTION: Task processing failed - {e}")
-
-    with ProcessPoolExecutor(max_workers=num_workers, initializer=worker_service, initargs=(config,)) as executor:
-        try:
-            # Check for existing tasks on startup
-            logging.info("🔍 Checking for existing tasks in queue...")
-            startup_tasks = 0
-            while True:
-                result = redis_manager.client.lpop(redis_manager.queue_name)
-                if not result:
-                    break
-                startup_tasks += 1
-                task_json = result
-                future = executor.submit(task_handler, task_json)
-                future.add_done_callback(lambda f, t=task_json: handle_result(f, t))
-            
-            if startup_tasks > 0:
-                logging.info(f"✅ Found and dispatched {startup_tasks} existing tasks")
-            else:
-                logging.info("✅ Queue was empty on startup")
-            
-            # Listen for notifications
-            logging.info("👂 Listening for new task notifications...")
             for message in pubsub.listen():
                 if message['type'] == 'message':
-                    logging.info("🔔 Received notification: New task available!")
-                    
-                    # Process all available tasks
-                    tasks_dispatched = 0
+                    # ดึงงานจาก Queue
                     while True:
-                        result = redis_manager.client.lpop(redis_manager.queue_name)
-                        if not result:
+                        task_json = redis_manager.client.lpop(redis_manager.queue_name)
+                        if not task_json:
                             break
                         
-                        tasks_dispatched += 1
-                        task_json = result
+                        # ส่งงานให้ Worker
+                        logging.info(f"📨 Dispatching task to worker")
                         future = executor.submit(task_handler, task_json)
-                        future.add_done_callback(lambda f, t=task_json: handle_result(f, t))
-                    
-                    if tasks_dispatched > 0:
-                        logging.info(f"✅ Dispatched {tasks_dispatched} task(s)")
                         
         except KeyboardInterrupt:
-            logging.info("\nShutting down worker pool...")
+            logging.info("🛑 Shutting down...")
             pubsub.close()
         except Exception as e:
-            logging.error(f"Worker pool error: {e}")
+            logging.error(f"❌ Error: {e}")
             pubsub.close()
             raise
 if __name__ == "__main__":
