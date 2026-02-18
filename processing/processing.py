@@ -40,7 +40,6 @@ RETRY_DELAY = 0.01  # Seconds to wait between retries (10ms)
 MAX_WAIT_TIME = 30  # Maximum seconds to wait before logging warning (not stopping)
 MAX_RETRIES = 3
 
-
 def worker_service(config: Dict[str, Any]):
     global _worker_service
     _worker_service = ProcessingService(**config)
@@ -428,22 +427,21 @@ class ProcessingService:
             outputs = self.session.run(None, {input_name: input_tensor})
             logging.info(f"⏱️  ort.run:    {time.time()-t2:.3f}s")
 
-            t3 = time.time()
-            class_id, confidence, bbox = self._postprocess_outputs(outputs)
-            logging.info(f"⏱️  postprocess:{time.time()-t3:.3f}s")
-                
-            # === NEW: Filter out OTHER class ===
-            if class_id == VehicleClass.OTHER.value:
-                logging.warning(f"⏭️  Ignoring OTHER class detection - not a real vehicle")
-                return class_id, 0.0, 0.0, None
+            #TODO: Send bbox to fucntion bytetrack เพื่อให้ได้ track id 
+            dets = self._postprocess_outputs(outputs)
+            results = []
+            for class_id, confidence, bbox in dets:
+                if class_id == VehicleClass.OTHER.value:
+                    continue
             
-            vehicle_info = self.db.get_vehicle_class(class_id)
-            total_fee = vehicle_info["total_fee"] if vehicle_info else 0.00
+                vehicle_info = self.db.get_vehicle_class(class_id)
+                total_fee = vehicle_info["total_fee"] if vehicle_info else 0.00
+                results.append((class_id, total_fee, confidence, bbox))
             
-            return class_id, total_fee, confidence, bbox
+            return results
         except Exception as e:
             logging.error(f"✗ Inference failed: {e}")
-            return 0, 0.0, 0.0, None
+            return []
 
     def _preprocess_frame(self, frame_bgr: np.ndarray, input_size=(640, 640)) -> np.ndarray:
         if frame_bgr.ndim == 2:
@@ -457,30 +455,115 @@ class ProcessingService:
         frame_chw = np.transpose(frame_norm, (2, 0, 1))
         return np.expand_dims(frame_chw, axis=0)
 
-    def _postprocess_outputs(self, outputs) -> Tuple[int, float, Optional[Tuple[int, int, int, int]]]:
-        
+    def _postprocess_outputs(
+        self,
+        outputs,
+        conf_thres: float = 0.35,
+        iou_thres: float = 0.50,
+        topk_per_class: int = 50,
+    ) -> List[Tuple[int, float, Tuple[int, int, int, int]]]:
+        """
+        Per-class NMS.
+        Returns: list of (class_id, confidence, bbox_xyxy)
+        - bbox_xyxy = (x1, y1, x2, y2) in model input scale (e.g., 640x640)
+        """
         output = outputs[0][0]
-        boxes = output[:4, :].T  # Shape: (N, 4) - [x1, y1, x2, y2]
-        class_probs = output[4:, :].T
-        
+        boxes_xyxy = output[:4, :].T          # (N,4) xyxy
+        class_probs = output[4:, :].T         # (N,C)
+
+        if boxes_xyxy.size == 0 or class_probs.size == 0:
+            return []
+
         class_ids = np.argmax(class_probs, axis=1)
         confidences = np.max(class_probs, axis=1)
-        
-        if len(confidences) > 0:
-            best_idx = np.argmax(confidences)
-            class_id = int(class_ids[best_idx])
-            confidence = float(confidences[best_idx])
-            
-            # Extract bounding box for best detection
-            bbox = boxes[best_idx]  # [x1, y1, x2, y2]
-            
-            if class_id >= len(VehicleClass):
-                class_id = VehicleClass.CAR.value
-            
-            # Return box as integers
-            return class_id, confidence, tuple(map(int, bbox))
-        
-        return 0, 0.0, None
+
+        # threshold first
+        base_keep = np.where(confidences >= conf_thres)[0]
+        if base_keep.size == 0:
+            return []
+
+        boxes_xyxy = boxes_xyxy[base_keep].copy()
+        class_ids = class_ids[base_keep].astype(int)
+        confidences = confidences[base_keep].astype(float)
+
+        detections: List[Tuple[int, float, Tuple[int, int, int, int]]] = []
+
+        # process each class separately
+        unique_classes = np.unique(class_ids)
+        for cid in unique_classes:
+            idxs = np.where(class_ids == cid)[0]
+            if idxs.size == 0:
+                continue
+
+            # sort by confidence desc and keep topk_per_class for speed
+            idxs = idxs[np.argsort(confidences[idxs])[::-1]]
+            if topk_per_class is not None and topk_per_class > 0:
+                idxs = idxs[:topk_per_class]
+
+            b = boxes_xyxy[idxs]
+            s = confidences[idxs].tolist()
+
+            # xyxy -> xywh for cv2 NMSBoxes
+            x1 = b[:, 0]
+            y1 = b[:, 1]
+            x2 = b[:, 2]
+            y2 = b[:, 3]
+
+            x_min = np.minimum(x1, x2)
+            y_min = np.minimum(y1, y2)
+            x_max = np.maximum(x1, x2)
+            y_max = np.maximum(y1, y2)
+
+            w = (x_max - x_min)
+            h = (y_max - y_min)
+
+            valid = np.where((w > 1) & (h > 1))[0]
+            if valid.size == 0:
+                continue
+
+            x_min_v = x_min[valid]
+            y_min_v = y_min[valid]
+            w_v = w[valid]
+            h_v = h[valid]
+
+            boxes_xywh = np.stack([x_min_v, y_min_v, w_v, h_v], axis=1).astype(float).tolist()
+            scores_v = [s[i] for i in valid]
+
+            kept = cv2.dnn.NMSBoxes(
+                bboxes=boxes_xywh,
+                scores=scores_v,
+                score_threshold=conf_thres,
+                nms_threshold=iou_thres,
+            )
+
+            if kept is None or len(kept) == 0:
+                continue
+
+            # normalize OpenCV return shape
+            if isinstance(kept, (list, tuple)):
+                kept = [int(k[0]) if isinstance(k, (list, tuple, np.ndarray)) else int(k) for k in kept]
+            else:
+                kept = kept.flatten().astype(int).tolist()
+
+            # kept indexes refer to "valid" filtered list
+            for k in kept:
+                x, y, bw, bh = boxes_xywh[k]
+                x1i = int(round(x))
+                y1i = int(round(y))
+                x2i = int(round(x + bw))
+                y2i = int(round(y + bh))
+
+                class_id = int(cid)
+                if class_id >= len(VehicleClass):
+                    class_id = VehicleClass.CAR.value
+
+                conf = float(scores_v[k])
+                detections.append((class_id, conf, (x1i, y1i, x2i, y2i)))
+
+        # final sort across classes
+        detections.sort(key=lambda t: t[1], reverse=True)
+        return detections
+
 
     def _get_detection_center_from_bbox(self, bbox: Optional[Tuple[int, int, int, int]]) -> Tuple[int, int]:
         
@@ -558,23 +641,13 @@ class ProcessingService:
             return None
 
     def _process_single_frame(self, frame: np.ndarray, frame_idx: int, task: ProcessingTask) -> Optional[Dict]:
-        """Process a single frame and return transaction info or None if skipped"""
-        t_start = time.time()
-        
-        # Step 1: Normalize
         frame_uint8 = self._normalize_to_uint8(frame)
-        logging.info(f"⏱️ normalize: {time.time()-t_start:.3f}s")
 
-        # Step 2: Inference
-        t1 = time.time()
-        class_id, total_fee, confidence, bbox = self._run_inference(frame_uint8)
-        logging.info(f"⏱️ inference: {time.time()-t1:.3f}s")
-
-        if bbox is None or class_id == VehicleClass.OTHER.value:
+        detections = self._run_inference(frame_uint8)  # list
+        if not detections:
             return None
 
-        # Step 3: Convert + Upload to MinIO
-        t2 = time.time()
+        # Upload image once per frame (แชร์ path ให้หลาย detection ได้)
         minio_path = self.convert_npy_to_jpg(
             npy_array=frame_uint8,
             frame_index=frame_idx,
@@ -582,37 +655,39 @@ class ProcessingService:
             task_id=task.task_id,
             quality=JPG_QUALITY
         )
-        logging.info(f"⏱️ minio_upload: {time.time()-t2:.3f}s")
-
         if not minio_path:
             return None
 
-        track_id = task.track_id or f"{task.camera_id}_{task.task_id}_f{frame_idx}"
+        results = []
+        for det_idx, (class_id, total_fee, confidence, bbox) in enumerate(detections):
+            base_track = task.track_id or f"{task.camera_id}_{task.task_id}_f{frame_idx}" 
+            track_id = f"{base_track}_d{det_idx}"
 
-        # Step 4: DB insert
-        t3 = time.time()
-        transaction = VehicleTransaction(
-            camera_id=task.camera_id,
-            track_id=track_id,
-            class_id=class_id,
-            total_fee=total_fee,
-            time_stamp=task.timestamp or datetime.datetime.now(datetime.timezone.utc),
-            img_path=minio_path,
-            confidence=confidence,
-        )
-        
-        try:
-            self.db.insert_transaction(transaction)
-            logging.info(f"⏱️ db_insert:   {time.time()-t3:.3f}s")
-            logging.info(f"⏱️ TOTAL:       {time.time()-t_start:.3f}s")
-            return {
-                "track_id": track_id,
-                "minio_path": minio_path,
-                "transaction": transaction.to_dict()
-            }
-        except Exception as e:
-            logging.error(f"DB insert failed: {e}")
+            transaction = VehicleTransaction(
+                camera_id=task.camera_id,
+                track_id=track_id,
+                class_id=class_id,
+                total_fee=total_fee,
+                time_stamp=task.timestamp or datetime.datetime.now(datetime.timezone.utc),
+                img_path=minio_path,
+                confidence=confidence,
+            )
+
+            try:
+                self.db.insert_transaction(transaction)
+                results.append({
+                    "track_id": track_id,
+                    "bbox": bbox,
+                    "minio_path": minio_path,
+                    "transaction": transaction.to_dict()
+                })
+            except Exception as e:
+                logging.error(f"DB insert failed: {e}")
+
+        if not results:
             return None
+        return {"frame_idx": frame_idx, "detections": results}
+
     def process_task(self, task: ProcessingTask) -> Dict[str, Any]:
         """Process task - just do inference and save to DB"""
         batch_object = None
@@ -805,8 +880,7 @@ def main():
                         future.add_done_callback(lambda f, t=task_json: handle_result(f, t))
                     
                     if tasks_dispatched > 0:
-                        # logging.info(f"✅ Dispatched {tasks_dispatched} task(s)")
-                        return 0
+                        logging.info(f"✅ Dispatched {tasks_dispatched} task(s)")      
         except KeyboardInterrupt:
             logging.info("\nShutting down worker pool...")
             pubsub.close()
