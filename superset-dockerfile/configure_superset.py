@@ -46,17 +46,17 @@ class SupersetConfigurator:
                     return True
             except requests.exceptions.ConnectionError:
                 pass
-            
+
             if attempt < max_retries - 1:
                 print(f"  Attempt {attempt + 1}/{max_retries}... retrying in 2 seconds")
                 time.sleep(2)
-        
+
         return False
 
     def login(self) -> bool:
         """Login to Superset and get CSRF token"""
         print(f"\nLogging in as {self.username}...")
-        
+
         try:
             # Get CSRF token
             csrf_response = self.session.get(f"{self.base_url}/api/v1/security/csrf_token/")
@@ -103,15 +103,15 @@ class SupersetConfigurator:
                     return databases[0].get("id")
         except Exception as e:
             print(f"Error checking database: {e}")
-        
+
         return None
 
     def add_database(self) -> bool:
         """Add analytics database to Superset"""
         db_name = DATABASE_CONFIG["database_name"]
-        
+
         print(f"\nAdding database '{db_name}'...")
-        
+
         # Check if already exists
         existing_id = self.check_database_exists(db_name)
         if existing_id:
@@ -135,7 +135,7 @@ class SupersetConfigurator:
             if response.status_code == 201:
                 db_id = response.json().get("id")
                 print(f"✓ Database added successfully! (ID: {db_id})")
-                
+
                 # Test connection
                 if self._test_database_connection(db_id):
                     return True
@@ -201,7 +201,7 @@ class SupersetConfigurator:
         print("2. Select 'vehicle_analytics' database")
         print("3. Choose a table and create charts")
         print("4. Build your dashboard!")
-        
+
         return True
 
 

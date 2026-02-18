@@ -44,10 +44,10 @@ echo ""
 # Step 3: Configure database
 echo -e "${BLUE}Step 3: Configuring Superset database connection...${NC}"
 if command -v python &> /dev/null; then
-    python configure_superset.py
+    python superset-dockerfile/configure_superset.py
 else
     echo -e "${YELLOW}⚠ Python not found. Running configure_superset.py manually:${NC}"
-    echo "  python configure_superset.py"
+    echo "  python superset-dockerfile/configure_superset.py"
 fi
 echo ""
 

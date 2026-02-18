@@ -49,15 +49,15 @@ echo.
 
 REM Step 3: Configure database
 echo [Step 3] Configuring Superset database connection...
-if exist "configure_superset.py" (
-    python configure_superset.py
+if exist "superset-dockerfile\configure_superset.py" (
+    python superset-dockerfile\configure_superset.py
     if errorlevel 1 (
         echo.
         echo [⚠] Database configuration script failed.
-        echo You can run it manually: python configure_superset.py
+        echo You can run it manually: python superset-dockerfile\configure_superset.py
     )
 ) else (
-    echo [⚠] configure_superset.py not found in current directory
+    echo [⚠] superset-dockerfile\configure_superset.py not found
 )
 echo.
 
