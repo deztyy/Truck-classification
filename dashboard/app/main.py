@@ -1106,9 +1106,9 @@ def render_transaction_history() -> None:
             )
             
             # Prepare display dataframe
-            for idx, (_, row) in enumerate(df_page.iterrows(), start_idx + 1):
+            for _, row in df_page.iterrows():
                 with st.expander(
-                    f"🚗 Transaction #{idx} | {row['camera_id']} | {row['time_bangkok'].strftime('%H:%M:%S')} | {translate_class_name(row['class_name'])}",
+                    f"🚗 Transaction #{row['id']} | {row['camera_id']} | {row['time_bangkok'].strftime('%H:%M:%S')} | {translate_class_name(row['class_name'])}",
                     expanded=False
                 ):
                     col_img, col_info = st.columns([1, 1], gap="large")
