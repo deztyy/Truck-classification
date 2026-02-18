@@ -34,6 +34,7 @@ MINIO_BUCKET_NAME = os.getenv("MINIO_BUCKET_NAME", "video-frames")
 CACHE_TTL_SECONDS = 5
 DEFAULT_CAMERA_OPTIONS = ["1", "2", "3", "➕ Add New"]
 ADD_NEW_OPTION = "➕ Add New"
+HISTORY_PAGE_SIZE = 10
 
 # Validation Constants
 MIN_FEE = 0.0
@@ -157,6 +158,49 @@ def load_custom_css() -> None:
             padding: 2rem;
             border-radius: 15px;
             border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        /* History Tab Modern Sections */
+        .history-panel {
+            background: linear-gradient(135deg, rgba(102,126,234,0.12) 0%, rgba(118,75,162,0.12) 100%);
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 14px;
+            padding: 1rem 1.25rem;
+            margin: 0.5rem 0 1rem 0;
+        }
+
+        .history-panel-title {
+            color: #ffffff;
+            font-size: 1rem;
+            font-weight: 700;
+            margin-bottom: 0.2rem;
+        }
+
+        .history-panel-sub {
+            color: rgba(255,255,255,0.75);
+            font-size: 0.88rem;
+            margin: 0;
+        }
+
+        .history-page-badge {
+            background: rgba(255,255,255,0.07);
+            border: 1px solid rgba(255,255,255,0.14);
+            border-radius: 12px;
+            padding: 0.75rem 1rem;
+            text-align: center;
+        }
+
+        .history-page-text {
+            color: #ffd700;
+            font-size: 1.05rem;
+            font-weight: 700;
+            margin: 0;
+        }
+
+        .history-page-sub {
+            color: rgba(255,255,255,0.72);
+            font-size: 0.82rem;
+            margin-top: 0.2rem;
         }
     </style>
     """,
@@ -809,12 +853,24 @@ def render_transaction_history() -> None:
 
         if not df_all.empty:
             # Convert timestamps to Bangkok timezone
-            df_all["time_bangkok"] = pd.to_datetime(
-                df_all["time_stamp"]
-            ).dt.tz_localize('UTC').dt.tz_convert('Asia/Bangkok')
+            timestamps = pd.to_datetime(df_all["time_stamp"], errors="coerce")
+            if timestamps.dt.tz is None:
+                # If DB returns naive timestamps, treat them as Bangkok local time
+                df_all["time_bangkok"] = timestamps.dt.tz_localize(THAILAND_TZ)
+            else:
+                # If DB returns timezone-aware timestamps, convert to Bangkok
+                df_all["time_bangkok"] = timestamps.dt.tz_convert(THAILAND_TZ)
 
             # Filter options
-            st.markdown("#### 🔍 Filters")
+            st.markdown(
+                """
+                <div class="history-panel">
+                    <div class="history-panel-title">🔍 Filters</div>
+                    <p class="history-panel-sub">เลือกเงื่อนไขเพื่อค้นหา transaction ที่ต้องการ</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
             # Search box for Track ID
             search_track = st.text_input(
@@ -885,6 +941,10 @@ def render_transaction_history() -> None:
                 ]
 
             # Apply time filter
+            start_hour = None
+            start_minute = None
+            end_hour = None
+            end_minute = None
             if time_filter_type == "Time Period":
                 st.markdown("#### ⏰ Select Time Period")
                 
@@ -932,20 +992,34 @@ def render_transaction_history() -> None:
                     st.error("⚠️ Start time must be before end time!")
                 else:
                     st.info(f"📊 Filtering from {start_hour:02d}:{start_minute:02d} to {end_hour:02d}:{end_minute:02d}")
-                    
-                    # Extract hour and minute for filtering
-                    df_transactions["hour"] = df_transactions["time_bangkok"].dt.hour
-                    df_transactions["minute"] = df_transactions["time_bangkok"].dt.minute
-                    df_transactions["time_minutes"] = df_transactions["hour"] * 60 + df_transactions["minute"]
-                    
+
+                    # Extract hour and minute for filtering (avoid mutating slice)
+                    time_minutes = (
+                        df_transactions["time_bangkok"].dt.hour * 60
+                        + df_transactions["time_bangkok"].dt.minute
+                    )
+
                     # Filter by time period
                     df_transactions = df_transactions[
-                        (df_transactions["time_minutes"] >= start_time_minutes)
-                        & (df_transactions["time_minutes"] <= end_time_minutes)
+                        (time_minutes >= start_time_minutes)
+                        & (time_minutes <= end_time_minutes)
                     ]
-                    
-                    # Clean up temporary columns
-                    df_transactions = df_transactions.drop(columns=["hour", "minute", "time_minutes"])
+
+            # Keep current page when using Next/Previous; reset only when filters change
+            current_filter_state = (
+                selected_camera,
+                selected_vehicle_type,
+                search_track.strip() if search_track else "",
+                time_filter_type,
+                start_hour if time_filter_type == "Time Period" else None,
+                start_minute if time_filter_type == "Time Period" else None,
+                end_hour if time_filter_type == "Time Period" else None,
+                end_minute if time_filter_type == "Time Period" else None,
+            )
+
+            if st.session_state.get("history_filter_state") != current_filter_state:
+                st.session_state["history_page"] = 1
+                st.session_state["history_filter_state"] = current_filter_state
 
             st.markdown("---")
             # ...existing code...
@@ -964,12 +1038,77 @@ def render_transaction_history() -> None:
             st.markdown("---")
 
             # Display transactions table
-            st.markdown(f"#### 📋 Records Found: {len(df_transactions)}")
+            st.markdown(
+                f"""
+                <div class="history-panel">
+                    <div class="history-panel-title">📋 Records Found: {len(df_transactions)}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            if df_transactions.empty:
+                st.info("📭 No transactions match the selected filters")
+                return
+
+            # Pagination (10 records per page)
+            total_records = len(df_transactions)
+            total_pages = (total_records + HISTORY_PAGE_SIZE - 1) // HISTORY_PAGE_SIZE
+
+            if "history_page" not in st.session_state:
+                st.session_state["history_page"] = 1
+            if st.session_state["history_page"] > total_pages:
+                st.session_state["history_page"] = total_pages
+            if st.session_state["history_page"] < 1:
+                st.session_state["history_page"] = 1
+
+            def go_previous_page() -> None:
+                st.session_state["history_page"] = max(1, st.session_state["history_page"] - 1)
+
+            def go_next_page() -> None:
+                st.session_state["history_page"] = min(total_pages, st.session_state["history_page"] + 1)
+
+            page_col1, page_col2, page_col3 = st.columns([1, 2, 1])
+            with page_col1:
+                st.button(
+                    "⬅️ Previous",
+                    disabled=st.session_state["history_page"] <= 1,
+                    key="history_prev_btn",
+                    use_container_width=True,
+                    on_click=go_previous_page,
+                )
+            with page_col2:
+                current_page = st.session_state["history_page"]
+                st.markdown(
+                    f"""
+                    <div class="history-page-badge">
+                        <p class="history-page-text">📄 Page {current_page} of {total_pages}</p>
+                        <p class="history-page-sub">{HISTORY_PAGE_SIZE} records per page</p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            with page_col3:
+                st.button(
+                    "Next ➡️",
+                    disabled=st.session_state["history_page"] >= total_pages,
+                    key="history_next_btn",
+                    use_container_width=True,
+                    on_click=go_next_page,
+                )
+
+            start_idx = (current_page - 1) * HISTORY_PAGE_SIZE
+            end_idx = start_idx + HISTORY_PAGE_SIZE
+            df_page = df_transactions.iloc[start_idx:end_idx]
+
+            st.caption(
+                f"Showing records {start_idx + 1}-{min(end_idx, total_records)} of {total_records}"
+            )
             
             # Prepare display dataframe
-            for idx, (_, row) in enumerate(df_transactions.iterrows(), 1):
+            for _, row in df_page.iterrows():
                 with st.expander(
-                    f"🚗 Transaction #{idx} | {row['camera_id']} | {row['time_bangkok'].strftime('%H:%M:%S')} | {translate_class_name(row['class_name'])}",
+                    f"🚗 Transaction #{row['id']} | {row['camera_id']} | {row['time_bangkok'].strftime('%H:%M:%S')} | {translate_class_name(row['class_name'])}",
                     expanded=False
                 ):
                     col_img, col_info = st.columns([1, 1], gap="large")
