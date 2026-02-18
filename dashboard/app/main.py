@@ -967,31 +967,36 @@ def render_transaction_history() -> None:
             st.markdown(f"#### 📋 Records Found: {len(df_transactions)}")
             
             # Prepare display dataframe
-            df_display = df_transactions[[
-                "time_bangkok",
-                "camera_id",
-                "track_id",
-                "class_name",
-                "total_fee",
-                "confidence",
-            ]].copy()
-
-            df_display.columns = [
-                "⏰ Time",
-                "📷 Camera",
-                "🔖 Track ID",
-                "🚗 Vehicle Type",
-                "💰 Fee",
-                "🎯 Confidence",
-            ]
-
-            # Format columns
-            df_display["⏰ Time"] = df_display["⏰ Time"].dt.strftime("%H:%M:%S")
-            df_display["💰 Fee"] = df_display["💰 Fee"].apply(lambda x: f"{x:.2f} ฿")
-            df_display["🎯 Confidence"] = df_display["🎯 Confidence"].apply(lambda x: f"{x:.2f}%")
-
-            st.dataframe(df_display, use_container_width=True, hide_index=True)
-
+            for idx, (_, row) in enumerate(df_transactions.iterrows(), 1):
+                with st.expander(
+                    f"🚗 Transaction #{idx} | {row['camera_id']} | {row['time_bangkok'].strftime('%H:%M:%S')} | {translate_class_name(row['class_name'])}",
+                    expanded=False
+                ):
+                    col_img, col_info = st.columns([1, 1], gap="large")
+                    
+                    # Image column
+                    with col_img:
+                        st.markdown("**📸 Vehicle Image**")
+                        if row["img_path"] and row["img_path"] != "":
+                            image = get_image_from_minio(row["img_path"])
+                            if image:
+                                st.image(image, use_container_width=True)
+                            else:
+                                st.warning("⚠️ Image not available")
+                        else:
+                            st.info("📭 No image recorded")
+                    
+                    # Info column
+                    with col_info:
+                        st.markdown("**📋 Transaction Details**")
+                        st.write(f"**⏰ Time:** {row['time_bangkok'].strftime('%H:%M:%S')}")
+                        st.write(f"**📷 Camera ID:** {row['camera_id']}")
+                        st.write(f"**🔖 Track ID:** {row['track_id']}")
+                        st.write(f"**🚗 Vehicle Type:** {translate_class_name(row['class_name'])}")
+                        st.write(f"**💰 Total Fee:** {row['total_fee']:.2f} ฿")
+                        st.write(f"**🎯 Confidence:** {row['confidence']:.2f}%")
+                        st.divider()
+                        st.write(f"**Transaction ID:** `{row['id']}`")
         else:
             st.markdown(
                 """
