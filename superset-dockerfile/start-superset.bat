@@ -4,6 +4,8 @@ REM This script starts all necessary services for Superset and configures it
 
 setlocal enabledelayedexpansion
 
+pushd "%~dp0.."
+
 cls
 echo ===============================================================
 echo    Apache Superset Integration - Automated Setup (Windows)
@@ -16,6 +18,7 @@ echo This may take a minute or two...
 docker-compose up -d superset superset-postgres db redis minio
 if errorlevel 1 (
     echo Error starting containers. Check Docker is running.
+    popd
     pause
     exit /b 1
 )
@@ -89,4 +92,6 @@ echo   6. Start building dashboards!
 echo.
 echo ===============================================================
 echo.
+
+popd
 pause
