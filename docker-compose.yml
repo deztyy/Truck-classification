@@ -314,7 +314,7 @@ services:
       - "8088:8088"
     volumes:
       - superset_data:/var/lib/superset
-      - ./superset_config.py:/app/pythonpath/superset_config.py
+      - ./superset-dockerfile/superset_config.py:/app/pythonpath/superset_config.py
     networks:
       - analytics_network
     command: >
