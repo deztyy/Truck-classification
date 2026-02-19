@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS vehicle_transactions (
     total_fee DECIMAL(10,2) DEFAULT 0.00,
     time_stamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     img_path TEXT,
-    confidence FLOAT
+    confidence FLOAT,
 );
 
 -- Insert Vehicle Classes Reference Data
@@ -39,3 +39,5 @@ ON CONFLICT (class_id) DO NOTHING;
 CREATE INDEX IF NOT EXISTS idx_vehicle_transactions_camera_id ON vehicle_transactions(camera_id);
 CREATE INDEX IF NOT EXISTS idx_vehicle_transactions_time_stamp ON vehicle_transactions(time_stamp);
 CREATE INDEX IF NOT EXISTS idx_vehicle_transactions_class_id ON vehicle_transactions(class_id);
+CREATE UNIQUE INDEX IF NOT EXISTS unique_camera_track 
+ON vehicle_transactions (camera_id, track_id, date(time_stamp));
