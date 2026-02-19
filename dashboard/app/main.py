@@ -1432,21 +1432,24 @@ def main() -> None:
 
     st.markdown("---")
 
-    # Create tabs
-    tab1, tab2, tab3, tab4 = st.tabs(
-        ["🏠 Dashboard", "📜 History", "⚙️ Master Data", "📊 Superset"]
+    # Stateful top navigation (persists selected section across reruns)
+    navigation_options = ["🏠 Dashboard", "📜 History", "⚙️ Master Data", "📊 Superset"]
+    active_section = st.radio(
+        "Navigate",
+        options=navigation_options,
+        index=navigation_options.index(st.session_state.get("active_section", navigation_options[0])),
+        key="active_section",
+        label_visibility="collapsed",
+        horizontal=True,
     )
 
-    with tab1:
+    if active_section == "🏠 Dashboard":
         render_dashboard_tab()
-
-    with tab2:
+    elif active_section == "📜 History":
         render_transaction_history()
-
-    with tab3:
+    elif active_section == "⚙️ Master Data":
         render_master_data_tab(df_classes)
-
-    with tab4:
+    elif active_section == "📊 Superset":
         render_superset_tab()
 
 
