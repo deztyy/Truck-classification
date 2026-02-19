@@ -1,7 +1,7 @@
 import atexit
+# from pyexpat import model
 import threading
 import mlflow
-import onnxruntime as ort
 import cv2
 import datetime
 import json
@@ -13,7 +13,9 @@ from enum import Enum
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple
 import pytz
+# import onnxruntime as ort
 
+from ultralytics import YOLO
 from psycopg2 import pool
 import numpy as np
 import psycopg2
@@ -40,19 +42,29 @@ RETRY_DELAY = 0.01  # Seconds to wait between retries (10ms)
 MAX_WAIT_TIME = 30  # Maximum seconds to wait before logging warning (not stopping)
 MAX_RETRIES = 3
 
+LINE_Y1 = 270
+LINE_Y2 = 350
+COUNT_DIRECTION = "down"
+
 def worker_service(config: Dict[str, Any]):
     global _worker_service
     _worker_service = ProcessingService(**config)
     atexit.register(lambda: _worker_service.db.close())
 
-def task_handler(task_json: str):
-    global _worker_service
+# Change this standalone function
+def task_handler(task_json):
+    # Access the global service instance created by worker_service
+    service = _worker_service 
+    if not service:
+        logging.error("Worker service not initialized!")
+        return {"status": "error", "reason": "Service not initialized"}
+
     try:
         task = ProcessingTask.from_json(task_json)
-        return _worker_service.process_task(task)
+        return service.process_task(task)
+        
     except Exception as e:
-        logging.error(f"Task processing error: {e}")
-        logging.error(f"Worker PID {os.getpid()} failed task: {e}")
+        logging.error(f"Task handler failed: {e}")
         return {"status": "error", "error": str(e)}
 
 class VehicleClass(Enum):
@@ -344,6 +356,7 @@ class PostgreSQLDatabase:
                     INSERT INTO vehicle_transactions 
                     (camera_id, track_id, class_id, total_fee, time_stamp, img_path, confidence)
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (camera_id, track_id, date(time_stamp)) DO NOTHING
                 """, (
                     transaction.camera_id, transaction.track_id, transaction.class_id,
                     transaction.total_fee, transaction.time_stamp, transaction.img_path,
@@ -403,187 +416,62 @@ class ProcessingService:
         # Load model
         mlflow.set_tracking_uri(mlflow_tracking_uri)
         local_model_path = mlflow.artifacts.download_artifacts(artifact_uri=model_uri)
+        self.onnx_path = os.path.join(local_model_path, "model.onnx")
 
-        onnx_path = os.path.join(local_model_path, "model.onnx")
+        self.trackers = {}
 
-        so = ort.SessionOptions()
-        so.intra_op_num_threads = 4
-        so.inter_op_num_threads = 4
-        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    def get_tracker(self, camera_id):
+        """Lazy load a YOLO instance for each camera"""
+        if camera_id not in self.trackers:
+            logging.info(f"🔄 Loading new YOLO instance for Camera: {camera_id}")
+            model = YOLO(self.onnx_path, task='detect')
+            self.trackers[camera_id] = model
+        return self.trackers[camera_id]
 
-        self.session = ort.InferenceSession(
-            onnx_path,
-            sess_options=so,
-            providers=["CUDAExecutionProvider","CPUExecutionProvider"]
-        )
-    def _run_inference(self, frame: np.ndarray) -> Tuple[int, float, float, Optional[Tuple[int, int, int, int]]]:
-        try:
-            t1 = time.time()
-            input_tensor = self._preprocess_frame(frame)
-            logging.info(f"⏱️  preprocess: {time.time()-t1:.3f}s")
+    def _is_counted(self, camera_id, track_id):
+        key = f"counted_tracks:{camera_id}:{track_id}"
+        return self.redis_client.exists(key)
 
-            t2 = time.time()
-            input_name = self.session.get_inputs()[0].name
-            outputs = self.session.run(None, {input_name: input_tensor})
-            logging.info(f"⏱️  ort.run:    {time.time()-t2:.3f}s")
+    def _mark_counted(self, camera_id, track_id):
+        key = f"counted_tracks:{camera_id}:{track_id}"
+        self.redis_client.setex(key, 3600, 1)  # expires in 1 hour
 
-            #TODO: Send bbox to fucntion bytetrack เพื่อให้ได้ track id 
-            dets = self._postprocess_outputs(outputs)
-            results = []
-            for class_id, confidence, bbox in dets:
-                if class_id == VehicleClass.OTHER.value:
-                    continue
-            
-                vehicle_info = self.db.get_vehicle_class(class_id)
-                total_fee = vehicle_info["total_fee"] if vehicle_info else 0.00
-                results.append((class_id, total_fee, confidence, bbox))
-            
-            return results
-        except Exception as e:
-            logging.error(f"✗ Inference failed: {e}")
-            return []
-
-    def _preprocess_frame(self, frame_bgr: np.ndarray, input_size=(640, 640)) -> np.ndarray:
-        if frame_bgr.ndim == 2:
-            frame_bgr = cv2.cvtColor(frame_bgr, cv2.COLOR_GRAY2BGR)
-        elif frame_bgr.shape[2] == 1:
-            frame_bgr = cv2.cvtColor(frame_bgr, cv2.COLOR_GRAY2BGR)
-
-        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        frame_resized = cv2.resize(frame_rgb, input_size)
-        frame_norm = frame_resized.astype(np.float32) / 255.0
-        frame_chw = np.transpose(frame_norm, (2, 0, 1))
-        return np.expand_dims(frame_chw, axis=0)
-
-    def _postprocess_outputs(
-        self,
-        outputs,
-        conf_thres: float = 0.35,
-        iou_thres: float = 0.50,
-        topk_per_class: int = 50,
-    ) -> List[Tuple[int, float, Tuple[int, int, int, int]]]:
-        """
-        Per-class NMS.
-        Returns: list of (class_id, confidence, bbox_xyxy)
-        - bbox_xyxy = (x1, y1, x2, y2) in model input scale (e.g., 640x640)
-        """
-        output = outputs[0][0]
-        boxes_xyxy = output[:4, :].T          # (N,4) xyxy
-        class_probs = output[4:, :].T         # (N,C)
-
-        if boxes_xyxy.size == 0 or class_probs.size == 0:
-            return []
-
-        class_ids = np.argmax(class_probs, axis=1)
-        confidences = np.max(class_probs, axis=1)
-
-        # threshold first
-        base_keep = np.where(confidences >= conf_thres)[0]
-        if base_keep.size == 0:
-            return []
-
-        boxes_xyxy = boxes_xyxy[base_keep].copy()
-        class_ids = class_ids[base_keep].astype(int)
-        confidences = confidences[base_keep].astype(float)
-
-        detections: List[Tuple[int, float, Tuple[int, int, int, int]]] = []
-
-        # process each class separately
-        unique_classes = np.unique(class_ids)
-        for cid in unique_classes:
-            idxs = np.where(class_ids == cid)[0]
-            if idxs.size == 0:
-                continue
-
-            # sort by confidence desc and keep topk_per_class for speed
-            idxs = idxs[np.argsort(confidences[idxs])[::-1]]
-            if topk_per_class is not None and topk_per_class > 0:
-                idxs = idxs[:topk_per_class]
-
-            b = boxes_xyxy[idxs]
-            s = confidences[idxs].tolist()
-
-            # xyxy -> xywh for cv2 NMSBoxes
-            x1 = b[:, 0]
-            y1 = b[:, 1]
-            x2 = b[:, 2]
-            y2 = b[:, 3]
-
-            x_min = np.minimum(x1, x2)
-            y_min = np.minimum(y1, y2)
-            x_max = np.maximum(x1, x2)
-            y_max = np.maximum(y1, y2)
-
-            w = (x_max - x_min)
-            h = (y_max - y_min)
-
-            valid = np.where((w > 1) & (h > 1))[0]
-            if valid.size == 0:
-                continue
-
-            x_min_v = x_min[valid]
-            y_min_v = y_min[valid]
-            w_v = w[valid]
-            h_v = h[valid]
-
-            boxes_xywh = np.stack([x_min_v, y_min_v, w_v, h_v], axis=1).astype(float).tolist()
-            scores_v = [s[i] for i in valid]
-
-            kept = cv2.dnn.NMSBoxes(
-                bboxes=boxes_xywh,
-                scores=scores_v,
-                score_threshold=conf_thres,
-                nms_threshold=iou_thres,
-            )
-
-            if kept is None or len(kept) == 0:
-                continue
-
-            # normalize OpenCV return shape
-            if isinstance(kept, (list, tuple)):
-                kept = [int(k[0]) if isinstance(k, (list, tuple, np.ndarray)) else int(k) for k in kept]
-            else:
-                kept = kept.flatten().astype(int).tolist()
-
-            # kept indexes refer to "valid" filtered list
-            for k in kept:
-                x, y, bw, bh = boxes_xywh[k]
-                x1i = int(round(x))
-                y1i = int(round(y))
-                x2i = int(round(x + bw))
-                y2i = int(round(y + bh))
-
-                class_id = int(cid)
-                if class_id >= len(VehicleClass):
-                    class_id = VehicleClass.CAR.value
-
-                conf = float(scores_v[k])
-                detections.append((class_id, conf, (x1i, y1i, x2i, y2i)))
-
-        # final sort across classes
-        detections.sort(key=lambda t: t[1], reverse=True)
-        return detections
-
-
-    def _get_detection_center_from_bbox(self, bbox: Optional[Tuple[int, int, int, int]]) -> Tuple[int, int]:
+    def _save_position_history(self, camera_id, track_id, center_y):
+        """Store last 10 center_y positions per track"""
+        key = f"pos_history:{camera_id}:{track_id}"
         
-        if bbox is None:
-            # Fallback to frame center
-            return 320, 320
+        # Get existing history
+        raw = self.redis_client.get(key)
+        history = json.loads(raw) if raw else []
         
-        x1, y1, x2, y2 = bbox
-        center_x = (x1 + x2) // 2
-        center_y = (y1 + y2) // 2
+        # Append new position and keep last 10 only
+        history.append(center_y)
+        if len(history) > 10:
+            history = history[-10:]
         
-        return center_x, center_y
+        self.redis_client.setex(key, 3600, json.dumps(history))
+        return history
 
-    # @staticmethod
-    # def _select_frame(batch: np.ndarray) -> Tuple[np.ndarray, int]:
-    #     if batch.ndim == 4:
-    #         frame_idx = len(batch) // 2
-    #         return batch[frame_idx], frame_idx
-    #     return batch, 0
+    def _get_position_history(self, camera_id, track_id) -> list:
+        key = f"pos_history:{camera_id}:{track_id}"
+        raw = self.redis_client.get(key)
+        return json.loads(raw) if raw else []
+ 
+    def _save_pending_vehicle(self, camera_id, track_id, data: dict):
+        """Save frame + timestamp when vehicle crosses Line 1"""
+        key = f"pending_vehicle:{camera_id}:{track_id}"
+        self.redis_client.setex(key, 60, json.dumps(data))
 
+    def _get_pending_vehicle(self, camera_id, track_id) -> Optional[dict]:
+        """Get saved data when vehicle crosses Line 2"""
+        key = f"pending_vehicle:{camera_id}:{track_id}"
+        val = self.redis_client.get(key)
+        return json.loads(val) if val else None
+
+    def _delete_pending_vehicle(self, camera_id, track_id):
+        """Clean up after committing to DB"""
+        key = f"pending_vehicle:{camera_id}:{track_id}"
+        self.redis_client.delete(key)
     @staticmethod
     def _normalize_to_uint8(arr: np.ndarray) -> np.ndarray:
         if arr.dtype in (np.float32, np.float64):
@@ -595,29 +483,21 @@ class ProcessingService:
         return arr
 
     def convert_npy_to_jpg(self, npy_array: np.ndarray, frame_index: int, 
-                          camera_id: str, task_id: str, quality: int = 85) -> Optional[str]:
+                          camera_id: str, task_id: str, task_timestamp: datetime.datetime = None, quality: int = 85) -> Optional[str]:
         try:
-            now = datetime.datetime.now(THAI_TIMEZONE)
+            now = task_timestamp or datetime.datetime.now(THAI_TIMEZONE)
+            if isinstance(now, str):
+                now = datetime.datetime.fromisoformat(now)
+            # Convert to Thai timezone for filename
+            if now.tzinfo is not None:
+                now = now.astimezone(THAI_TIMEZONE)
             date_str = now.strftime("%Y-%m-%d")
             timestamp = now.strftime("%Y%m%d_%H%M%S_%f")
             jpg_filename = f"{timestamp}_f{frame_index}.jpg"
 
-            if npy_array.ndim != 3:
-                logging.error(f"Invalid array shape: {npy_array.shape}")
-                return None
-
-            if npy_array.dtype != np.uint8:
-                if npy_array.dtype in (np.float32, np.float64) and npy_array.max() <= 1.0:
-                    npy_array = (npy_array * 255).astype(np.uint8)
-                else:
-                    npy_array = npy_array.astype(np.uint8)
-
-            if npy_array.shape[2] == 3:
-                frame_rgb = cv2.cvtColor(npy_array, cv2.COLOR_BGR2RGB)
-            else:
-                frame_rgb = npy_array
-
-            image = Image.fromarray(frame_rgb)
+            if npy_array.ndim != 3: return None
+            # ... conversion logic ...
+            image = Image.fromarray(cv2.cvtColor(npy_array, cv2.COLOR_BGR2RGB))
             buf = BytesIO()
             image.save(buf, format="JPEG", quality=quality, optimize=True)
             img_bytes = buf.getvalue()
@@ -625,68 +505,262 @@ class ProcessingService:
             object_name = f"{date_str}/{camera_id}/{jpg_filename}"
             self.minio_manager.create_bucket(PROCESSED_BUCKET)
             
-            success = self.minio_manager.upload_from_bytes(
-                bucket=PROCESSED_BUCKET,
-                object_name=object_name,
-                data=img_bytes,
-                content_type="image/jpeg",
-            )
-
-            if success:
+            if self.minio_manager.upload_from_bytes(PROCESSED_BUCKET, object_name, img_bytes, "image/jpeg"):
                 return f"{PROCESSED_BUCKET}/{object_name}"
             return None
-
         except Exception as e:
-            logging.error(f"✗ Error converting frame: {e}")
+            logging.error(f"Error converting frame: {e}")
             return None
+        
+    def _save_last_known_position(self, camera_id, track_id, center_x, center_y):
+        """Save last known position when track is active"""
+        key = f"last_pos:{camera_id}:{track_id}"
+        self.redis_client.setex(key, 10, json.dumps({  # 10 sec TTL
+            "x": center_x,
+            "y": center_y,
+            "track_id": track_id
+        }))
+
+    def _get_all_lost_tracks(self, camera_id) -> list:
+        """Get all recently lost tracks for this camera"""
+        pattern = f"last_pos:{camera_id}:*"
+        lost_tracks = []
+        for key in self.redis_client.scan_iter(pattern):
+            val = self.redis_client.get(key)
+            if val:
+                lost_tracks.append(json.loads(val))
+        return lost_tracks
+
+    def _find_matching_lost_track(self, camera_id, center_x, center_y, 
+                                current_track_id, max_distance=15) -> Optional[int]:
+        """
+        Check if current detection matches a recently lost track by position.
+        Returns old track_id if match found, None otherwise.
+        """
+        lost_tracks = self._get_all_lost_tracks(camera_id)
+        
+        best_match = None
+        best_distance = max_distance  # pixel threshold
+        
+        for lost in lost_tracks:
+            # Skip if same track_id (still active)
+            if lost["track_id"] == current_track_id:
+                continue
+                
+            # Skip if already counted
+            if self._is_counted(camera_id, lost["track_id"]):
+                continue
+                
+            # Calculate Euclidean distance
+            dist = ((center_x - lost["x"]) ** 2 + (center_y - lost["y"]) ** 2) ** 0.5
+            
+            if dist < best_distance:
+                best_distance = dist
+                best_match = lost["track_id"]
+        
+        return best_match
+    def _mark_line1_crossed(self, camera_id, track_id):
+        key = f"line1_crossed:{camera_id}:{track_id}"
+        self.redis_client.setex(key, 3600, 1)
+
+    def _is_line1_crossed(self, camera_id, track_id) -> bool:
+        key = f"line1_crossed:{camera_id}:{track_id}"
+        return bool(self.redis_client.exists(key))
+
+    def _transfer_track_state(self, camera_id, old_track_id, new_track_id):
+        """Transfer all Redis state from old track_id to new track_id"""
+        
+        # Transfer position history
+        old_history = self._get_position_history(camera_id, old_track_id)
+        if old_history:
+            key = f"pos_history:{camera_id}:{new_track_id}"
+            self.redis_client.setex(key, 3600, json.dumps(old_history))
+        
+        # Transfer pending vehicle (Line 1 data)
+        pending = self._get_pending_vehicle(camera_id, old_track_id)
+        if pending:
+            self._save_pending_vehicle(camera_id, new_track_id, pending)
+            self._delete_pending_vehicle(camera_id, old_track_id)
+        if self._is_line1_crossed(camera_id, old_track_id):
+            self._mark_line1_crossed(camera_id, new_track_id)
+        self.redis_client.delete(f"line1_crossed:{camera_id}:{old_track_id}")    
+        
+        # Clean up old position key
+        self.redis_client.delete(f"last_pos:{camera_id}:{old_track_id}")
+        self.redis_client.delete(f"pos_history:{camera_id}:{old_track_id}")
+        
+        logging.info(f"🔄 ReID: Transferred state from track_{old_track_id} → track_{new_track_id}")
+
+    def _try_lock_for_insert(self, camera_id, track_id) -> bool:
+        """Atomic lock — only first caller returns True"""
+        key = f"insert_lock:{camera_id}:{track_id}"
+        # SET key 1 NX EX 3600 — only sets if key doesn't exist
+        result = self.redis_client.set(key, 1, nx=True, ex=3600)
+        return result is True
+
+    def _update_best_class(self, camera_id, track_id, class_id, conf):
+        key = f"best_class:{camera_id}:{track_id}"
+        raw = self.redis_client.get(key)
+        current = json.loads(raw) if raw else None
+        
+        if current is None or conf > current["confidence"]:
+            self.redis_client.setex(key, 3600, json.dumps({
+                "class_id": class_id,
+                "confidence": conf
+            }))
+
+    def _get_best_class(self, camera_id, track_id) -> dict:
+        key = f"best_class:{camera_id}:{track_id}"
+        raw = self.redis_client.get(key)
+        return json.loads(raw) if raw else {"class_id": 0, "confidence": 0.0}   
+    def _check_crossed_line(self, history: list, line_y: int, 
+                            direction: str, max_frame_gap: int = 10) -> bool:
+        """Check last N positions not just prev frame"""
+        if len(history) < 2:
+            return False
+        
+        curr_y = history[-1]
+        
+        # Check against recent positions
+        for prev_y in reversed(history[:-1]):
+            if direction == "down" and prev_y < line_y <= curr_y:
+                return True
+            elif direction == "up" and prev_y > line_y >= curr_y:
+                return True
+        
+        return False 
 
     def _process_single_frame(self, frame: np.ndarray, frame_idx: int, task: ProcessingTask) -> Optional[Dict]:
         frame_uint8 = self._normalize_to_uint8(frame)
+        logging.info(f"Frame shape: {frame_uint8.shape}")
+        tracker = self.get_tracker(task.camera_id)
 
-        detections = self._run_inference(frame_uint8)  # list
-        if not detections:
-            return None
-
-        # Upload image once per frame (แชร์ path ให้หลาย detection ได้)
-        minio_path = self.convert_npy_to_jpg(
-            npy_array=frame_uint8,
-            frame_index=frame_idx,
-            camera_id=task.camera_id,
-            task_id=task.task_id,
-            quality=JPG_QUALITY
+        results = tracker.track(
+            source=frame_uint8,
+            persist=True,
+            tracker="bytetrack.yaml",
+            stream=True,
+            verbose=False,
+            conf=0.35,
+            iou=0.5,
+            device=0
         )
-        if not minio_path:
-            return None
 
-        results = []
-        for det_idx, (class_id, total_fee, confidence, bbox) in enumerate(detections):
-            base_track = task.track_id or f"{task.camera_id}_{task.task_id}_f{frame_idx}" 
-            track_id = f"{base_track}_d{det_idx}"
+        final_results = []
 
-            transaction = VehicleTransaction(
-                camera_id=task.camera_id,
-                track_id=track_id,
-                class_id=class_id,
-                total_fee=total_fee,
-                time_stamp=task.timestamp or datetime.datetime.now(datetime.timezone.utc),
-                img_path=minio_path,
-                confidence=confidence,
-            )
+        for r in results:
+            if r.boxes.id is None:
+                continue
 
-            try:
-                self.db.insert_transaction(transaction)
-                results.append({
-                    "track_id": track_id,
-                    "bbox": bbox,
-                    "minio_path": minio_path,
-                    "transaction": transaction.to_dict()
-                })
-            except Exception as e:
-                logging.error(f"DB insert failed: {e}")
+            boxes = r.boxes.xyxy.cpu().numpy()
+            track_ids = r.boxes.id.int().cpu().tolist()
+            classes = r.boxes.cls.int().cpu().tolist()
+            confs = r.boxes.conf.float().cpu().tolist()
 
-        if not results:
-            return None
-        return {"frame_idx": frame_idx, "detections": results}
+            for box, track_id, cls, conf in zip(boxes, track_ids, classes, confs):
+                x1, y1, x2, y2 = box
+                center_x = int((x1 + x2) / 2)
+                center_y = int((y1 + y2) / 2)
+                matched_old_track_id = self._find_matching_lost_track(
+                    task.camera_id, center_x, center_y, track_id
+                )
+                
+                if matched_old_track_id is not None:
+                    logging.info(
+                        f"🔍 ReID match: new track_{track_id} → "
+                        f"old track_{matched_old_track_id} "
+                        f"(distance within threshold)"
+                    )
+                    # Transfer all state to new track_id
+                    self._transfer_track_state(task.camera_id, matched_old_track_id, track_id)
+
+                unique_track_id = f"{task.camera_id}_{track_id}"
+
+                # Always update position history + last known position
+                history = self._save_position_history(task.camera_id, track_id, center_y)
+                self._save_last_known_position(task.camera_id, track_id, center_x, center_y)
+                prev_y = history[-2] if len(history) >= 2 else None
+                if cls != VehicleClass.OTHER.value:
+                    self._update_best_class(task.camera_id, track_id, cls, conf)
+
+                if prev_y is None:
+                    continue
+
+                if cls == VehicleClass.OTHER.value:
+                    continue
+
+                if self._is_counted(task.camera_id, track_id):
+                    continue
+
+                # === LINE 1 ===
+                crossed_line1 = self._check_crossed_line(history, LINE_Y1, COUNT_DIRECTION)
+
+                if crossed_line1:
+                    # Validate using position history — not just prev frame
+                    if not self._is_line1_crossed(task.camera_id, track_id):
+                            logging.info(f"📸 Line 1 crossed: {unique_track_id}")
+                            minio_path = self.convert_npy_to_jpg(
+                                npy_array=frame_uint8,
+                                frame_index=frame_idx,
+                                camera_id=task.camera_id,
+                                task_id=task.task_id,
+                                task_timestamp=task.timestamp
+                            )
+
+                            self._save_pending_vehicle(task.camera_id, track_id, {
+                                "minio_path": minio_path,
+                                "timestamp": (task.timestamp or datetime.datetime.now(datetime.timezone.utc)).isoformat(),
+                                "class_id": cls,
+                                "confidence": conf,
+                                "unique_track_id": unique_track_id,
+                            })
+                            self._mark_line1_crossed(task.camera_id, track_id)
+                    continue      
+
+                # === LINE 2 ===
+                crossed_line2 = self._check_crossed_line(history, LINE_Y2, COUNT_DIRECTION)
+
+                if not crossed_line2:
+                    continue
+
+                pending = self._get_pending_vehicle(task.camera_id, track_id)
+                if pending is None:
+                    logging.warning(f"⚠️ Line 2 crossed but no Line 1 data for {unique_track_id}")
+                    continue
+
+                logging.info(f"✅ Line 2 crossed: {unique_track_id} - saving to DB")
+                if not self._try_lock_for_insert(task.camera_id, track_id):
+                    logging.warning(f"⚠️ Duplicate insert prevented for {unique_track_id}")
+                    continue
+                self._mark_counted(task.camera_id, track_id)
+                self._delete_pending_vehicle(task.camera_id, track_id)
+                
+                best = self._get_best_class(task.camera_id, track_id)
+                vehicle_info = self.db.get_vehicle_class(best["class_id"])  # ← best class
+                total_fee = vehicle_info.get("total_fee", 0.0) if vehicle_info else 0.0
+
+                transaction = VehicleTransaction(
+                    camera_id=task.camera_id,
+                    track_id=pending["unique_track_id"],
+                    class_id=best["class_id"],        # ← best class
+                    total_fee=total_fee,
+                    time_stamp=datetime.datetime.fromisoformat(pending["timestamp"]),
+                    img_path=pending["minio_path"],
+                    confidence=best["confidence"],     # ← best confidence
+                )
+
+                try:
+                    self.db.insert_transaction(transaction)
+                    final_results.append({
+                        "track_id": track_id,
+                        "bbox": box.tolist(),
+                        "class": pending["class_id"],
+                        "minio_path": pending["minio_path"]
+                    })
+                except Exception as e:
+                    logging.error(f"DB insert failed for track {track_id}: {e}")
+
+        return {"frame_idx": frame_idx, "detections": final_results} if final_results else None
 
     def process_task(self, task: ProcessingTask) -> Dict[str, Any]:
         """Process task - just do inference and save to DB"""
@@ -793,100 +867,56 @@ def main():
     }
 
     redis_manager = RedisQueueManager(host=config["redis_host"], port=config["redis_port"])
-    num_workers = int(os.getenv("NUM_WORKERS"))  # Scale workers based on camera count
     
-    logging.info(f"Starting Worker Pool with {num_workers} processes")
-    logging.info(f"Monitoring single queue: {redis_manager.queue_name}")
-    logging.info("Will handle any camera_id dynamically from task metadata")
+    # Single service instance — no ProcessPoolExecutor needed
+    service = ProcessingService(**config)
+    logging.info("✅ Single worker service initialized")
 
-    # Create Pub/Sub client
-    pubsub_client = redis.Redis(
-        host=config["redis_host"], 
-        port=config["redis_port"], 
-        decode_responses=True
-    )
+    pubsub_client = redis.Redis(host=config["redis_host"], port=config["redis_port"], decode_responses=True)
     pubsub = pubsub_client.pubsub()
     pubsub.subscribe(redis_manager.notification_channel)
-    
-    logging.info(f"📡 Subscribed to notification channel: {redis_manager.notification_channel}")
 
-    # Callback function for handling results
-    def handle_result(future, task_json):
+    def process_task_json(task_json):
         try:
-            result = future.result()
+            task = ProcessingTask.from_json(task_json)
+            result = service.process_task(task)
             
-            # Log the actual result
             if result.get("status") == "success":
-                logging.info(f"✅ COMPLETED: {result.get('task_id')} - Saved to DB")
+                logging.info(f"✅ COMPLETED: {result.get('task_id')}")
             elif result.get("status") == "timeout_npy_file":
                 task_data = json.loads(task_json)
                 retry_count = task_data.get("retry_count", 0)
-                
                 if retry_count < MAX_RETRIES:
-                    logging.warning(
-                        f"⚠️ TIMEOUT: {result.get('task_id')} - Retrying ({retry_count + 1}/{MAX_RETRIES})"
-                    )       
                     task_data["retry_count"] = retry_count + 1
-                    updated_task_json = json.dumps(task_data)    
-                    redis_manager.client.rpush(redis_manager.queue_name, updated_task_json)
+                    redis_manager.client.rpush(redis_manager.queue_name, json.dumps(task_data))
                     redis_manager.client.publish(redis_manager.notification_channel, "new_task")
                 else:
-                    logging.error(
-                        f"❌ FAILED: {result.get('task_id')} - Max retries exceeded"
-                    )
                     redis_manager.client.rpush("failed_tasks", task_json)
             else:
-                # Log other statuses
-                logging.warning(f"⚠️ INCOMPLETE: {result.get('task_id')} - Status: {result.get('status')}")
-                    
+                logging.warning(f"⚠️ INCOMPLETE: {result.get('task_id')} - {result.get('status')}")
         except Exception as e:
-            logging.error(f"❌ EXCEPTION: Task processing failed - {e}")
+            logging.error(f"❌ Task failed: {e}")
 
-    with ProcessPoolExecutor(max_workers=num_workers, initializer=worker_service, initargs=(config,)) as executor:
-        try:
-            # Check for existing tasks on startup
-            logging.info("🔍 Checking for existing tasks in queue...")
-            startup_tasks = 0
-            while True:
-                result = redis_manager.client.lpop(redis_manager.queue_name)
-                if not result:
-                    break
-                startup_tasks += 1
-                task_json = result
-                future = executor.submit(task_handler, task_json)
-                future.add_done_callback(lambda f, t=task_json: handle_result(f, t))
-            
-            if startup_tasks > 0:
-                logging.info(f"✅ Found and dispatched {startup_tasks} existing tasks")
-            else:
-                logging.info("✅ Queue was empty on startup")
-            
-            # Listen for notifications
-            logging.info("👂 Listening for new task notifications...")
-            for message in pubsub.listen():
-                if message['type'] == 'message':
-                    # logging.info("🔔 Received notification: New task available!")
-                    
-                    # Process all available tasks
-                    tasks_dispatched = 0
-                    while True:
-                        result = redis_manager.client.lpop(redis_manager.queue_name)
-                        if not result:
-                            break
-                        
-                        tasks_dispatched += 1
-                        task_json = result
-                        future = executor.submit(task_handler, task_json)
-                        future.add_done_callback(lambda f, t=task_json: handle_result(f, t))
-                    
-                    if tasks_dispatched > 0:
-                        logging.info(f"✅ Dispatched {tasks_dispatched} task(s)")      
-        except KeyboardInterrupt:
-            logging.info("\nShutting down worker pool...")
-            pubsub.close()
-        except Exception as e:
-            logging.error(f"Worker pool error: {e}")
-            pubsub.close()
-            raise
+    try:
+        # Drain existing tasks on startup
+        while True:
+            task_json = redis_manager.client.lpop(redis_manager.queue_name)
+            if not task_json:
+                break
+            process_task_json(task_json)
+
+        # Listen for new tasks
+        for message in pubsub.listen():
+            if message['type'] == 'message':
+                while True:
+                    task_json = redis_manager.client.lpop(redis_manager.queue_name)
+                    if not task_json:
+                        break
+                    process_task_json(task_json)
+
+    except KeyboardInterrupt:
+        logging.info("Shutting down...")
+        pubsub.close()
+        service.db.close()
 if __name__ == "__main__":
     main()
