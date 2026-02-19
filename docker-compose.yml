@@ -294,7 +294,9 @@ services:
       start_period: 10s
 
   superset:
-    image: apache/superset:latest-dev
+    build:
+      context: ./superset-dockerfile
+    image: superset-custom:latest
     container_name: superset
     restart: always
     deploy:
