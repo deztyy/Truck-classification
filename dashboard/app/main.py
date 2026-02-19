@@ -65,61 +65,100 @@ def load_custom_css() -> None:
     st.markdown(
         """
     <style>
-        /* Global Styles */
+        /* ========== MODERN GLOBAL STYLES ========== */
         .stApp {
-            background-color: #0e1117;
+            background: linear-gradient(135deg, #0f0f1e 0%, #1a1a2e 50%, #16213e 100%);
+            background-attachment: fixed;
         }
 
-        /* Header Styles */
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+        }
+
+        /* ========== HEADER STYLES ========== */
         .main-header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding: 1.5rem 2rem;
-            border-radius: 15px;
-            margin-bottom: 2rem;
-            box-shadow: 0 8px 32px rgba(102, 126, 234, 0.3);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
+            padding: 2rem 2.5rem;
+            border-radius: 20px;
+            margin-bottom: 2.5rem;
+            box-shadow: 0 20px 60px rgba(102, 126, 234, 0.4), inset 0 1px 0 rgba(255,255,255,0.2);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.15);
+            animation: fadeInDown 0.6s ease;
         }
 
         .header-title {
             color: white;
-            font-size: 2em;
-            font-weight: 800;
+            font-size: 2.5em;
+            font-weight: 900;
             margin: 0;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+            text-shadow: 0 4px 20px rgba(0,0,0,0.3);
             line-height: 1.2;
+            letter-spacing: -0.5px;
         }
 
         .datetime-box {
+            background: rgba(255,255,255,0.12);
+            backdrop-filter: blur(20px);
+            padding: 1rem 1.5rem;
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.25);
+            box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+            transition: all 0.3s ease;
+        }
+
+        .datetime-box:hover {
             background: rgba(255,255,255,0.15);
-            backdrop-filter: blur(10px);
-            padding: 0.75rem 1.25rem;
-            border-radius: 12px;
-            border: 1px solid rgba(255,255,255,0.2);
+            border-color: rgba(255,255,255,0.35);
+            transform: translateY(-2px);
         }
 
         .date-text {
-            color: white;
+            color: rgba(255,255,255,0.95);
             font-weight: 600;
-            line-height: 1.4;
+            line-height: 1.6;
+            font-size: 0.95rem;
         }
 
         .time-text {
             color: #ffd700;
-            font-weight: 700;
-            font-family: 'Courier New', monospace;
-            text-shadow: 1px 1px 2px rgba(0,0,0,0.3);
-            line-height: 1.4;
+            font-weight: 800;
+            font-family: 'JetBrains Mono', 'Courier New', monospace;
+            text-shadow: 0 2px 8px rgba(255,215,0,0.4);
+            line-height: 1.6;
+            font-size: 1.1rem;
+            letter-spacing: 1px;
         }
 
-        /* Responsive Design */
+        /* ========== NAVIGATION (RADIO) STYLES ========== */
+        div[data-testid="stRadio"] {
+            background: rgba(255,255,255,0.04);
+            padding: 1rem;
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.08);
+            margin: 1.5rem 0;
+        }
+
+        div[data-testid="stRadio"] > label {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+
+        div[data-testid="stRadio"] input[type="radio"] {
+            accent-color: #667eea;
+        }
+
+        /* ========== RESPONSIVE DESIGN ========== */
         @media (max-width: 768px) {
             .main-header {
-                padding: 1rem;
+                padding: 1.5rem;
             }
 
             .header-title {
-                font-size: 1.5em;
+                font-size: 1.6em;
                 text-align: center;
-                margin-bottom: 1rem;
+                margin-bottom: 1.5rem;
             }
 
             .datetime-box {
@@ -128,79 +167,209 @@ def load_custom_css() -> None:
             }
         }
 
-        /* Card Styles */
+        /* ========== CARD & EXPANDER STYLES ========== */
         div[data-testid="stExpander"] {
-            background: rgba(255,255,255,0.05);
-            border-radius: 10px;
-            border: 1px solid rgba(255,255,255,0.1);
-        }
-
-        /* Metric Styles */
-        div[data-testid="stMetricValue"] {
-            font-size: 1.5em;
-        }
-
-        /* Button Styles */
-        .stButton>button {
-            border-radius: 8px;
-            font-weight: 600;
+            background: rgba(102,126,234,0.08) !important;
+            border-radius: 14px !important;
+            border: 1px solid rgba(102,126,234,0.25) !important;
             transition: all 0.3s ease;
         }
 
-        .stButton>button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        div[data-testid="stExpander"]:hover {
+            background: rgba(102,126,234,0.12) !important;
+            border-color: rgba(102,126,234,0.4) !important;
+            box-shadow: 0 8px 24px rgba(102,126,234,0.15);
         }
 
-        /* Form Container */
+        /* ========== METRIC STYLES ========== */
+        div[data-testid="stMetricContainer"] {
+            background: linear-gradient(135deg, rgba(102,126,234,0.1) 0%, rgba(240,147,251,0.08) 100%) !important;
+            border-radius: 14px !important;
+            border: 1px solid rgba(255,255,255,0.1) !important;
+            padding: 1.5rem !important;
+            box-shadow: 0 4px 15px rgba(102,126,234,0.1);
+            transition: all 0.3s ease;
+        }
+
+        div[data-testid="stMetricContainer"]:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 30px rgba(102,126,234,0.2);
+        }
+
+        div[data-testid="stMetricValue"] {
+            font-size: 1.8em;
+            font-weight: 800;
+            color: #ffffff;
+        }
+
+        div[data-testid="stMetricLabel"] {
+            color: rgba(255,255,255,0.8);
+            font-weight: 600;
+        }
+
+        /* ========== BUTTON STYLES ========== */
+        .stButton > button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+            border: none !important;
+            border-radius: 12px !important;
+            font-weight: 700 !important;
+            padding: 0.75rem 1.5rem !important;
+            transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) !important;
+            font-size: 0.95rem !important;
+            color: white !important;
+            box-shadow: 0 4px 15px rgba(102,126,234,0.3) !important;
+        }
+
+        .stButton > button:hover {
+            transform: translateY(-3px) scale(1.02) !important;
+            box-shadow: 0 8px 30px rgba(102,126,234,0.5) !important;
+        }
+
+        .stButton > button:active {
+            transform: translateY(-1px) !important;
+        }
+
+        /* ========== FORM CONTAINER ========== */
         .form-container {
-            background: rgba(255,255,255,0.03);
+            background: linear-gradient(135deg, rgba(255,255,255,0.05) 0%, rgba(102,126,234,0.05) 100%);
             padding: 2rem;
-            border-radius: 15px;
-            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 18px;
+            border: 1px solid rgba(255,255,255,0.12);
+            backdrop-filter: blur(10px);
+            box-shadow: 0 8px 32px rgba(102,126,234,0.08);
         }
 
-        /* History Tab Modern Sections */
+        /* ========== INPUT & SELECT STYLES ========== */
+        input, select, textarea {
+            background: rgba(255,255,255,0.07) !important;
+            border: 1px solid rgba(255,255,255,0.15) !important;
+            border-radius: 10px !important;
+            color: white !important;
+            transition: all 0.3s ease !important;
+        }
+
+        input:focus, select:focus, textarea:focus {
+            background: rgba(255,255,255,0.1) !important;
+            border-color: rgba(102,126,234,0.5) !important;
+            box-shadow: 0 0 0 3px rgba(102,126,234,0.1) !important;
+        }
+
+        /* ========== HISTORY PANEL STYLES ========== */
         .history-panel {
-            background: linear-gradient(135deg, rgba(102,126,234,0.12) 0%, rgba(118,75,162,0.12) 100%);
-            border: 1px solid rgba(255,255,255,0.12);
-            border-radius: 14px;
-            padding: 1rem 1.25rem;
-            margin: 0.5rem 0 1rem 0;
+            background: linear-gradient(135deg, rgba(102,126,234,0.15) 0%, rgba(240,147,251,0.1) 100%);
+            border: 1px solid rgba(102,126,234,0.3);
+            border-radius: 16px;
+            padding: 1.5rem;
+            margin: 1.5rem 0;
+            box-shadow: 0 8px 24px rgba(102,126,234,0.12);
+            backdrop-filter: blur(10px);
+            transition: all 0.3s ease;
+        }
+
+        .history-panel:hover {
+            border-color: rgba(102,126,234,0.5);
+            box-shadow: 0 12px 32px rgba(102,126,234,0.2);
         }
 
         .history-panel-title {
             color: #ffffff;
-            font-size: 1rem;
-            font-weight: 700;
-            margin-bottom: 0.2rem;
+            font-size: 1.1rem;
+            font-weight: 800;
+            margin-bottom: 0.3rem;
+            letter-spacing: -0.3px;
         }
 
         .history-panel-sub {
-            color: rgba(255,255,255,0.75);
-            font-size: 0.88rem;
+            color: rgba(255,255,255,0.7);
+            font-size: 0.9rem;
             margin: 0;
+            font-weight: 500;
         }
 
         .history-page-badge {
-            background: rgba(255,255,255,0.07);
-            border: 1px solid rgba(255,255,255,0.14);
-            border-radius: 12px;
-            padding: 0.75rem 1rem;
+            background: linear-gradient(135deg, rgba(102,126,234,0.15) 0%, rgba(240,147,251,0.1) 100%);
+            border: 2px solid rgba(102,126,234,0.3);
+            border-radius: 14px;
+            padding: 1rem 1.5rem;
             text-align: center;
+            backdrop-filter: blur(10px);
+            transition: all 0.3s ease;
+        }
+
+        .history-page-badge:hover {
+            border-color: rgba(102,126,234,0.5);
+            background: linear-gradient(135deg, rgba(102,126,234,0.2) 0%, rgba(240,147,251,0.15) 100%);
         }
 
         .history-page-text {
             color: #ffd700;
-            font-size: 1.05rem;
-            font-weight: 700;
+            font-size: 1.15rem;
+            font-weight: 800;
             margin: 0;
+            letter-spacing: -0.3px;
         }
 
         .history-page-sub {
-            color: rgba(255,255,255,0.72);
-            font-size: 0.82rem;
-            margin-top: 0.2rem;
+            color: rgba(255,255,255,0.75);
+            font-size: 0.85rem;
+            margin-top: 0.3rem;
+            font-weight: 500;
+        }
+
+        /* ========== ANIMATIONS ========== */
+        @keyframes fadeInDown {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* ========== DIVIDER STYLES ========== */
+        hr {
+            border: 0;
+            height: 1px;
+            background: linear-gradient(to right, transparent, rgba(255,255,255,0.2), transparent);
+            margin: 2rem 0;
+        }
+
+        /* ========== TEXT STYLES ========== */
+        h1, h2, h3, h4, h5, h6 {
+            color: #ffffff !important;
+            font-weight: 700 !important;
+            letter-spacing: -0.3px !important;
+        }
+
+        /* ========== SCROLLBAR STYLES ========== */
+        ::-webkit-scrollbar {
+            width: 10px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: rgba(255,255,255,0.05);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: linear-gradient(180deg, #667eea, #764ba2);
+            border-radius: 10px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: linear-gradient(180deg, #764ba2, #667eea);
         }
     </style>
     """,
@@ -574,7 +743,7 @@ def render_header() -> None:
     <div class="main-header">
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
             <div style="flex: 1; min-width: 300px;">
-                <h1 class="header-title" style="margin: 0; text-align: left;">🚗 Vehicle Entry System</h1>
+                <h1 class="header-title" style="margin: 0; text-align: left;">Vehicle Entry System</h1>
             </div>
             <div class="datetime-box" style="flex: 0 0 auto; min-width: 280px; margin-top: 0;">
                 <div style="display: flex; align-items: center; justify-content: space-between; gap: 1.5rem;">
@@ -639,7 +808,7 @@ def cleanup_old_images() -> None:
 # ==================== CURRENT VEHICLE TAB ====================
 def render_current_vehicle_tab() -> None:
     """Render current vehicle display tab showing the latest entry"""
-    st.markdown("### 🚗 Current Vehicle")
+    st.markdown("### Current Vehicle")
 
     try:
         # Run cleanup first
@@ -673,7 +842,7 @@ def render_current_vehicle_tab() -> None:
                  padding: 3rem 2rem; border-radius: 20px; margin-bottom: 2rem;
                  box-shadow: 0 10px 40px rgba(102, 126, 234, 0.4);">
                 <div style="text-align: center; color: white; font-size: 2em; font-weight: 800;">
-                    🚗 Latest Vehicle Entry
+                    Latest Vehicle Entry
                 </div>
             </div>
             """,
@@ -788,7 +957,7 @@ def render_current_vehicle_tab() -> None:
             <div style="text-align: center; padding: 4rem 2rem;
                  background: rgba(102, 126, 234, 0.05); border-radius: 20px;
                  border: 2px dashed rgba(102, 126, 234, 0.3);">
-                <div style="font-size: 5em; opacity: 0.5;">🚗💨</div>
+                <div style="font-size: 5em; opacity: 0.5;"></div>
                 <div style="color: #667eea; font-size: 1.8em; font-weight: 700;">
                     No Vehicles Yet
                 </div>
@@ -897,7 +1066,7 @@ def render_transaction_history() -> None:
                 ]
                 vehicle_type_options = ["All Types"] + translated_types
                 selected_vehicle_type = st.selectbox(
-                    "🚗 Select Vehicle Type",
+                    "Select Vehicle Type",
                     options=vehicle_type_options,
                     index=0,
                     key="vehicle_type_filter",
@@ -1108,7 +1277,7 @@ def render_transaction_history() -> None:
             # Prepare display dataframe
             for _, row in df_page.iterrows():
                 with st.expander(
-                    f"🚗 Transaction #{row['id']} | {row['camera_id']} | {row['time_bangkok'].strftime('%H:%M:%S')} | {translate_class_name(row['class_name'])}",
+                    f"Transaction #{row['id']} | {row['camera_id']} | {row['time_bangkok'].strftime('%H:%M:%S')} | {translate_class_name(row['class_name'])}",
                     expanded=False
                 ):
                     col_img, col_info = st.columns([1, 1], gap="large")
@@ -1131,7 +1300,7 @@ def render_transaction_history() -> None:
                         st.write(f"**⏰ Time:** {row['time_bangkok'].strftime('%H:%M:%S')}")
                         st.write(f"**📷 Camera ID:** {row['camera_id']}")
                         st.write(f"**🔖 Track ID:** {row['track_id']}")
-                        st.write(f"**🚗 Vehicle Type:** {translate_class_name(row['class_name'])}")
+                        st.write(f"**Vehicle Type:** {translate_class_name(row['class_name'])}")
                         st.write(f"**💰 Total Fee:** {row['total_fee']:.2f} ฿")
                         st.write(f"**🎯 Confidence:** {row['confidence']:.2f}%")
                         st.divider()
@@ -1167,30 +1336,115 @@ def render_master_data_tab(df_classes: pd.DataFrame) -> None:
         df_classes: DataFrame containing current vehicle classes
     """
     st.markdown("### ⚙️ Vehicle Classes Management")
+    
+    st.markdown("""
+    <style>
+        .master-data-container {
+            background: linear-gradient(135deg, rgba(102,126,234,0.08) 0%, rgba(240,147,251,0.08) 100%);
+            border-radius: 16px;
+            padding: 1.5rem;
+            border: 1px solid rgba(102,126,234,0.25);
+            margin-bottom: 2rem;
+        }
+        
+        .master-data-card {
+            background: rgba(255,255,255,0.05);
+            border-radius: 14px;
+            padding: 1.25rem;
+            border: 1px solid rgba(255,255,255,0.1);
+            transition: all 0.3s ease;
+            margin-bottom: 1rem;
+        }
+        
+        .master-data-card:hover {
+            background: rgba(255,255,255,0.08);
+            border-color: rgba(102,126,234,0.3);
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(102,126,234,0.1);
+        }
+        
+        .fee-badge {
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 10px;
+            font-weight: 700;
+            font-size: 0.9rem;
+            margin: 0.5rem 0.25rem 0.5rem 0;
+        }
+    </style>
+    """, unsafe_allow_html=True)
 
     if not df_classes.empty:
+        # Show total classes count
+        col1, col2 = st.columns([3, 1])
+        with col2:
+            st.metric("Total Classes", len(df_classes), delta="Active")
+        
+        st.markdown("---")
+
         # แปลงชื่อสำหรับแสดงผล
         df_display = df_classes.copy()
         df_display["class_name"] = df_display["class_name"].apply(translate_class_name)
 
-        st.dataframe(
-            df_display,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "class_id": "ID",
-                "class_name": "Vehicle Type",
-                "entry_fee": st.column_config.NumberColumn(
-                    "Entry Fee (฿)", format="%.0f ฿"
-                ),
-                "xray_fee": st.column_config.NumberColumn(
-                    "X-Ray Fee (฿)", format="%.0f ฿"
-                ),
-                "total_fee": st.column_config.NumberColumn(
-                    "Total Fee (฿)", format="%.0f ฿"
-                ),
-            },
-        )
+        # Display as cards instead of dataframe for better visuals
+        for idx, row in df_display.iterrows():
+            col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+            
+            with col1:
+                st.markdown(f"""
+                <div class="master-data-card">
+                    <div style="font-weight: 700; color: white; font-size: 1.05rem; margin-bottom: 0.5rem;">
+                        {row['class_name']}
+                    </div>
+                    <div style="color: rgba(255,255,255,0.7); font-size: 0.85rem;">
+                        Class ID: <code>{row['class_id']}</code>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col2:
+                st.markdown(f"""
+                <div class="master-data-card">
+                    <div style="font-weight: 700; color: #ffd700; font-size: 1.1rem;">฿ {row['entry_fee']:.0f}</div>
+                    <div style="color: rgba(255,255,255,0.6); font-size: 0.75rem;">Entry Fee</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col3:
+                st.markdown(f"""
+                <div class="master-data-card">
+                    <div style="font-weight: 700; color: #ffd700; font-size: 1.1rem;">฿ {row['xray_fee']:.0f}</div>
+                    <div style="color: rgba(255,255,255,0.6); font-size: 0.75rem;">X-Ray Fee</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col4:
+                st.markdown(f"""
+                <div class="master-data-card" style="background: linear-gradient(135deg, rgba(102,126,234,0.15) 0%, rgba(240,147,251,0.1) 100%);">
+                    <div style="font-weight: 800; color: #ffffff; font-size: 1.15rem;">฿ {row['total_fee']:.0f}</div>
+                    <div style="color: rgba(255,255,255,0.7); font-size: 0.75rem; font-weight: 600;">Total</div>
+                </div>
+                """, unsafe_allow_html=True)
+        
+        # Show summary stats
+        st.markdown("---")
+        st.markdown("#### 📊 Summary Statistics")
+        
+        col_s1, col_s2, col_s3 = st.columns(3)
+        
+        with col_s1:
+            total_entry = df_display['entry_fee'].sum()
+            st.metric("Total Entry Fees", f"฿ {total_entry:.0f}")
+        
+        with col_s2:
+            total_xray = df_display['xray_fee'].sum()
+            st.metric("Total X-Ray Fees", f"฿ {total_xray:.0f}")
+        
+        with col_s3:
+            total_all = df_display['total_fee'].sum()
+            st.metric("Total Revenue", f"฿ {total_all:.0f}")
     else:
         st.info("📭 No vehicle classes defined yet")
 
@@ -1199,6 +1453,27 @@ def render_master_data_tab(df_classes: pd.DataFrame) -> None:
 def render_dashboard_tab() -> None:
     """Render dashboard with overview statistics"""
     st.markdown("### 📊 Dashboard Overview")
+    
+    # Add custom styles for dashboard
+    st.markdown("""
+    <style>
+        .dashboard-section {
+            background: linear-gradient(135deg, rgba(102,126,234,0.08) 0%, rgba(240,147,251,0.08) 100%);
+            border-radius: 16px;
+            padding: 1.5rem;
+            border: 1px solid rgba(102,126,234,0.25);
+            margin-bottom: 2rem;
+        }
+        
+        .section-title {
+            color: #ffffff;
+            font-size: 1.15rem;
+            font-weight: 800;
+            margin: 0 0 1rem 0;
+            letter-spacing: -0.3px;
+        }
+    </style>
+    """, unsafe_allow_html=True)
 
     now_thailand = get_thailand_time()
     today = now_thailand.date()
@@ -1234,12 +1509,12 @@ def render_dashboard_tab() -> None:
             text(query_month), engine, params={"first_day": first_day_month}
         )
 
-        # Display metrics
-        st.markdown("#### 📅 Today's Summary")
+        # Display metrics in a nice section
+        st.markdown('<div class="dashboard-section"><div class="section-title">📅 Today\'s Summary</div>', unsafe_allow_html=True)
         col1, col2, col3, col4 = st.columns(4)
 
         with col1:
-            st.metric("🚗 Total Vehicles", len(df_today))
+            st.metric("Total Vehicles", len(df_today))
         with col2:
             st.metric(
                 "💰 Total Revenue",
@@ -1263,24 +1538,25 @@ def render_dashboard_tab() -> None:
                 st.metric("🕐 Last Entry", formatted_time)
             else:
                 st.metric("🕐 Last Entry", "N/A")
-
-        st.markdown("---")
+        
+        st.markdown('</div>', unsafe_allow_html=True)
 
         # This month summary
-        st.markdown("#### 📆 This Month's Summary")
+        st.markdown('<div class="dashboard-section"><div class="section-title">📆 This Month\'s Summary</div>', unsafe_allow_html=True)
         col_m1, col_m2 = st.columns(2)
 
         with col_m1:
-            st.metric("🚗 Total Vehicles", len(df_month))
+            st.metric("Total Vehicles", len(df_month))
         with col_m2:
             st.metric(
                 "💰 Total Revenue",
                 f"{df_month['total_fee'].sum():.0f} ฿" if not df_month.empty else "0 ฿",
             )
+        
+        st.markdown('</div>', unsafe_allow_html=True)
 
         if not df_today.empty:
-            st.markdown("---")
-            st.markdown("#### 🚗 Today's Vehicle Distribution")
+            st.markdown('<div class="dashboard-section"><div class="section-title">Today\'s Vehicle Distribution</div>', unsafe_allow_html=True)
 
             # Prepare data for chart
             df_display = df_today.copy()
@@ -1300,12 +1576,13 @@ def render_dashboard_tab() -> None:
                 st.markdown("**Top 5 Vehicle Types Today:**")
                 for idx, (vtype, count) in enumerate(vehicle_counts.head(5).items(), 1):
                     st.write(f"{idx}. {vtype}: **{count}** คัน")
+            
+            st.markdown('</div>', unsafe_allow_html=True)
         else:
             st.info("📭 No data for today yet")
 
         # ==================== ANALYTICS SECTION ====================
-        st.markdown("---")
-        st.markdown("### 📊 Analytics")
+        st.markdown('<div class="dashboard-section"><div class="section-title">📊 Analytics</div>', unsafe_allow_html=True)
 
         col1, col2 = st.columns(2)
         with col1:
@@ -1346,7 +1623,7 @@ def render_dashboard_tab() -> None:
             with col3:
                 st.metric("📷 Cameras", df_analytics["camera_id"].nunique())
 
-            st.markdown("---")
+            st.markdown('<div style="margin: 1.5rem 0;"></div>', unsafe_allow_html=True)
 
             # Charts
             col_c1, col_c2 = st.columns(2)
@@ -1358,7 +1635,7 @@ def render_dashboard_tab() -> None:
             ].apply(translate_class_name)
 
             with col_c1:
-                st.markdown("#### 🚗 Transactions by Vehicle Type")
+                st.markdown("#### Transactions by Vehicle Type")
                 vehicle_counts = df_analytics_display["class_name"].value_counts()
                 st.bar_chart(vehicle_counts.to_frame("count"))
 
@@ -1370,6 +1647,8 @@ def render_dashboard_tab() -> None:
                     .sort_values(ascending=False)
                 )
                 st.bar_chart(revenue_by_type.to_frame("revenue"))
+            
+            st.markdown('</div>', unsafe_allow_html=True)
         else:
             st.info(
                 f"📭 No data found between {start_date.strftime('%d %B %Y')} and {end_date.strftime('%d %B %Y')}"
@@ -1386,7 +1665,6 @@ def main() -> None:
     # Page configuration
     st.set_page_config(
         page_title="Vehicle Entry System",
-        page_icon="🚗",
         layout="wide",
         initial_sidebar_state="collapsed",
     )
@@ -1432,16 +1710,69 @@ def main() -> None:
 
     st.markdown("---")
 
-    # Stateful top navigation (persists selected section across reruns)
+    # ========== STYLIZED TAB NAVIGATION ==========
     navigation_options = ["🏠 Dashboard", "📜 History", "⚙️ Master Data", "📊 Superset"]
-    active_section = st.radio(
-        "Navigate",
-        options=navigation_options,
-        index=navigation_options.index(st.session_state.get("active_section", navigation_options[0])),
-        key="active_section",
-        label_visibility="collapsed",
-        horizontal=True,
+    current_active = st.session_state.get("active_section", navigation_options[0])
+    
+    # Create custom styled navigation
+    nav_col1, nav_col2, nav_col3, nav_col4 = st.columns(4, gap="medium")
+    nav_cols = [nav_col1, nav_col2, nav_col3, nav_col4]
+    
+    st.markdown(
+        """
+        <style>
+            .nav-button {
+                display: inline-block;
+                padding: 0.75rem 1.5rem;
+                border-radius: 12px 12px 0 0;
+                font-weight: 700;
+                cursor: pointer;
+                transition: all 0.3s ease;
+                border: none;
+                font-size: 0.95rem;
+                width: 100%;
+                text-align: center;
+            }
+            
+            .nav-button-active {
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+                border-bottom: 3px solid #ffd700;
+            }
+            
+            .nav-button-inactive {
+                background: rgba(255,255,255,0.05);
+                color: rgba(255,255,255,0.7);
+                border: 1px solid rgba(255,255,255,0.1);
+            }
+            
+            .nav-button-inactive:hover {
+                background: rgba(255,255,255,0.08);
+                color: rgba(255,255,255,0.9);
+            }
+            
+            .nav-container {
+                display: flex;
+                gap: 0.5rem;
+                margin-bottom: 1rem;
+                padding: 0 0;
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
+    
+    for idx, option in enumerate(navigation_options):
+        with nav_cols[idx]:
+            is_active = current_active == option
+            button_class = "nav-button nav-button-active" if is_active else "nav-button nav-button-inactive"
+            
+            if st.button(option, key=f"nav_{idx}", use_container_width=True):
+                st.session_state["active_section"] = option
+                st.rerun()
+    
+    active_section = st.session_state.get("active_section", navigation_options[0])
 
     if active_section == "🏠 Dashboard":
         render_dashboard_tab()
