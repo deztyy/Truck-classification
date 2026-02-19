@@ -16,8 +16,7 @@ from minio.error import S3Error
 
 # Configure logging
 logging.basicConfig(
-    level=logging.WARNING, 
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.WARNING, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -39,6 +38,18 @@ THREAD_JOIN_TIMEOUT = 5
 HEALTH_CHECK_INTERVAL_SECONDS = 10
 FRAME_READ_TIMEOUT_SECONDS = 30
 DOWNTIME_ALERT_THRESHOLD_SECONDS = 30
+VIDEO_FILE_EXTENSIONS = {
+    ".mp4",
+    ".avi",
+    ".mov",
+    ".mkv",
+    ".wmv",
+    ".flv",
+    ".webm",
+    ".m4v",
+    ".mpg",
+    ".mpeg",
+}
 
 # Timestamp and File Formats
 TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S_%f"
@@ -49,6 +60,26 @@ DOWNTIME_PRECISION_DECIMALS = 1
 
 
 class VideoIngestor:
+    @staticmethod
+    def _is_likely_video_file_source(source: Optional[str]) -> bool:
+
+        if not source:
+            return False
+
+        source_stripped = source.strip()
+        source_lower = source_stripped.lower()
+
+        if source_lower.startswith(("rtsp://", "rtsps://", "http://", "https://")):
+            return False
+
+        if source_lower.startswith("file://"):
+            return True
+
+        _, extension = os.path.splitext(source_lower)
+        if extension in VIDEO_FILE_EXTENSIONS:
+            return True
+
+        return os.path.exists(source_stripped)
 
     def __init__(
         self,
@@ -61,10 +92,16 @@ class VideoIngestor:
         loop_video: bool = False,
         frame_skip: int = DEFAULT_FRAME_SKIP,
     ):
-       
+
         self.camera_id = camera_id
         self.video_file = video_file or os.getenv("VIDEO_FILE")
         self.rtsp_url = rtsp_url or os.getenv("RTSP_URL")
+
+        # Support passing local video file path via rtsp_url env/arg.
+        if not self.video_file and self._is_likely_video_file_source(self.rtsp_url):
+            self.video_file = self.rtsp_url
+            self.rtsp_url = None
+
         self.loop_video = loop_video
         self.batch_size = batch_size
         self.max_reconnect_attempts = max_reconnect_attempts
@@ -114,7 +151,7 @@ class VideoIngestor:
         logger.warning(f"VideoIngestor initialized for camera: {self.camera_id}")
 
     def _initialize_minio(self) -> Minio:
-       
+
         endpoint = os.getenv("MINIO_ENDPOINT")
         access_key = os.getenv("MINIO_ACCESS_KEY")
         secret_key = os.getenv("MINIO_SECRET_KEY")
@@ -134,7 +171,7 @@ class VideoIngestor:
         )
 
     def _initialize_redis(self) -> redis.Redis:
-       
+
         redis_host = os.getenv("REDIS_HOST")
         redis_port_str = os.getenv("REDIS_PORT")
         redis_db = int(os.getenv("REDIS_DB", DEFAULT_REDIS_DB))
@@ -187,7 +224,7 @@ class VideoIngestor:
             raise
 
     def _open_video_source(self) -> bool:
-        
+
         try:
             # Determine source
             video_source = self.video_file if self.video_file else self.rtsp_url
@@ -226,7 +263,7 @@ class VideoIngestor:
             return False
 
     def _close_video_source(self) -> None:
-        
+
         with self.health_status_lock:
             if self.video_capture is not None:
                 self.video_capture.release()
@@ -234,7 +271,7 @@ class VideoIngestor:
                 logger.info("Disconnected from video stream")
 
     def _update_frame_read_time(self) -> None:
-        
+
         with self.health_status_lock:
             self.last_frame_read_time = datetime.utcnow()
 
@@ -254,7 +291,7 @@ class VideoIngestor:
                     self.downtime_start_time = None
 
     def _health_check_stream(self) -> None:
-        
+
         logger.warning(f"Health check thread started for camera: {self.camera_id}")
 
         while self.is_running:
@@ -292,7 +329,7 @@ class VideoIngestor:
         logger.info(f"Health check thread stopped for camera: {self.camera_id}")
 
     def _check_frame_read_timeout(self, seconds_elapsed: float) -> None:
-        
+
         precision = DOWNTIME_PRECISION_DECIMALS
 
         with self.health_status_lock:
@@ -314,7 +351,7 @@ class VideoIngestor:
                 )
 
     def _start_health_check_thread(self) -> None:
-       
+
         if self.health_check_thread is None or not self.health_check_thread.is_alive():
             self.is_running = True
             self.health_check_thread = threading.Thread(
@@ -326,7 +363,7 @@ class VideoIngestor:
             logger.info(f"Health check thread started for camera: {self.camera_id}")
 
     def _read_next_frame_batch(self) -> Optional[np.ndarray]:
-       
+
         frames = []
 
         for frame_idx in range(self.batch_size):
@@ -384,7 +421,7 @@ class VideoIngestor:
         return batch_array
 
     def _handle_frame_read_failure(self) -> Tuple[bool, Optional[np.ndarray]]:
-       
+
         # If video file ends and loop is enabled, restart
         if self.video_file and self.loop_video:
             logger.info("Video file ended, restarting from beginning...")
@@ -408,7 +445,7 @@ class VideoIngestor:
         return False, None
 
     def _skip_configured_frames(self) -> None:
-       
+
         for _ in range(self.frame_skip):
             skip_success = False
             with self.health_status_lock:
@@ -422,14 +459,14 @@ class VideoIngestor:
                 break
 
     def _serialize_numpy(self, array: np.ndarray) -> io.BytesIO:
-        
+
         serialized_buffer = io.BytesIO()
         np.save(serialized_buffer, array, allow_pickle=False)
         serialized_buffer.seek(0)
         return serialized_buffer
 
     def _upload_frame_batch(self, frame_batch: np.ndarray) -> Optional[str]:
-        
+
         try:
             # Generate unique object name with timestamp
             timestamp = datetime.utcnow().strftime(TIMESTAMP_FORMAT)
@@ -468,7 +505,7 @@ class VideoIngestor:
     def _publish_batch_metadata(
         self, minio_object_key: str, batch_shape: tuple
     ) -> bool:
-        
+
         try:
             task_id = minio_object_key.replace("/", "_").replace(".npy", "")
             # Create metadata message
@@ -508,7 +545,7 @@ class VideoIngestor:
             return False
 
     def _ingest_next_batch(self) -> bool:
-       
+
         # Read frame batch
         frame_batch = self._read_next_frame_batch()
         if frame_batch is None:
@@ -527,7 +564,7 @@ class VideoIngestor:
         return metadata_published
 
     def run(self) -> None:
-        
+
         logger.warning(f"Starting video ingestion for camera: {self.camera_id}")
 
         # Start health check thread
@@ -580,7 +617,7 @@ class VideoIngestor:
         self._cleanup_ingestion()
 
     def _attempt_reconnection(self, current_attempts: int) -> int:
-        
+
         if current_attempts >= self.max_reconnect_attempts:
             logger.error(
                 f"Max reconnection attempts ({self.max_reconnect_attempts}) reached"
@@ -619,7 +656,7 @@ class VideoIngestor:
         )
 
     def get_statistics(self) -> Dict[str, Any]:
-        
+
         # Thread-safe read of health status variables
         with self.health_status_lock:
             stream_healthy = self.stream_is_healthy
@@ -639,7 +676,6 @@ class VideoIngestor:
 
 
 def main():
-    
 
     # Configuration for multiple cameras
     # Format: CAMERA_CONFIGS=camera_01:rtsp://localhost:8554/stream1,camera_02:rtsp://localhost:8554/stream2
@@ -757,5 +793,4 @@ def main():
 
 
 if __name__ == "__main__":
-
     exit(main())
