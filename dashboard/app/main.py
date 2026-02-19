@@ -35,6 +35,13 @@ CACHE_TTL_SECONDS = 5
 DEFAULT_CAMERA_OPTIONS = ["1", "2", "3", "➕ Add New"]
 ADD_NEW_OPTION = "➕ Add New"
 HISTORY_PAGE_SIZE = 10
+SECTION_QUERY_TO_OPTION = {
+    "dashboard": "🏠 Dashboard",
+    "history": "📜 History",
+    "master-data": "⚙️ Master Data",
+    "superset": "📊 Superset",
+}
+OPTION_TO_SECTION_QUERY = {v: k for k, v in SECTION_QUERY_TO_OPTION.items()}
 
 # Validation Constants
 MIN_FEE = 0.0
@@ -988,6 +995,42 @@ def render_transaction_history() -> None:
     # Display current date
     st.info(f"📅 Showing transactions for: {today.strftime('%d %B %Y')}")
 
+    # Refresh controls for high-volume incoming data
+    refresh_col1, refresh_col2, refresh_col3 = st.columns([1.2, 1, 0.8])
+    with refresh_col1:
+        auto_refresh_enabled = st.checkbox(
+            "🔄 Auto Refresh",
+            value=st.session_state.get("history_auto_refresh", False),
+            key="history_auto_refresh",
+            help="Automatically reload History to show latest records",
+        )
+    with refresh_col2:
+        refresh_interval_seconds = st.selectbox(
+            "Interval (sec)",
+            options=[3, 5, 10, 15, 30],
+            index=1,
+            key="history_refresh_interval",
+            disabled=not auto_refresh_enabled,
+        )
+    with refresh_col3:
+        st.markdown("<div style='height: 1.8rem;'></div>", unsafe_allow_html=True)
+        if st.button("Refresh Now", use_container_width=True, key="history_manual_refresh"):
+            st.rerun()
+
+    if auto_refresh_enabled:
+        st.caption(f"Auto refresh every {refresh_interval_seconds} seconds")
+        components.html(
+            f"""
+            <script>
+                setTimeout(function() {{
+                    window.parent.location.reload();
+                }}, {int(refresh_interval_seconds) * 1000});
+            </script>
+            """,
+            height=0,
+            width=0,
+        )
+
     try:
         # Get all vehicle classes from master data
         query_classes = """
@@ -1712,7 +1755,14 @@ def main() -> None:
 
     # ========== STYLIZED TAB NAVIGATION ==========
     navigation_options = ["🏠 Dashboard", "📜 History", "⚙️ Master Data", "📊 Superset"]
-    current_active = st.session_state.get("active_section", navigation_options[0])
+    query_section = st.query_params.get("section", "dashboard")
+    if isinstance(query_section, list):
+        query_section = query_section[0] if query_section else "dashboard"
+
+    current_active = st.session_state.get("active_section")
+    if not current_active:
+        current_active = SECTION_QUERY_TO_OPTION.get(str(query_section), navigation_options[0])
+        st.session_state["active_section"] = current_active
     
     # Create custom styled navigation
     nav_col1, nav_col2, nav_col3, nav_col4 = st.columns(4, gap="medium")
@@ -1770,9 +1820,11 @@ def main() -> None:
             
             if st.button(option, key=f"nav_{idx}", use_container_width=True):
                 st.session_state["active_section"] = option
+                st.query_params["section"] = OPTION_TO_SECTION_QUERY.get(option, "dashboard")
                 st.rerun()
     
     active_section = st.session_state.get("active_section", navigation_options[0])
+    st.query_params["section"] = OPTION_TO_SECTION_QUERY.get(active_section, "dashboard")
 
     if active_section == "🏠 Dashboard":
         render_dashboard_tab()
