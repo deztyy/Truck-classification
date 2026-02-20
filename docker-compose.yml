@@ -180,8 +180,12 @@ services:
       # processing-worker:  # ✅ Wait for worker to be ready!
       #   condition: service_healthy
     environment:
-      # Format: camera_id:rtsp_url,camera_id:rtsp_url
+      # Multi-camera format: camera_id:rtsp_url,camera_id:rtsp_url
+      # If CAMERA_CONFIGS is empty, ingestion falls back to CAMERA_ID + VIDEO_FILE/RTSP_URL.
       CAMERA_CONFIGS: ${CAMERA_CONFIGS}
+      CAMERA_ID: ${CAMERA_ID}
+      VIDEO_FILE: ${VIDEO_FILE}
+      RTSP_URL: ${RTSP_URL}
 
       # Redis configuration (External Server)
       REDIS_HOST: ${REDIS_HOST}
@@ -213,7 +217,7 @@ services:
           devices:
             - driver: nvidia
               count: all
-              capabilities: [gpu]
+              capabilities: [ gpu ]
     depends_on:
       mlflow-server:
         condition: service_healthy
@@ -223,7 +227,7 @@ services:
         condition: service_started
     healthcheck:
       # Check if Redis connection works AND Python process is running
-      test: ["CMD-SHELL", "python3 -c 'import redis; r=redis.Redis(host=\"redis\", port=6379, decode_responses=True); r.ping()' && pgrep -f python3 || exit 1"]
+      test: [ "CMD-SHELL", "python3 -c 'import redis; r=redis.Redis(host=\"redis\", port=6379, decode_responses=True); r.ping()' && pgrep -f python3 || exit 1" ]
       start_period: 30s
     environment:
       REDIS_HOST: ${REDIS_HOST}
@@ -338,7 +342,7 @@ services:
   deletion-service:
     build:
       context: ./processing
-      dockerfile: Dockerfile.deletion 
+      dockerfile: Dockerfile.deletion
     container_name: vid_deletion_service
     command: python deletion_service.py
     restart: unless-stopped

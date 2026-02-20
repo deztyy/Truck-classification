@@ -381,9 +381,14 @@ class VideoIngestor:
                     # Read frame while holding lock to prevent concurrent close
                     success, raw_frame = self.video_capture.read()
 
-                if not success:
+                if not success or raw_frame is None:
+                    if success and raw_frame is None:
+                        logger.warning(
+                            "Received empty frame despite successful read flag; "
+                            "treating as end-of-stream/read failure"
+                        )
                     success, raw_frame = self._handle_frame_read_failure()
-                    if not success:
+                    if not success or raw_frame is None:
                         logger.warning(
                             f"Failed to read frame {frame_idx + 1}/{self.batch_size}"
                         )
@@ -391,13 +396,6 @@ class VideoIngestor:
 
                 # Skip frames if configured (frame_skip > 0)
                 self._skip_configured_frames()
-
-                # Preprocess and add to batch (null check after potential restart)
-                if raw_frame is None:
-                    logger.warning(
-                        f"Received None frame at index {frame_idx + 1}/{self.batch_size}"
-                    )
-                    return None
 
                 processed_frame = cv2.resize(raw_frame, DEFAULT_FRAME_SIZE)
                 frames.append(processed_frame)
