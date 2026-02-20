@@ -46,26 +46,26 @@ LINE_Y1 = 270
 LINE_Y2 = 350
 COUNT_DIRECTION = "down"
 
-def worker_service(config: Dict[str, Any]):
-    global _worker_service
-    _worker_service = ProcessingService(**config)
-    atexit.register(lambda: _worker_service.db.close())
+# def worker_service(config: Dict[str, Any]):
+#     global _worker_service
+#     _worker_service = ProcessingService(**config)
+#     atexit.register(lambda: _worker_service.db.close())
 
-# Change this standalone function
-def task_handler(task_json):
-    # Access the global service instance created by worker_service
-    service = _worker_service 
-    if not service:
-        logging.error("Worker service not initialized!")
-        return {"status": "error", "reason": "Service not initialized"}
+# # Change this standalone function
+# def task_handler(task_json):
+#     # Access the global service instance created by worker_service
+#     service = _worker_service 
+#     if not service:
+#         logging.error("Worker service not initialized!")
+#         return {"status": "error", "reason": "Service not initialized"}
 
-    try:
-        task = ProcessingTask.from_json(task_json)
-        return service.process_task(task)
+#     try:
+#         task = ProcessingTask.from_json(task_json)
+#         return service.process_task(task)
         
-    except Exception as e:
-        logging.error(f"Task handler failed: {e}")
-        return {"status": "error", "error": str(e)}
+#     except Exception as e:
+#         logging.error(f"Task handler failed: {e}")
+#         return {"status": "error", "error": str(e)}
 
 class VehicleClass(Enum):
     CAR = 0
@@ -215,15 +215,6 @@ class MinIOManager:
             # logging.error(f"✗ List objects failed: {e}")
             return []
 
-    def delete_object(self, bucket: str, object_name: str) -> bool:
-        try:
-            self.client.remove_object(bucket, object_name)
-            # logging.info(f"✓ Deleted: {bucket}/{object_name}")
-            return True
-        except S3Error as e:
-            # logging.error(f"✗ Delete failed: {e}")
-            return False
-
     def get_object_data(self, bucket: str, object_name: str) -> bytes:
         response = None
         try:
@@ -237,84 +228,71 @@ class MinIOManager:
                 response.close()
                 response.release_conn()
     
-    def wait_for_npy_file(self, bucket: str, prefix: str, retry_delay: float = RETRY_DELAY, 
-                       timeout_seconds: int = 10) -> Optional[str]:
-        logging.info(f"   - prefix: '{prefix}'")
-        try:
-            if not self.client.bucket_exists(bucket):
-                logging.error(f"✗ Bucket '{bucket}' does not exist")
-                return None
-        except Exception as e:
-            logging.error(f"✗ Cannot access bucket: {e}")
+    def wait_for_npy_file(self, bucket: str, prefix: str, retry_delay: float = RETRY_DELAY,
+        timeout_seconds: int = 10,) -> Optional[str]:
+        
+        logging.info(f"Waiting for .npy file — bucket: '{bucket}', prefix: '{prefix}'")
+
+        # === Pre-checks ===
+        if not prefix or len(prefix) < 5:
+            logging.error(f"Invalid prefix: '{prefix}'")
             return None
 
-        if not prefix or len(prefix) < 5:
-            logging.error(f"✗ Invalid prefix: '{prefix}'")
+        try:
+            if not self.client.bucket_exists(bucket):
+                logging.error(f"Bucket '{bucket}' does not exist")
+                return None
+        except Exception as e:
+            logging.error(f"Cannot access bucket '{bucket}': {e}")
             return None
-        
+
+        # === Poll until file found or timeout ===
         attempt = 0
         start_time = time.time()
-        last_warning_time = start_time
-        
+
         while True:
             attempt += 1
             elapsed = time.time() - start_time
-            
-            # ✅ ADD THIS: Check timeout FIRST
+
             if elapsed > timeout_seconds:
-                logging.error(
-                    f"✗ TIMEOUT: .npy file not found after {timeout_seconds}s "
-                    f"({attempt} attempts) in {bucket}/{prefix}"
-                )
-                return None  # ← CRITICAL: Return None instead of blocking forever
-            
+                logging.error(f"Timeout after {timeout_seconds}s ({attempt} attempts): {bucket}/{prefix}")
+                return None
+
             try:
-                # If prefix is already a direct .npy file path, check if it exists
-                if prefix.endswith(".npy"):
-                    try:
-                        self.client.stat_object(bucket, prefix)
-                        if attempt > 1:
-                            logging.info(f"✓ Found .npy file after {attempt} attempts ({elapsed:.1f}s): {prefix}")
-                        else:
-                            logging.info(f"✓ Found .npy file: {prefix}")
-                        return prefix
-                    except S3Error:
-                        pass  # File doesn't exist yet, continue waiting
-                
-                # Otherwise, list objects under prefix
-                listed_objects = self.list_objects(bucket=bucket, prefix=prefix)
-                npy_files = [obj for obj in listed_objects 
-                        if obj["name"].endswith(".npy") and not obj["name"].endswith("/")]
-                
-                if npy_files:
-                    # Sort by last_modified to get the newest file
-                    npy_files.sort(key=lambda x: x["last_modified"], reverse=True)
-                    found_file = npy_files[0]["name"]
-                    if attempt > 1:
-                        logging.info(f"✓ Found .npy file after {attempt} attempts ({elapsed:.1f}s): {found_file}")
-                    else:
-                        logging.info(f"✓ Found .npy file: {found_file}")
-                    return found_file
-                
-                # Periodic logging to show we're still waiting
-                if elapsed - (last_warning_time - start_time) >= MAX_WAIT_TIME:
-                    remaining = timeout_seconds - elapsed
-                    logging.warning(
-                        f"⏳ Still waiting for .npy file... "
-                        f"({attempt} attempts, {elapsed:.1f}s elapsed, {remaining:.1f}s remaining)"
-                    )
-                    last_warning_time = time.time()
-                
-                # Short debug log for troubleshooting (every 50 attempts)
-                if attempt % 50 == 0:
-                    logging.debug(f"Waiting for .npy file in {bucket}/{prefix} (attempt {attempt}, {elapsed:.1f}s)")
-                
-                # Wait before next retry
-                time.sleep(retry_delay)
-                    
+                found = self._find_npy_file(bucket, prefix)
+                if found:
+                    log_msg = f"Found .npy file after {attempt} attempts ({elapsed:.1f}s): {found}"
+                    logging.info(log_msg) if attempt > 1 else logging.info(f"Found .npy file: {found}")
+                    return found
+
             except Exception as e:
-                logging.error(f"Error checking for .npy file (attempt {attempt}): {e}")
-                time.sleep(retry_delay)
+                logging.error(f"Error on attempt {attempt}: {e}")
+
+            time.sleep(retry_delay)
+
+    def _find_npy_file(self, bucket: str, prefix: str) -> Optional[str]:
+        """Return .npy file path if it exists in MinIO, else None."""
+
+        # Case A: prefix is a direct file path
+        if prefix.endswith(".npy"):
+            try:
+                self.client.stat_object(bucket, prefix)
+                return prefix
+            except S3Error:
+                return None
+
+        # Case B: prefix is a folder — list and find newest .npy
+        objects = self.list_objects(bucket=bucket, prefix=prefix)
+        npy_files = [
+            obj for obj in objects
+            if obj["name"].endswith(".npy") and not obj["name"].endswith("/")
+        ]
+
+        if not npy_files:
+            return None
+
+        npy_files.sort(key=lambda x: x["last_modified"], reverse=True)
+        return npy_files[0]["name"]
 
 class PostgreSQLDatabase:
     """Manages PostgreSQL database operations"""
@@ -383,7 +361,6 @@ class PostgreSQLDatabase:
                 except Exception as e:
                     logging.error(f"✗ Failed to close PostgreSQL pool: {e}")
 
-
 class ProcessingService:
     """Service that processes tasks with tracking to prevent double-counting"""
 
@@ -428,6 +405,46 @@ class ProcessingService:
             self.trackers[camera_id] = model
         return self.trackers[camera_id]
 
+    @staticmethod
+    def _normalize_to_uint8(arr: np.ndarray) -> np.ndarray:
+        if arr.dtype in (np.float32, np.float64):
+            if arr.max() <= 1.0:
+                return (arr * 255).astype(np.uint8)
+            return arr.astype(np.uint8)
+        if arr.dtype != np.uint8:
+            return arr.astype(np.uint8)
+        return arr
+
+    def convert_npy_to_jpg(self, npy_array: np.ndarray, frame_index: int, 
+                          camera_id: str, task_id: str, task_timestamp: datetime.datetime = None, quality: int = 85) -> Optional[str]:
+        try:
+            now = task_timestamp or datetime.datetime.now(THAI_TIMEZONE)
+            if isinstance(now, str):
+                now = datetime.datetime.fromisoformat(now)
+            # Convert to Thai timezone for filename
+            if now.tzinfo is not None:
+                now = now.astimezone(THAI_TIMEZONE)
+            date_str = now.strftime("%Y-%m-%d")
+            timestamp = now.strftime("%Y%m%d_%H%M%S_%f")
+            jpg_filename = f"{timestamp}_f{frame_index}.jpg"
+
+            if npy_array.ndim != 3: return None
+            # ... conversion logic ...
+            image = Image.fromarray(cv2.cvtColor(npy_array, cv2.COLOR_BGR2RGB))
+            buf = BytesIO()
+            image.save(buf, format="JPEG", quality=quality, optimize=True)
+            img_bytes = buf.getvalue()
+
+            object_name = f"{date_str}/{camera_id}/{jpg_filename}"
+            self.minio_manager.create_bucket(PROCESSED_BUCKET)
+            
+            if self.minio_manager.upload_from_bytes(PROCESSED_BUCKET, object_name, img_bytes, "image/jpeg"):
+                return f"{PROCESSED_BUCKET}/{object_name}"
+            return None
+        except Exception as e:
+            logging.error(f"Error converting frame: {e}")
+            return None
+        
     def _is_counted(self, camera_id, track_id):
         key = f"counted_tracks:{camera_id}:{track_id}"
         return self.redis_client.exists(key)
@@ -472,45 +489,6 @@ class ProcessingService:
         """Clean up after committing to DB"""
         key = f"pending_vehicle:{camera_id}:{track_id}"
         self.redis_client.delete(key)
-    @staticmethod
-    def _normalize_to_uint8(arr: np.ndarray) -> np.ndarray:
-        if arr.dtype in (np.float32, np.float64):
-            if arr.max() <= 1.0:
-                return (arr * 255).astype(np.uint8)
-            return arr.astype(np.uint8)
-        if arr.dtype != np.uint8:
-            return arr.astype(np.uint8)
-        return arr
-
-    def convert_npy_to_jpg(self, npy_array: np.ndarray, frame_index: int, 
-                          camera_id: str, task_id: str, task_timestamp: datetime.datetime = None, quality: int = 85) -> Optional[str]:
-        try:
-            now = task_timestamp or datetime.datetime.now(THAI_TIMEZONE)
-            if isinstance(now, str):
-                now = datetime.datetime.fromisoformat(now)
-            # Convert to Thai timezone for filename
-            if now.tzinfo is not None:
-                now = now.astimezone(THAI_TIMEZONE)
-            date_str = now.strftime("%Y-%m-%d")
-            timestamp = now.strftime("%Y%m%d_%H%M%S_%f")
-            jpg_filename = f"{timestamp}_f{frame_index}.jpg"
-
-            if npy_array.ndim != 3: return None
-            # ... conversion logic ...
-            image = Image.fromarray(cv2.cvtColor(npy_array, cv2.COLOR_BGR2RGB))
-            buf = BytesIO()
-            image.save(buf, format="JPEG", quality=quality, optimize=True)
-            img_bytes = buf.getvalue()
-
-            object_name = f"{date_str}/{camera_id}/{jpg_filename}"
-            self.minio_manager.create_bucket(PROCESSED_BUCKET)
-            
-            if self.minio_manager.upload_from_bytes(PROCESSED_BUCKET, object_name, img_bytes, "image/jpeg"):
-                return f"{PROCESSED_BUCKET}/{object_name}"
-            return None
-        except Exception as e:
-            logging.error(f"Error converting frame: {e}")
-            return None
         
     def _save_last_known_position(self, camera_id, track_id, center_x, center_y):
         """Save last known position when track is active"""
@@ -614,7 +592,7 @@ class ProcessingService:
         raw = self.redis_client.get(key)
         return json.loads(raw) if raw else {"class_id": 0, "confidence": 0.0}   
     def _check_crossed_line(self, history: list, line_y: int, 
-                            direction: str, max_frame_gap: int = 10) -> bool:
+                            direction: str) -> bool:
         """Check last N positions not just prev frame"""
         if len(history) < 2:
             return False

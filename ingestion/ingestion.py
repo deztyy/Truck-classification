@@ -2,11 +2,12 @@ import io
 import json
 import logging
 import os
+import re
 import threading
 import time
 from datetime import datetime
 from threading import Lock
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -91,11 +92,25 @@ class VideoIngestor:
         reconnect_delay: int = 5,
         loop_video: bool = False,
         frame_skip: int = DEFAULT_FRAME_SKIP,
+        allow_env_source_fallback: bool = True,
     ):
 
         self.camera_id = camera_id
-        self.video_file = video_file or os.getenv("VIDEO_FILE")
-        self.rtsp_url = rtsp_url or os.getenv("RTSP_URL")
+        self.video_file = (
+            video_file
+            if video_file is not None
+            else (os.getenv("VIDEO_FILE") if allow_env_source_fallback else None)
+        )
+        self.rtsp_url = (
+            rtsp_url
+            if rtsp_url is not None
+            else (os.getenv("RTSP_URL") if allow_env_source_fallback else None)
+        )
+
+        if self.video_file:
+            self.video_file = self.video_file.strip()
+        if self.rtsp_url:
+            self.rtsp_url = self.rtsp_url.strip()
 
         # Support passing local video file path via rtsp_url env/arg.
         if not self.video_file and self._is_likely_video_file_source(self.rtsp_url):
@@ -675,6 +690,75 @@ class VideoIngestor:
 
 def main():
 
+    def parse_camera_configs(raw_value: str) -> List[Dict[str, Optional[str]]]:
+        parsed_configs: List[Dict[str, Optional[str]]] = []
+        raw_value = (raw_value or "").strip()
+
+        if not raw_value:
+            return parsed_configs
+
+        try:
+            json_candidate = json.loads(raw_value)
+
+            if isinstance(json_candidate, dict):
+                json_candidate = [json_candidate]
+
+            if isinstance(json_candidate, list):
+                for item in json_candidate:
+                    if not isinstance(item, dict):
+                        continue
+
+                    camera_id = str(item.get("camera_id", "")).strip()
+                    rtsp_url = item.get("rtsp_url")
+                    video_file = item.get("video_file")
+
+                    if isinstance(rtsp_url, str):
+                        rtsp_url = rtsp_url.strip()
+                    else:
+                        rtsp_url = None
+
+                    if isinstance(video_file, str):
+                        video_file = video_file.strip()
+                    else:
+                        video_file = None
+
+                    if camera_id and (rtsp_url or video_file):
+                        parsed_configs.append(
+                            {
+                                "camera_id": camera_id,
+                                "rtsp_url": rtsp_url,
+                                "video_file": video_file,
+                            }
+                        )
+
+                if parsed_configs:
+                    logger.warning(
+                        f"Parsed {len(parsed_configs)} camera config(s) from JSON format"
+                    )
+                    return parsed_configs
+        except json.JSONDecodeError:
+            pass
+
+        # Backward-compatible CSV format:
+        # camera_01:rtsp://localhost:8554/stream1,camera_02:rtsp://localhost:8554/stream2
+        csv_chunks = [
+            chunk.strip() for chunk in re.split(r"[\n,]+", raw_value) if chunk.strip()
+        ]
+
+        for chunk in csv_chunks:
+            camera_id, separator, source = chunk.partition(":")
+            camera_id = camera_id.strip()
+            source = source.strip()
+
+            if not separator or not camera_id or not source:
+                logger.warning(f"Skipping invalid CAMERA_CONFIGS entry: '{chunk}'")
+                continue
+
+            parsed_configs.append({"camera_id": camera_id, "rtsp_url": source})
+
+        logger.warning(f"Parsed {len(parsed_configs)} camera config(s) from CSV format")
+        return parsed_configs
+
     # Configuration for multiple cameras
     # Format: CAMERA_CONFIGS=camera_01:rtsp://localhost:8554/stream1,camera_02:rtsp://localhost:8554/stream2
     camera_configs_str = os.getenv("CAMERA_CONFIGS", "")
@@ -682,17 +766,35 @@ def main():
     camera_config_list = []
 
     if camera_configs_str:
-        # Parse multiple camera configurations
-        logger.info("Parsing multiple camera configurations")
-        for config in camera_configs_str.split(","):
-            config_parts = config.strip().split(":", 1)
-            if len(config_parts) >= 2:
-                parsed_camera_id = config_parts[0]
-                parsed_rtsp_url = config_parts[1]
-                camera_config_list.append(
-                    {"camera_id": parsed_camera_id, "rtsp_url": parsed_rtsp_url}
+        logger.warning("Parsing CAMERA_CONFIGS for multi-camera mode")
+        camera_config_list = parse_camera_configs(camera_configs_str)
+
+        if not camera_config_list:
+            logger.error(
+                "CAMERA_CONFIGS is set but no valid camera entry could be parsed"
+            )
+            return 1
+
+        seen_camera_ids = set()
+        seen_sources = {}
+        for config in camera_config_list:
+            camera_id = config["camera_id"]
+            source = config.get("video_file") or config.get("rtsp_url")
+
+            if camera_id in seen_camera_ids:
+                logger.warning(
+                    f"Duplicate camera_id in CAMERA_CONFIGS: {camera_id} (latest entry will run as another thread)"
                 )
-                logger.info(f"Added camera: {parsed_camera_id} -> {parsed_rtsp_url}")
+            seen_camera_ids.add(camera_id)
+
+            if source in seen_sources:
+                logger.warning(
+                    f"Duplicate source detected for cameras '{seen_sources[source]}' and '{camera_id}': {source}"
+                )
+            else:
+                seen_sources[source] = camera_id
+
+            logger.warning(f"Configured camera source: {camera_id} -> {source}")
     else:
         # Fallback to single camera (backward compatible)
         logger.info("Using single camera configuration (backward compatible mode)")
@@ -731,6 +833,7 @@ def main():
                 reconnect_delay=DEFAULT_RECONNECT_DELAY,
                 loop_video=False,
                 frame_skip=DEFAULT_FRAME_SKIP,  # 0 = no skip, 1 = skip 1 frame, 2 = skip 2 frames, etc.
+                allow_env_source_fallback=not bool(camera_configs_str.strip()),
             )
 
             video_ingestors.append(video_ingestor)
