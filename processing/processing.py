@@ -42,8 +42,8 @@ RETRY_DELAY = 0.01  # Seconds to wait between retries (10ms)
 MAX_WAIT_TIME = 30  # Maximum seconds to wait before logging warning (not stopping)
 MAX_RETRIES = 3
 
-LINE_Y1 = 270
-LINE_Y2 = 350
+LINE_Y1 = 200  #270 
+LINE_Y2 = 450  #350
 COUNT_DIRECTION = "down"
 
 def worker_service(config: Dict[str, Any]):
@@ -692,30 +692,30 @@ class ProcessingService:
                 if self._is_counted(task.camera_id, track_id):
                     continue
 
-                # === LINE 1 ===
+# === LINE 1 ===
                 crossed_line1 = self._check_crossed_line(history, LINE_Y1, COUNT_DIRECTION)
 
                 if crossed_line1:
                     # Validate using position history — not just prev frame
                     if not self._is_line1_crossed(task.camera_id, track_id):
-                            logging.info(f"📸 Line 1 crossed: {unique_track_id}")
-                            minio_path = self.convert_npy_to_jpg(
-                                npy_array=frame_uint8,
-                                frame_index=frame_idx,
-                                camera_id=task.camera_id,
-                                task_id=task.task_id,
-                                task_timestamp=task.timestamp
-                            )
+                        logging.info(f"📸 Line 1 crossed: {unique_track_id}")
+                        minio_path = self.convert_npy_to_jpg(
+                            npy_array=frame_uint8,
+                            frame_index=frame_idx,
+                            camera_id=task.camera_id,
+                            task_id=task.task_id,
+                            task_timestamp=task.timestamp
+                        )
 
-                            self._save_pending_vehicle(task.camera_id, track_id, {
-                                "minio_path": minio_path,
-                                "timestamp": (task.timestamp or datetime.datetime.now(datetime.timezone.utc)).isoformat(),
-                                "class_id": cls,
-                                "confidence": conf,
-                                "unique_track_id": unique_track_id,
-                            })
-                            self._mark_line1_crossed(task.camera_id, track_id)
-                    continue      
+                        self._save_pending_vehicle(task.camera_id, track_id, {
+                            "minio_path": minio_path,
+                            "timestamp": (task.timestamp or datetime.datetime.now(datetime.timezone.utc)).isoformat(),
+                            "class_id": cls,
+                            "confidence": conf,
+                            "unique_track_id": unique_track_id,
+                        })
+                        self._mark_line1_crossed(task.camera_id, track_id)
+                    # ❌ เอา continue บรรทัดนี้ออกไปแล้ว เพื่อให้รันเช็ค LINE 2 ต่อได้เลยถ้ารถวิ่งเร็ว
 
                 # === LINE 2 ===
                 crossed_line2 = self._check_crossed_line(history, LINE_Y2, COUNT_DIRECTION)
@@ -759,8 +759,6 @@ class ProcessingService:
                     })
                 except Exception as e:
                     logging.error(f"DB insert failed for track {track_id}: {e}")
-
-        return {"frame_idx": frame_idx, "detections": final_results} if final_results else None
 
     def process_task(self, task: ProcessingTask) -> Dict[str, Any]:
         """Process task - just do inference and save to DB"""
