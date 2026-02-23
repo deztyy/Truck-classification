@@ -12,9 +12,11 @@ from dataclasses import dataclass, asdict
 from enum import Enum
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pytz
 # import onnxruntime as ort
 
+import torch
 from ultralytics import YOLO
 from psycopg2 import pool
 import numpy as np
@@ -24,7 +26,7 @@ import redis
 from minio import Minio
 from minio.error import S3Error
 from PIL import Image
-from concurrent.futures import ProcessPoolExecutor
+from queue import Queue
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,29 +45,26 @@ MAX_WAIT_TIME = 30  # Maximum seconds to wait before logging warning (not stoppi
 MAX_RETRIES = 3
 
 LINE_Y1 = 270
-LINE_Y2 = 350
+LINE_Y2 = 335
 COUNT_DIRECTION = "down"
 
-# def worker_service(config: Dict[str, Any]):
-#     global _worker_service
-#     _worker_service = ProcessingService(**config)
-#     atexit.register(lambda: _worker_service.db.close())
+class CameraWorker:
+    def __init__(self, camera_id, service, process_fn):
+        self.camera_id = camera_id
+        self.queue = Queue()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.process_fn = process_fn
+        self.thread.start()
 
-# # Change this standalone function
-# def task_handler(task_json):
-#     # Access the global service instance created by worker_service
-#     service = _worker_service 
-#     if not service:
-#         logging.error("Worker service not initialized!")
-#         return {"status": "error", "reason": "Service not initialized"}
+    def _run(self):
+        while True:
+            task_json = self.queue.get()
+            if task_json is None:
+                break
+            self.process_fn(task_json)
 
-#     try:
-#         task = ProcessingTask.from_json(task_json)
-#         return service.process_task(task)
-        
-#     except Exception as e:
-#         logging.error(f"Task handler failed: {e}")
-#         return {"status": "error", "error": str(e)}
+    def submit(self, task_json):
+        self.queue.put(task_json)
 
 class VehicleClass(Enum):
     CAR = 0
@@ -328,6 +327,12 @@ class PostgreSQLDatabase:
     def insert_transaction(self, transaction: VehicleTransaction) -> bool:
         """Insert a vehicle transaction record"""
         conn = self._pool.getconn()
+        time_stamp = transaction.time_stamp
+        if time_stamp:
+            if time_stamp.tzinfo is not None:
+                time_stamp = time_stamp.astimezone(THAI_TIMEZONE).replace(tzinfo=None)
+            else:
+                time_stamp = time_stamp + datetime.timedelta(hours=7)
         try:
             with conn.cursor() as cur:
                 cur.execute("""
@@ -337,7 +342,7 @@ class PostgreSQLDatabase:
                     ON CONFLICT (camera_id, track_id, date(time_stamp)) DO NOTHING
                 """, (
                     transaction.camera_id, transaction.track_id, transaction.class_id,
-                    transaction.total_fee, transaction.time_stamp, transaction.img_path,
+                    transaction.total_fee, time_stamp, transaction.img_path,
                     transaction.confidence,
                 ))
             conn.commit()
@@ -395,16 +400,29 @@ class ProcessingService:
         local_model_path = mlflow.artifacts.download_artifacts(artifact_uri=model_uri)
         self.onnx_path = os.path.join(local_model_path, "model.onnx")
 
-        self.trackers = {}
+        self.trackers = {} 
 
     def get_tracker(self, camera_id):
-        """Lazy load a YOLO instance for each camera"""
         if camera_id not in self.trackers:
             logging.info(f"🔄 Loading new YOLO instance for Camera: {camera_id}")
-            model = YOLO(self.onnx_path, task='detect')
-            self.trackers[camera_id] = model
+            self.trackers[camera_id] = YOLO(self.onnx_path, task='detect')
         return self.trackers[camera_id]
+    def _get_camera_lock(self, camera_id: str) -> threading.Lock:
+        if camera_id not in self._camera_locks:
+            with self._camera_locks_lock:
+                if camera_id not in self._camera_locks:
+                    self._camera_locks[camera_id] = threading.Lock()
+        return self._camera_locks[camera_id]
 
+    def _crop_with_padding(self, frame: np.ndarray, box: np.ndarray) -> np.ndarray:
+        h, w = frame.shape[:2]
+        x1, y1, x2, y2 = box.astype(int)
+        center_x = (x1 + x2) // 2
+
+        if center_x < w // 2:
+            return frame[0:h, 0:w//2]   # left half
+        else:
+            return frame[0:h, w//2:w]   # right half
     @staticmethod
     def _normalize_to_uint8(arr: np.ndarray) -> np.ndarray:
         if arr.dtype in (np.float32, np.float64):
@@ -415,8 +433,9 @@ class ProcessingService:
             return arr.astype(np.uint8)
         return arr
 
-    def convert_npy_to_jpg(self, npy_array: np.ndarray, frame_index: int, 
-                          camera_id: str, task_id: str, task_timestamp: datetime.datetime = None, quality: int = 85) -> Optional[str]:
+    def convert_npy_to_jpg(self, npy_array: np.ndarray, frame_index: int,
+                   camera_id: str, task_id: str, task_timestamp: datetime.datetime = None,
+                   quality: int = 85, crop_box: Optional[np.ndarray] = None,track_id: Optional[str] = None) -> Optional[str]:
         try:
             now = task_timestamp or datetime.datetime.now(THAI_TIMEZONE)
             if isinstance(now, str):
@@ -426,18 +445,20 @@ class ProcessingService:
                 now = now.astimezone(THAI_TIMEZONE)
             date_str = now.strftime("%Y-%m-%d")
             timestamp = now.strftime("%Y%m%d_%H%M%S_%f")
-            jpg_filename = f"{timestamp}_f{frame_index}.jpg"
+            jpg_filename = f"{timestamp}_f{frame_index}_t{track_id}.jpg" if track_id else f"{timestamp}_f{frame_index}.jpg"
 
             if npy_array.ndim != 3: return None
             # ... conversion logic ...
-            image = Image.fromarray(cv2.cvtColor(npy_array, cv2.COLOR_BGR2RGB))
+            img_array = self._crop_with_padding(npy_array, crop_box) if crop_box is not None else npy_array
+
+            image = Image.fromarray(cv2.cvtColor(img_array, cv2.COLOR_BGR2RGB))
             buf = BytesIO()
             image.save(buf, format="JPEG", quality=quality, optimize=True)
             img_bytes = buf.getvalue()
 
             object_name = f"{date_str}/{camera_id}/{jpg_filename}"
             self.minio_manager.create_bucket(PROCESSED_BUCKET)
-            
+
             if self.minio_manager.upload_from_bytes(PROCESSED_BUCKET, object_name, img_bytes, "image/jpeg"):
                 return f"{PROCESSED_BUCKET}/{object_name}"
             return None
@@ -477,7 +498,7 @@ class ProcessingService:
     def _save_pending_vehicle(self, camera_id, track_id, data: dict):
         """Save frame + timestamp when vehicle crosses Line 1"""
         key = f"pending_vehicle:{camera_id}:{track_id}"
-        self.redis_client.setex(key, 60, json.dumps(data))
+        self.redis_client.setex(key, 300, json.dumps(data))
 
     def _get_pending_vehicle(self, camera_id, track_id) -> Optional[dict]:
         """Get saved data when vehicle crosses Line 2"""
@@ -510,7 +531,7 @@ class ProcessingService:
         return lost_tracks
 
     def _find_matching_lost_track(self, camera_id, center_x, center_y, 
-                                current_track_id, max_distance=15) -> Optional[int]:
+                                current_track_id, max_distance=35) -> Optional[int]:
         """
         Check if current detection matches a recently lost track by position.
         Returns old track_id if match found, None otherwise.
@@ -609,6 +630,7 @@ class ProcessingService:
         return False 
 
     def _process_single_frame(self, frame: np.ndarray, frame_idx: int, task: ProcessingTask) -> Optional[Dict]:
+        torch.cuda.set_device(0)
         frame_uint8 = self._normalize_to_uint8(frame)
         logging.info(f"Frame shape: {frame_uint8.shape}")
         tracker = self.get_tracker(task.camera_id)
@@ -623,18 +645,19 @@ class ProcessingService:
             iou=0.5,
             device=0
         )
-
-        final_results = []
-
+        raw_detections = []
         for r in results:
             if r.boxes.id is None:
                 continue
+            raw_detections.append((
+                r.boxes.xyxy.cpu().numpy(),
+                r.boxes.id.int().cpu().tolist(),
+                r.boxes.cls.int().cpu().tolist(),
+                r.boxes.conf.float().cpu().tolist(),
+            ))
 
-            boxes = r.boxes.xyxy.cpu().numpy()
-            track_ids = r.boxes.id.int().cpu().tolist()
-            classes = r.boxes.cls.int().cpu().tolist()
-            confs = r.boxes.conf.float().cpu().tolist()
-
+        final_results = []
+        for boxes, track_ids, classes, confs in raw_detections:
             for box, track_id, cls, conf in zip(boxes, track_ids, classes, confs):
                 x1, y1, x2, y2 = box
                 center_x = int((x1 + x2) / 2)
@@ -657,6 +680,8 @@ class ProcessingService:
                 # Always update position history + last known position
                 history = self._save_position_history(task.camera_id, track_id, center_y)
                 self._save_last_known_position(task.camera_id, track_id, center_x, center_y)
+                if history[-1] > 240:
+                    logging.info(f"📊 track_{track_id} center_y history: {history}")
                 prev_y = history[-2] if len(history) >= 2 else None
                 if cls != VehicleClass.OTHER.value:
                     self._update_best_class(task.camera_id, track_id, cls, conf)
@@ -668,6 +693,7 @@ class ProcessingService:
                     continue
 
                 if self._is_counted(task.camera_id, track_id):
+                    logging.warning(f"⚠️ track_{track_id} skipped — already counted")
                     continue
 
                 # === LINE 1 ===
@@ -682,7 +708,9 @@ class ProcessingService:
                                 frame_index=frame_idx,
                                 camera_id=task.camera_id,
                                 task_id=task.task_id,
-                                task_timestamp=task.timestamp
+                                task_timestamp=task.timestamp,
+                                crop_box=box,
+                                track_id=track_id,
                             )
 
                             self._save_pending_vehicle(task.camera_id, track_id, {
@@ -719,7 +747,8 @@ class ProcessingService:
 
                 transaction = VehicleTransaction(
                     camera_id=task.camera_id,
-                    track_id=pending["unique_track_id"],
+                    # track_id=pending["unique_track_id"],
+                    track_id=track_id,
                     class_id=best["class_id"],        # ← best class
                     total_fee=total_fee,
                     time_stamp=datetime.datetime.fromisoformat(pending["timestamp"]),
@@ -853,6 +882,7 @@ def main():
     pubsub_client = redis.Redis(host=config["redis_host"], port=config["redis_port"], decode_responses=True)
     pubsub = pubsub_client.pubsub()
     pubsub.subscribe(redis_manager.notification_channel)
+    camera_workers = {}
 
     def process_task_json(task_json):
         try:
@@ -874,6 +904,16 @@ def main():
                 logging.warning(f"⚠️ INCOMPLETE: {result.get('task_id')} - {result.get('status')}")
         except Exception as e:
             logging.error(f"❌ Task failed: {e}")
+    def route_task(task_json):
+        """Route task to correct camera worker"""
+        try:
+            task = ProcessingTask.from_json(task_json)
+            if task.camera_id not in camera_workers:
+                logging.info(f"🆕 Creating worker for {task.camera_id}")
+                camera_workers[task.camera_id] = CameraWorker(task.camera_id, service, process_task_json)
+            camera_workers[task.camera_id].submit(task_json)
+        except Exception as e:
+            logging.error(f"❌ Route failed: {e}")
 
     try:
         # Drain existing tasks on startup
@@ -881,7 +921,7 @@ def main():
             task_json = redis_manager.client.lpop(redis_manager.queue_name)
             if not task_json:
                 break
-            process_task_json(task_json)
+            route_task(task_json)
 
         # Listen for new tasks
         for message in pubsub.listen():
@@ -890,7 +930,7 @@ def main():
                     task_json = redis_manager.client.lpop(redis_manager.queue_name)
                     if not task_json:
                         break
-                    process_task_json(task_json)
+                    route_task(task_json)
 
     except KeyboardInterrupt:
         logging.info("Shutting down...")
