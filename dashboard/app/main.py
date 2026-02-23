@@ -984,6 +984,7 @@ def render_current_vehicle_tab() -> None:
 # ==================== TRANSACTION HISTORY ====================
 # Replace the incomplete render_transaction_history() function
 
+@st.fragment(run_every=5)
 def render_transaction_history() -> None:
     """Render transaction history for today only with filters"""
     st.markdown("---")
@@ -995,41 +996,48 @@ def render_transaction_history() -> None:
     # Display current date
     st.info(f"📅 Showing transactions for: {today.strftime('%d %B %Y')}")
 
-    # Refresh controls for high-volume incoming data
-    refresh_col1, refresh_col2, refresh_col3 = st.columns([1.2, 1, 0.8])
-    with refresh_col1:
-        auto_refresh_enabled = st.checkbox(
-            "🔄 Auto Refresh",
-            value=st.session_state.get("history_auto_refresh", False),
-            key="history_auto_refresh",
-            help="Automatically reload History to show latest records",
-        )
-    with refresh_col2:
-        refresh_interval_seconds = st.selectbox(
-            "Interval (sec)",
-            options=[3, 5, 10, 15, 30],
-            index=1,
-            key="history_refresh_interval",
-            disabled=not auto_refresh_enabled,
-        )
-    with refresh_col3:
-        st.markdown("<div style='height: 1.8rem;'></div>", unsafe_allow_html=True)
-        if st.button("Refresh Now", use_container_width=True, key="history_manual_refresh"):
-            st.rerun()
+    # ── ตรวจข้อมูลใหม่ทุก 5 วินาที (run_every=5 ใน @st.fragment) ──────────
+    # @st.fragment(run_every=5) จะ rerun เฉพาะฟังก์ชันนี้เท่านั้น ไม่กระทบส่วนอื่น
+    # และจะ rerun ก็ต่อเมื่อมีการ insert ข้อมูลใหม่เข้า DB เท่านั้น
 
-    if auto_refresh_enabled:
-        st.caption(f"Auto refresh every {refresh_interval_seconds} seconds")
-        components.html(
-            f"""
-            <script>
-                setTimeout(function() {{
-                    window.parent.location.reload();
-                }}, {int(refresh_interval_seconds) * 1000});
-            </script>
-            """,
-            height=0,
-            width=0,
-        )
+    def _get_latest_id() -> Optional[int]:
+        """Return the max transaction id for today, or None on error."""
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(
+                    text(
+                        "SELECT MAX(id) FROM vehicle_transactions "
+                        "WHERE DATE(time_stamp) = :today"
+                    ),
+                    {"today": today},
+                ).scalar()
+            return int(result) if result is not None else 0
+        except Exception:
+            return None
+
+    # เก็บ last_id ครั้งแรก
+    if "history_last_id" not in st.session_state:
+        st.session_state["history_last_id"] = _get_latest_id() or 0
+
+    # ตรวจว่ามีข้อมูลใหม่มั้ย
+    current_max_id = _get_latest_id()
+    has_new = (
+        current_max_id is not None
+        and current_max_id > st.session_state["history_last_id"]
+    )
+    if has_new:
+        st.session_state["history_last_id"] = current_max_id
+
+    # แสดง status + ปุ่ม Refresh
+    refresh_col1, refresh_col2 = st.columns([3, 1])
+    with refresh_col1:
+        if has_new:
+            st.success("🆕 มีข้อมูลใหม่เข้ามา — หน้ากำลังอัปเดต…")
+        else:
+            st.caption("🟢 Watching for new records automatically…")
+    with refresh_col2:
+        if st.button("🔄 Refresh", use_container_width=True, key="history_manual_refresh"):
+            st.rerun(scope="fragment")
 
     try:
         # Get all vehicle classes from master data
@@ -1280,35 +1288,7 @@ def render_transaction_history() -> None:
             def go_next_page() -> None:
                 st.session_state["history_page"] = min(total_pages, st.session_state["history_page"] + 1)
 
-            page_col1, page_col2, page_col3 = st.columns([1, 2, 1])
-            with page_col1:
-                st.button(
-                    "⬅️ Previous",
-                    disabled=st.session_state["history_page"] <= 1,
-                    key="history_prev_btn",
-                    use_container_width=True,
-                    on_click=go_previous_page,
-                )
-            with page_col2:
-                current_page = st.session_state["history_page"]
-                st.markdown(
-                    f"""
-                    <div class="history-page-badge">
-                        <p class="history-page-text">📄 Page {current_page} of {total_pages}</p>
-                        <p class="history-page-sub">{HISTORY_PAGE_SIZE} records per page</p>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-            with page_col3:
-                st.button(
-                    "Next ➡️",
-                    disabled=st.session_state["history_page"] >= total_pages,
-                    key="history_next_btn",
-                    use_container_width=True,
-                    on_click=go_next_page,
-                )
-
+            current_page = st.session_state["history_page"]
             start_idx = (current_page - 1) * HISTORY_PAGE_SIZE
             end_idx = start_idx + HISTORY_PAGE_SIZE
             df_page = df_transactions.iloc[start_idx:end_idx]
@@ -1348,6 +1328,36 @@ def render_transaction_history() -> None:
                         st.write(f"**🎯 Confidence:** {row['confidence']:.2f}%")
                         st.divider()
                         st.write(f"**Transaction ID:** `{row['id']}`")
+
+            # ── Pagination (bottom) ─────────────────────────────────────
+            st.markdown("---")
+            page_col1, page_col2, page_col3 = st.columns([1, 2, 1])
+            with page_col1:
+                st.button(
+                    "⬅️ Previous",
+                    disabled=st.session_state["history_page"] <= 1,
+                    key="history_prev_btn",
+                    use_container_width=True,
+                    on_click=go_previous_page,
+                )
+            with page_col2:
+                st.markdown(
+                    f"""
+                    <div class="history-page-badge">
+                        <p class="history-page-text">📄 Page {current_page} of {total_pages}</p>
+                        <p class="history-page-sub">{HISTORY_PAGE_SIZE} records per page</p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            with page_col3:
+                st.button(
+                    "Next ➡️",
+                    disabled=st.session_state["history_page"] >= total_pages,
+                    key="history_next_btn",
+                    use_container_width=True,
+                    on_click=go_next_page,
+                )
         else:
             st.markdown(
                 """
