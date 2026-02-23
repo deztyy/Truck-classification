@@ -1826,6 +1826,5 @@ def main() -> None:
     elif active_section == "📊 Superset":
         render_superset_tab()
 
-
 if __name__ == "__main__":
     main()
