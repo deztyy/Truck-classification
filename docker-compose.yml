@@ -273,71 +273,72 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
       MINIO_SECURE: "false"
       MINIO_BUCKET_NAME: video-frames
+      SUPERSET_BASE_URL: http://superset:8088
+      SUPERSET_DASHBOARD_SLUG: mAEP2WNk8Z5
     networks:
       - analytics_network
 
   # E. Apache Superset (BI Dashboard Platform)
-  # superset-postgres:
-  #   image: postgres:15-alpine
-  #   container_name: superset_db
-  #   restart: always
-  #   environment:
-  #     POSTGRES_USER: superset
-  #     POSTGRES_PASSWORD: superset123
-  #     POSTGRES_DB: superset
-  #   ports:
-  #     - "5429:5432"
-  #   volumes:
-  #     - superset_db_data:/var/lib/postgresql/data
-  #   networks:
-  #     - analytics_network
-  #   healthcheck:
-  #     test: ["CMD-SHELL", "pg_isready -U superset -d superset || exit 1"]
-  #     interval: 5s
-  #     timeout: 3s
-  #     retries: 3
-  #     start_period: 10s
+  superset-postgres:
+    image: postgres:15-alpine
+    container_name: superset_db
+    restart: always
+    environment:
+      POSTGRES_USER: superset
+      POSTGRES_PASSWORD: superset123
+      POSTGRES_DB: superset
+    ports:
+      - "5429:5432"
+    volumes:
+      - superset_db_data:/var/lib/postgresql/data
+    networks:
+      - analytics_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U superset -d superset || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
 
-  # superset:
-  #   build:
-  #     context: ./superset-dockerfile
-  #   image: superset-custom:latest
-  #   container_name: superset
-  #   restart: always
-  #   deploy:
-  #     resources:
-  #       limits:
-  #         cpus: '0.5'
-  #         memory: 512MB
-  #   depends_on:
-  #     superset-postgres:
-  #       condition: service_healthy
-  #   environment:
-  #     FLASK_ENV: production
-  #     SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-1234567890abcdefghijklmnopqrstuvwxyz}
-  #     SUPERSET_SQLALCHEMY_DATABASE_URI: postgresql://superset:superset123@superset-postgres:5432/superset
-  #     PYTHONUNBUFFERED: 1
-  #   ports:
-  #     - "8088:8088"
-  #   volumes:
-  #     - superset_data:/var/lib/superset
-  #     - ./superset-dockerfile/superset_config.py:/app/pythonpath/superset_config.py
-  #   networks:
-  #     - analytics_network
-  #   command: >
-  #     /bin/bash -c "
-  #     superset db upgrade &&
-  #     superset init &&
-  #     superset fab create-admin --username admin --firstname Admin --lastname User --email admin@superset.local --password admin123 || true &&
-  #     superset load_examples &&
-  #     superset run -h 0.0.0.0 -p 8088 --with-threads --reload --debugger
-  #     "
-  #   healthcheck:
-  #     test: ["CMD", "curl", "-f", "http://localhost:8088/health"]
-  #     interval: 10s
-  #     timeout: 5s
-  #     retries: 3
-  #     start_period: 30s
+  superset:
+    build:
+      context: ./superset-dockerfile
+    image: superset-custom:latest
+    container_name: superset
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512MB
+    depends_on:
+      superset-postgres:
+        condition: service_healthy
+    environment:
+      FLASK_ENV: production
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-1234567890abcdefghijklmnopqrstuvwxyz}
+      SUPERSET_SQLALCHEMY_DATABASE_URI: postgresql://superset:superset123@superset-postgres:5432/superset
+      PYTHONUNBUFFERED: 1
+    ports:
+      - "8088:8088"
+    volumes:
+      - superset_data:/var/lib/superset
+      - ./superset-dockerfile/superset_config.py:/app/pythonpath/superset_config.py
+    networks:
+      - analytics_network
+    command: >
+      /bin/bash -c "
+      superset db upgrade &&
+      superset init &&
+      superset fab create-admin --username admin --firstname Admin --lastname User --email admin@superset.local --password admin123 || true &&
+      superset run -h 0.0.0.0 -p 8088 --with-threads --reload --debugger
+      "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
 
   deletion-service:
     build:
