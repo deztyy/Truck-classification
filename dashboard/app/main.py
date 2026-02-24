@@ -85,46 +85,46 @@ def load_custom_css() -> None:
         /* ========== HEADER STYLES ========== */
         .main-header {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
-            padding: 2rem 2.5rem;
-            border-radius: 20px;
-            margin-bottom: 2.5rem;
-            box-shadow: 0 20px 60px rgba(102, 126, 234, 0.4), inset 0 1px 0 rgba(255,255,255,0.2);
+            padding: 0.75rem 1.75rem;
+            border-radius: 16px;
+            margin-bottom: 1.25rem;
+            box-shadow: 0 8px 32px rgba(102, 126, 234, 0.35), inset 0 1px 0 rgba(255,255,255,0.2);
             backdrop-filter: blur(10px);
             border: 1px solid rgba(255,255,255,0.15);
-            animation: fadeInDown 0.6s ease;
+            animation: fadeInDown 0.5s ease;
         }
 
         .header-title {
             color: white;
-            font-size: 2.5em;
-            font-weight: 900;
+            font-size: 1.5em;
+            font-weight: 800;
             margin: 0;
-            text-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            text-shadow: 0 2px 12px rgba(0,0,0,0.3);
             line-height: 1.2;
-            letter-spacing: -0.5px;
+            letter-spacing: -0.3px;
         }
 
         .datetime-box {
             background: rgba(255,255,255,0.12);
             backdrop-filter: blur(20px);
-            padding: 1rem 1.5rem;
-            border-radius: 16px;
+            padding: 0.45rem 1rem;
+            border-radius: 12px;
             border: 1px solid rgba(255,255,255,0.25);
-            box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+            box-shadow: 0 4px 16px rgba(0,0,0,0.15);
             transition: all 0.3s ease;
         }
 
         .datetime-box:hover {
-            background: rgba(255,255,255,0.15);
+            background: rgba(255,255,255,0.17);
             border-color: rgba(255,255,255,0.35);
-            transform: translateY(-2px);
+            transform: translateY(-1px);
         }
 
         .date-text {
             color: rgba(255,255,255,0.95);
             font-weight: 600;
-            line-height: 1.6;
-            font-size: 0.95rem;
+            line-height: 1.4;
+            font-size: 0.82rem;
         }
 
         .time-text {
@@ -132,8 +132,8 @@ def load_custom_css() -> None:
             font-weight: 800;
             font-family: 'JetBrains Mono', 'Courier New', monospace;
             text-shadow: 0 2px 8px rgba(255,215,0,0.4);
-            line-height: 1.6;
-            font-size: 1.1rem;
+            line-height: 1.4;
+            font-size: 0.95rem;
             letter-spacing: 1px;
         }
 
@@ -293,34 +293,47 @@ def load_custom_css() -> None:
             font-weight: 500;
         }
 
-        .history-page-badge {
-            background: linear-gradient(135deg, rgba(102,126,234,0.15) 0%, rgba(240,147,251,0.1) 100%);
-            border: 2px solid rgba(102,126,234,0.3);
-            border-radius: 14px;
-            padding: 1rem 1.5rem;
-            text-align: center;
-            backdrop-filter: blur(10px);
-            transition: all 0.3s ease;
+        .pagination-wrapper {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 0.75rem;
+            margin: 1rem 0;
         }
 
-        .history-page-badge:hover {
-            border-color: rgba(102,126,234,0.5);
-            background: linear-gradient(135deg, rgba(102,126,234,0.2) 0%, rgba(240,147,251,0.15) 100%);
+        .pagination-info {
+            display: inline-flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(102,126,234,0.3);
+            border-radius: 10px;
+            padding: 0.4rem 1.2rem;
+            min-width: 140px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        [data-testid="stColumn"] > div:has(.pagination-info) {
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
 
         .history-page-text {
-            color: #ffd700;
-            font-size: 1.15rem;
-            font-weight: 800;
+            color: #ffffff;
+            font-size: 0.9rem;
+            font-weight: 700;
             margin: 0;
-            letter-spacing: -0.3px;
+            letter-spacing: 0.2px;
         }
 
         .history-page-sub {
-            color: rgba(255,255,255,0.75);
-            font-size: 0.85rem;
-            margin-top: 0.3rem;
-            font-weight: 500;
+            color: rgba(255,255,255,0.45);
+            font-size: 0.72rem;
+            margin: 0;
+            font-weight: 400;
         }
 
         /* ========== ANIMATIONS ========== */
@@ -748,24 +761,24 @@ def render_header() -> None:
     st.markdown(
         f"""
     <div class="main-header">
-        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
-            <div style="flex: 1; min-width: 300px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+            <div style="flex: 1; min-width: 180px;">
                 <h1 class="header-title" style="margin: 0; text-align: left;">Vehicle Entry System</h1>
             </div>
-            <div class="datetime-box" style="flex: 0 0 auto; min-width: 280px; margin-top: 0;">
-                <div style="display: flex; align-items: center; justify-content: space-between; gap: 1.5rem;">
+            <div class="datetime-box" style="flex: 0 0 auto; min-width: 210px; margin-top: 0;">
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 1rem;">
                     <div style="text-align: left;">
-                        <div style="color: rgba(255,255,255,0.7); font-size: 0.75em; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px;">
+                        <div style="color: rgba(255,255,255,0.6); font-size: 0.65em; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 2px;">
                             Date
                         </div>
-                        <div class="date-text" style="font-size: 1em; margin: 0;">📅 {current_date}</div>
+                        <div class="date-text" style="margin: 0;">📅 {current_date}</div>
                     </div>
-                    <div style="width: 1px; height: 40px; background: rgba(255,255,255,0.2);"></div>
+                    <div style="width: 1px; height: 28px; background: rgba(255,255,255,0.2);"></div>
                     <div style="text-align: left;">
-                        <div style="color: rgba(255,255,255,0.7); font-size: 0.75em; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px;">
+                        <div style="color: rgba(255,255,255,0.6); font-size: 0.65em; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 2px;">
                             Time
                         </div>
-                        <div class="time-text" id="clock" style="font-size: 1.1em; margin: 0;">🕐 Loading...</div>
+                        <div class="time-text" id="clock" style="margin: 0;">🕐 Loading...</div>
                     </div>
                 </div>
             </div>
@@ -982,54 +995,78 @@ def render_current_vehicle_tab() -> None:
 
 
 # ==================== TRANSACTION HISTORY ====================
-# Replace the incomplete render_transaction_history() function
-
+@st.fragment(run_every=5)
 def render_transaction_history() -> None:
     """Render transaction history for today only with filters"""
-    st.markdown("---")
-    st.markdown("### 📜 Transaction History (Today)")
-
     now_thailand = get_thailand_time()
     today = now_thailand.date()
 
-    # Display current date
-    st.info(f"📅 Showing transactions for: {today.strftime('%d %B %Y')}")
+    # Header + date in one row
+    st.markdown(
+        f"""
+        <div style="
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        ">
+            <div style="
+                font-size: 1.4rem;
+                font-weight: 800;
+                color: #ffffff;
+                display: flex;
+                align-items: center;
+                gap: 0.4rem;
+            ">
+                📜 Transaction History (Today)
+            </div>
+            <div style="
+                display: flex;
+                align-items: center;
+                gap: 0.5rem;
+                background: rgba(102,126,234,0.15);
+                border: 1px solid rgba(102,126,234,0.35);
+                border-radius: 10px;
+                padding: 0.35rem 1rem;
+                font-size: 0.88rem;
+                color: rgba(255,255,255,0.85);
+                font-weight: 600;
+                white-space: nowrap;
+            ">
+                📅 {today.strftime('%d %B %Y')}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    # Refresh controls for high-volume incoming data
-    refresh_col1, refresh_col2, refresh_col3 = st.columns([1.2, 1, 0.8])
-    with refresh_col1:
-        auto_refresh_enabled = st.checkbox(
-            "🔄 Auto Refresh",
-            value=st.session_state.get("history_auto_refresh", False),
-            key="history_auto_refresh",
-            help="Automatically reload History to show latest records",
-        )
-    with refresh_col2:
-        refresh_interval_seconds = st.selectbox(
-            "Interval (sec)",
-            options=[3, 5, 10, 15, 30],
-            index=1,
-            key="history_refresh_interval",
-            disabled=not auto_refresh_enabled,
-        )
-    with refresh_col3:
-        st.markdown("<div style='height: 1.8rem;'></div>", unsafe_allow_html=True)
-        if st.button("Refresh Now", use_container_width=True, key="history_manual_refresh"):
-            st.rerun()
+    # ── ตรวจข้อมูลใหม่ทุก 5 วินาที rerun เฉพาะ fragment นี้เท่านั้น ──────
+    def _get_latest_id() -> Optional[int]:
+        """Return the max transaction id for today, or None on error."""
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(
+                    text(
+                        "SELECT MAX(id) FROM vehicle_transactions "
+                        "WHERE DATE(time_stamp) = :today"
+                    ),
+                    {"today": today},
+                ).scalar()
+            return int(result) if result is not None else 0
+        except Exception:
+            return None
 
-    if auto_refresh_enabled:
-        st.caption(f"Auto refresh every {refresh_interval_seconds} seconds")
-        components.html(
-            f"""
-            <script>
-                setTimeout(function() {{
-                    window.parent.location.reload();
-                }}, {int(refresh_interval_seconds) * 1000});
-            </script>
-            """,
-            height=0,
-            width=0,
-        )
+    # เก็บ last_id ครั้งแรก
+    if "history_last_id" not in st.session_state:
+        st.session_state["history_last_id"] = _get_latest_id() or 0
+
+    # ตรวจว่ามีข้อมูลใหม่มั้ย — ถ้ามีให้อัปเดต last_id แล้ว rerun fragment ทันที
+    current_max_id = _get_latest_id()
+    if current_max_id is not None and current_max_id > st.session_state["history_last_id"]:
+        st.session_state["history_last_id"] = current_max_id
+        st.rerun(scope="fragment")
 
     try:
         # Get all vehicle classes from master data
@@ -1073,56 +1110,73 @@ def render_transaction_history() -> None:
                 # If DB returns timezone-aware timestamps, convert to Bangkok
                 df_all["time_bangkok"] = timestamps.dt.tz_convert(THAILAND_TZ)
 
-            # Filter options
-            st.markdown(
-                """
-                <div class="history-panel">
-                    <div class="history-panel-title">🔍 Filters</div>
-                    <p class="history-panel-sub">เลือกเงื่อนไขเพื่อค้นหา transaction ที่ต้องการ</p>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            # Search + filters in one row
+            col_search, col_f1, col_f2, col_f3 = st.columns([1.2, 1, 1, 1])
 
-            # Search box for Track ID
-            search_track = st.text_input(
-                "🔎 Search Track ID",
-                placeholder="Enter track ID to search...",
-                key="search_track",
-            )
-
-            col_f1, col_f2, col_f3 = st.columns(3)
+            with col_search:
+                search_track = st.text_input(
+                    "🔎 Search Track ID",
+                    placeholder="Enter track ID to search...",
+                    key="search_track",
+                )
 
             with col_f1:
                 all_cameras = sorted(df_all["camera_id"].unique().tolist())
                 camera_options = ["All Cameras"] + all_cameras
+                # ดึงค่าจาก URL query params ก่อน (เพื่อให้ persist หลัง page refresh)
+                url_camera = st.query_params.get("history_camera", None)
+                if url_camera and url_camera in camera_options:
+                    saved_camera = url_camera
+                else:
+                    saved_camera = st.session_state.get("camera_filter", "All Cameras")
+                camera_index = camera_options.index(saved_camera) if saved_camera in camera_options else 0
                 selected_camera = st.selectbox(
                     "📷 Select Camera",
                     options=camera_options,
-                    index=0,
+                    index=camera_index,
                     key="camera_filter",
                 )
+                # บันทึกค่าลง URL query params ทุกครั้งที่เลือก
+                st.query_params["history_camera"] = selected_camera
 
             with col_f2:
                 translated_types = [
                     translate_class_name(vt) for vt in all_vehicle_types
                 ]
                 vehicle_type_options = ["All Types"] + translated_types
+                # ดึงค่าจาก URL query params ก่อน
+                url_vehicle_type = st.query_params.get("history_vehicle_type", None)
+                if url_vehicle_type and url_vehicle_type in vehicle_type_options:
+                    saved_vehicle_type = url_vehicle_type
+                else:
+                    saved_vehicle_type = st.session_state.get("vehicle_type_filter", "All Types")
+                vehicle_type_index = vehicle_type_options.index(saved_vehicle_type) if saved_vehicle_type in vehicle_type_options else 0
                 selected_vehicle_type = st.selectbox(
                     "Select Vehicle Type",
                     options=vehicle_type_options,
-                    index=0,
+                    index=vehicle_type_index,
                     key="vehicle_type_filter",
                 )
+                # บันทึกค่าลง URL query params
+                st.query_params["history_vehicle_type"] = selected_vehicle_type
 
-           # ...existing code...
             with col_f3:
+                time_options = ["All Day", "Time Period"]
+                # ดึงค่าจาก URL query params ก่อน
+                url_time_filter = st.query_params.get("history_time_filter", None)
+                if url_time_filter and url_time_filter in time_options:
+                    saved_time_filter = url_time_filter
+                else:
+                    saved_time_filter = st.session_state.get("time_filter_type", "All Day")
+                time_filter_index = time_options.index(saved_time_filter) if saved_time_filter in time_options else 0
                 time_filter_type = st.selectbox(
                     "⏰ Time Filter",
-                    options=["All Day", "Time Period"],
-                    index=0,
+                    options=time_options,
+                    index=time_filter_index,
                     key="time_filter_type",
                 )
+                # บันทึกค่าลง URL query params
+                st.query_params["history_time_filter"] = time_filter_type
 
             # Apply filters
             if selected_camera == "All Cameras":
@@ -1168,16 +1222,18 @@ def render_transaction_history() -> None:
                         "Hour",
                         min_value=0,
                         max_value=23,
-                        value=0,
+                        value=int(st.query_params.get("history_start_hour", 0)),
                         key="start_hour",
                     )
+                    st.query_params["history_start_hour"] = str(start_hour)
                     start_minute = st.number_input(
                         "Minute",
                         min_value=0,
                         max_value=59,
-                        value=0,
+                        value=int(st.query_params.get("history_start_minute", 0)),
                         key="start_minute",
                     )
+                    st.query_params["history_start_minute"] = str(start_minute)
                 
                 with col_t2:
                     st.markdown("**End Time**")
@@ -1185,16 +1241,18 @@ def render_transaction_history() -> None:
                         "Hour",
                         min_value=0,
                         max_value=23,
-                        value=23,
+                        value=int(st.query_params.get("history_end_hour", 23)),
                         key="end_hour",
                     )
+                    st.query_params["history_end_hour"] = str(end_hour)
                     end_minute = st.number_input(
                         "Minute",
                         min_value=0,
                         max_value=59,
-                        value=59,
+                        value=int(st.query_params.get("history_end_minute", 59)),
                         key="end_minute",
                     )
+                    st.query_params["history_end_minute"] = str(end_minute)
 
                 # Validate time range
                 start_time_minutes = start_hour * 60 + start_minute
@@ -1233,7 +1291,7 @@ def render_transaction_history() -> None:
                 st.session_state["history_page"] = 1
                 st.session_state["history_filter_state"] = current_filter_state
 
-            st.markdown("---")
+            #st.markdown("---")
             # ...existing code...
 
             # Summary metrics
@@ -1247,17 +1305,15 @@ def render_transaction_history() -> None:
                 avg_confidence = df_transactions["confidence"].mean()
                 st.metric("🎯 Avg Confidence", f"{avg_confidence:.2f}%")
 
-            st.markdown("---")
-
-            # Display transactions table
-            st.markdown(
-                f"""
-                <div class="history-panel">
-                    <div class="history-panel-title">📋 Records Found: {len(df_transactions)}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            # # Display transactions table
+            # st.markdown(
+            #     f"""
+            #     <div class="history-panel">
+            #         <div class="history-panel-title">📋 Records Found: {len(df_transactions)}</div>
+            #     </div>
+            #     """,
+            #     unsafe_allow_html=True,
+            # )
 
             if df_transactions.empty:
                 st.info("📭 No transactions match the selected filters")
@@ -1280,35 +1336,7 @@ def render_transaction_history() -> None:
             def go_next_page() -> None:
                 st.session_state["history_page"] = min(total_pages, st.session_state["history_page"] + 1)
 
-            page_col1, page_col2, page_col3 = st.columns([1, 2, 1])
-            with page_col1:
-                st.button(
-                    "⬅️ Previous",
-                    disabled=st.session_state["history_page"] <= 1,
-                    key="history_prev_btn",
-                    use_container_width=True,
-                    on_click=go_previous_page,
-                )
-            with page_col2:
-                current_page = st.session_state["history_page"]
-                st.markdown(
-                    f"""
-                    <div class="history-page-badge">
-                        <p class="history-page-text">📄 Page {current_page} of {total_pages}</p>
-                        <p class="history-page-sub">{HISTORY_PAGE_SIZE} records per page</p>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-            with page_col3:
-                st.button(
-                    "Next ➡️",
-                    disabled=st.session_state["history_page"] >= total_pages,
-                    key="history_next_btn",
-                    use_container_width=True,
-                    on_click=go_next_page,
-                )
-
+            current_page = st.session_state["history_page"]
             start_idx = (current_page - 1) * HISTORY_PAGE_SIZE
             end_idx = start_idx + HISTORY_PAGE_SIZE
             df_page = df_transactions.iloc[start_idx:end_idx]
@@ -1348,6 +1376,39 @@ def render_transaction_history() -> None:
                         st.write(f"**🎯 Confidence:** {row['confidence']:.2f}%")
                         st.divider()
                         st.write(f"**Transaction ID:** `{row['id']}`")
+
+            # ── Pagination (bottom) ─────────────────────────────────────
+            st.markdown("---")
+            # ── Compact centered pagination ──────────────────────────────
+            _, pcol1, pcol2, pcol3, _ = st.columns([2, 1, 1, 1, 2])
+            with pcol1:
+                st.button(
+                    "← Prev",
+                    disabled=st.session_state["history_page"] <= 1,
+                    key="history_prev_btn",
+                    use_container_width=True,
+                    on_click=go_previous_page,
+                )
+            with pcol2:
+                st.markdown(
+                    f"""
+                    <div style="display:flex; align-items:center; justify-content:center; height:100%;">
+                        <div class="pagination-info">
+                            <p class="history-page-text">{current_page} / {total_pages}</p>
+                            <p class="history-page-sub">{HISTORY_PAGE_SIZE} per page</p>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            with pcol3:
+                st.button(
+                    "Next →",
+                    disabled=st.session_state["history_page"] >= total_pages,
+                    key="history_next_btn",
+                    use_container_width=True,
+                    on_click=go_next_page,
+                )
         else:
             st.markdown(
                 """
@@ -1751,7 +1812,7 @@ def main() -> None:
     # Render header
     render_header()
 
-    st.markdown("---")
+    #st.markdown("---")
 
     # ========== STYLIZED TAB NAVIGATION ==========
     navigation_options = ["🏠 Dashboard", "📜 History", "⚙️ Master Data", "📊 Superset"]
@@ -1834,7 +1895,6 @@ def main() -> None:
         render_master_data_tab(df_classes)
     elif active_section == "📊 Superset":
         render_superset_tab()
-
 
 if __name__ == "__main__":
     main()
