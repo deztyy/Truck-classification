@@ -273,8 +273,9 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
       MINIO_SECURE: "false"
       MINIO_BUCKET_NAME: video-frames
-      SUPERSET_BASE_URL: http://superset:8088
+      SUPERSET_BASE_URL: http://localhost:8088
       SUPERSET_DASHBOARD_SLUG: mAEP2WNk8Z5
+      SUPERSET_AUTO_REFRESH_SECONDS: ${SUPERSET_AUTO_REFRESH_SECONDS:-10}
     networks:
       - analytics_network
 
@@ -300,6 +301,34 @@ services:
       retries: 3
       start_period: 10s
 
+  superset-init:
+    build:
+      context: ./superset-dockerfile
+    image: superset-custom:latest
+    container_name: superset_init
+    restart: "no"
+    depends_on:
+      superset-postgres:
+        condition: service_healthy
+    environment:
+      FLASK_ENV: production
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-1234567890abcdefghijklmnopqrstuvwxyz}
+      SQLALCHEMY_DATABASE_URI: postgresql://superset:superset123@superset-postgres:5432/superset
+      SUPERSET_SQLALCHEMY_DATABASE_URI: postgresql://superset:superset123@superset-postgres:5432/superset
+      PYTHONUNBUFFERED: 1
+    volumes:
+      - superset_data:/var/lib/superset
+      - ./superset-dockerfile/superset_config.py:/app/pythonpath/superset_config.py
+    networks:
+      - analytics_network
+    command: >
+      /bin/bash -c "
+      superset db upgrade &&
+      superset init &&
+      superset fab create-admin --username admin --firstname Admin --lastname User --email admin@superset.local --password admin123 || true &&
+      echo 'Superset init complete!'
+      "
+
   superset:
     build:
       context: ./superset-dockerfile
@@ -314,9 +343,12 @@ services:
     depends_on:
       superset-postgres:
         condition: service_healthy
+      superset-init:
+        condition: service_completed_successfully
     environment:
       FLASK_ENV: production
       SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-1234567890abcdefghijklmnopqrstuvwxyz}
+      SQLALCHEMY_DATABASE_URI: postgresql://superset:superset123@superset-postgres:5432/superset
       SUPERSET_SQLALCHEMY_DATABASE_URI: postgresql://superset:superset123@superset-postgres:5432/superset
       PYTHONUNBUFFERED: 1
     ports:
@@ -328,17 +360,33 @@ services:
       - analytics_network
     command: >
       /bin/bash -c "
-      superset db upgrade &&
-      superset init &&
-      superset fab create-admin --username admin --firstname Admin --lastname User --email admin@superset.local --password admin123 || true &&
-      superset run -h 0.0.0.0 -p 8088 --with-threads --reload --debugger
+      superset run -h 0.0.0.0 -p 8088 --with-threads
       "
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8088/health"]
       interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 120s
+      start_period: 60s
+      
+  superset-api:
+    build: ./superset-api
+    container_name: superset_api
+    restart: always
+    environment:
+      SUPERSET_URL: http://superset:8088
+      SUPERSET_USER: admin
+      SUPERSET_PASS: admin123
+      SUPERSET_EMBEDDED_DASHBOARD_ID: ${SUPERSET_EMBEDDED_DASHBOARD_ID:-8c3a8e7d-dbf9-4bd1-9cd5-c7fac633a4fc}
+      SUPERSET_DASHBOARD_UUID: ${SUPERSET_DASHBOARD_UUID:-8c3a8e7d-dbf9-4bd1-9cd5-c7fac633a4fc}
+      SUPERSET_DASHBOARD_SLUG: ${SUPERSET_DASHBOARD_SLUG:-}
+    ports:
+      - "8000:8000"
+    depends_on:
+      superset:
+        condition: service_healthy
+    networks:
+      - analytics_network
 
   deletion-service:
     build:
