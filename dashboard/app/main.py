@@ -22,6 +22,7 @@ THAILAND_TZ = pytz.timezone("Asia/Bangkok")
 SUPERSET_BASE_URL = os.getenv("SUPERSET_BASE_URL", "http://localhost:8088")
 SUPERSET_DASHBOARD_ID = os.getenv("SUPERSET_DASHBOARD_ID", "")
 SUPERSET_DASHBOARD_SLUG = os.getenv("SUPERSET_DASHBOARD_SLUG", "")
+SUPERSET_AUTO_REFRESH_SECONDS = max(5, int(os.getenv("SUPERSET_AUTO_REFRESH_SECONDS", "30")))
 
 # MinIO Configuration
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "minio:9000")
@@ -643,33 +644,84 @@ def build_superset_dashboard_url() -> str:
     return ""
 
 
+@st.fragment(run_every=SUPERSET_AUTO_REFRESH_SECONDS)
 def render_superset_tab() -> None:
-    """Render Superset dashboard in an embedded iframe."""
+    import requests
     st.markdown("### 📊 Superset Dashboards")
-    st.caption("เปิดกราฟจาก Apache Superset ในหน้าแอพนี้")
+    st.caption(f"รีเฟรชอัตโนมัติทุก {SUPERSET_AUTO_REFRESH_SECONDS} วินาที")
 
-    default_url = build_superset_dashboard_url()
-    
-    if default_url:
-        st.link_button("🔗 Open Superset Dashboard", default_url, use_container_width=True)
-    
-    dashboard_url = st.text_input(
-        "Superset Dashboard URL",
-        value=default_url,
-        help="ใส่ลิงก์แดชบอร์ด เช่น http://localhost:8088/superset/dashboard/<slug-or-id>/?standalone=1",
-    )
+    SUPERSET_URL = "http://localhost:8088"
+    GUEST_TOKEN_API = "http://superset-api:8000/guest-token"
 
-    if not dashboard_url:
-        st.info(
-            "ยังไม่ได้ตั้งค่า URL ของแดชบอร์ด Superset. ตั้งค่า SUPERSET_DASHBOARD_SLUG หรือ SUPERSET_DASHBOARD_ID หรือวาง URL เอง"
-        )
+    try:
+        res = requests.get(GUEST_TOKEN_API, timeout=10)
+        data = res.json()
+        
+        # ตรวจสอบว่ามี error หรือไม่
+        if res.status_code != 200:
+            error_detail = data.get("detail", "Unknown error")
+            if "No dashboards found" in error_detail:
+                st.warning("⚠️ ยังไม่มี Dashboard ใน Superset")
+                st.info("""
+                **วิธีแก้ไข:**
+                1. เปิด [Superset](http://localhost:8088) (admin/admin123)
+                2. สร้าง Dashboard ใหม่ตามคู่มือ
+                3. รันคำสั่ง: `docker exec superset python3 /tmp/enable_embedding.py`
+                4. Refresh หน้านี้อีกครั้ง
+                """)
+            else:
+                st.error(f"❌ เกิดข้อผิดพลาด: {error_detail}")
+            return
+        
+        guest_token = data["token"]
+        dashboard_uuid = data["uuid"]  # รับ UUID จาก API เลย
+    except requests.exceptions.RequestException as e:
+        st.error(f"❌ ไม่สามารถเชื่อมต่อ Superset API: {e}")
+        st.info("กรุณาตรวจสอบว่า service superset-api ทำงานอยู่")
+        return
+    except KeyError as e:
+        st.error(f"❌ ข้อมูลจาก API ไม่ถูกต้อง: ไม่พบ {e}")
+        st.code(f"Response: {data}")
+        return
+    except Exception as e:
+        st.error(f"❌ เกิดข้อผิดพลาดที่ไม่คาดคิด: {e}")
         return
 
-    if dashboard_url != default_url:
-        st.link_button("🔗 Open Custom URL", dashboard_url, use_container_width=True)
-    
-    components.iframe(dashboard_url, height=900, scrolling=True)
-
+    components.html(
+        f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <script src="https://unpkg.com/@superset-ui/embedded-sdk"></script>
+            <style>
+                body {{ margin: 0; padding: 0; }}
+                #superset-container iframe {{
+                    width: 100%;
+                    height: 900px;
+                    border: none;
+                }}
+            </style>
+        </head>
+        <body>
+            <div id="superset-container"></div>
+            <script>
+                supersetEmbeddedSdk.embedDashboard({{
+                    id: "{dashboard_uuid}",
+                    supersetDomain: "{SUPERSET_URL}",
+                    mountPoint: document.getElementById("superset-container"),
+                    fetchGuestToken: () => "{guest_token}",
+                    dashboardUiConfig: {{
+                        hideTitle: true,
+                        hideChartControls: false,
+                        hideTab: false,
+                    }},
+                }});
+            </script>
+        </body>
+        </html>
+        """,
+        height=920,
+    )
 
 # ==================== DATA LOADING ====================
 @st.cache_data(ttl=CACHE_TTL_SECONDS)

@@ -54,35 +54,42 @@ class SupersetConfigurator:
         return False
 
     def login(self) -> bool:
-        """Login to Superset and get CSRF token"""
+        """Login to Superset and get access token"""
         print(f"\nLogging in as {self.username}...")
 
         try:
-            # Get CSRF token
-            csrf_response = self.session.get(f"{self.base_url}/api/v1/security/csrf_token/")
-            if csrf_response.status_code == 200:
-                self.csrf_token = csrf_response.json().get("result")
-                print(f"✓ Got CSRF token")
-            else:
-                print("✗ Failed to get CSRF token")
-                return False
-
-            # Login
+            # Login โดยตรง ไม่ต้องขอ CSRF ก่อน
             login_response = self.session.post(
                 f"{self.base_url}/api/v1/security/login",
                 json={
                     "username": self.username,
                     "password": self.password,
                     "provider": "db"
-                },
-                headers={"X-CSRFToken": self.csrf_token} if self.csrf_token else {}
+                }
             )
 
             if login_response.status_code == 200:
                 self.access_token = login_response.json().get("access_token")
-                self.session.headers.update({"Authorization": f"Bearer {self.access_token}"})
-                print("✓ Login successful!")
-                return True
+                self.session.headers.update({
+                    "Authorization": f"Bearer {self.access_token}"
+                })
+
+                # ขอ CSRF token หลัง login
+                csrf_response = self.session.get(
+                    f"{self.base_url}/api/v1/security/csrf_token/",
+                )
+                if csrf_response.status_code == 200:
+                    self.csrf_token = csrf_response.json().get("result")
+                    self.session.headers.update({
+                        "X-CSRFToken": self.csrf_token,
+                        "Referer": self.base_url,
+                    })
+                    print("✓ Login successful!")
+                    return True
+                else:
+                    print(f"⚠ Login ok but CSRF failed: {csrf_response.text}")
+                    return True  # ยังใช้งานได้โดยไม่มี CSRF สำหรับ read operations
+
             else:
                 print(f"✗ Login failed: {login_response.text}")
                 return False
@@ -168,6 +175,47 @@ class SupersetConfigurator:
             print(f"⚠ Could not test connection: {e}")
             return False
 
+    def enable_dashboard_embedding(self) -> Optional[str]:
+        """Enable embedding for all dashboards and return UUID of the first one"""
+        print(f"\nEnabling embedding for dashboards...")
+
+        try:
+            response = self.session.get(f"{self.base_url}/api/v1/dashboard/")
+            if response.status_code != 200:
+                print(f"✗ Failed to get dashboards: {response.text}")
+                return None
+
+            dashboards = response.json().get("result", [])
+            if not dashboards:
+                print("⚠ No dashboards found, skipping embedding setup")
+                return None
+
+            first_uuid = None
+            for d in dashboards:
+                dashboard_id = d.get("id")
+                title = d.get("title", "Unknown")
+                print(f"  Enabling embedding for: [{dashboard_id}] {title}")
+
+                embed_response = self.session.post(
+                    f"{self.base_url}/api/v1/dashboard/{dashboard_id}/embedded",
+                    json={"allowed_domains": []},
+                    headers={"X-CSRFToken": self.csrf_token} if self.csrf_token else {}
+                )
+
+                if embed_response.status_code in [200, 201]:
+                    uuid = embed_response.json().get("result", {}).get("uuid", "")
+                    print(f"  ✓ Enabled! UUID: {uuid}")
+                    if first_uuid is None:
+                        first_uuid = uuid
+                else:
+                    print(f"  ✗ Failed: {embed_response.text}")
+
+            return first_uuid
+
+        except Exception as e:
+            print(f"✗ Error enabling embedding: {e}")
+            return None
+
     def run(self) -> bool:
         """Run the full configuration"""
         print("=" * 60)
@@ -189,6 +237,11 @@ class SupersetConfigurator:
             print("✗ Failed to add database")
             return False
 
+        # Enable dashboard embedding
+        embedded_uuid = self.enable_dashboard_embedding()
+        if embedded_uuid:
+            print(f"\n⚠ Update DASHBOARD_UUID in main.py and superset-api/main.py to: {embedded_uuid}")
+
         print("\n" + "=" * 60)
         print("✓ Configuration complete!")
         print("=" * 60)
@@ -196,11 +249,8 @@ class SupersetConfigurator:
         print(f"Username: {ADMIN_USERNAME}")
         print(f"Password: {ADMIN_PASSWORD}")
         print(f"\nDatabase connected: {DATABASE_CONFIG['database_name']}")
-        print("\nNext steps:")
-        print("1. Go to + → Dataset")
-        print("2. Select 'vehicle_analytics' database")
-        print("3. Choose a table and create charts")
-        print("4. Build your dashboard!")
+        if embedded_uuid:
+            print(f"Dashboard UUID: {embedded_uuid}")
 
         return True
 
