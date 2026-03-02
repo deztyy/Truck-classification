@@ -14,8 +14,9 @@ FEATURE_FLAGS = {
 # Allow embedding in iframes
 X_FRAME_OPTIONS = "ALLOWALL"
 
-# Enable public role for embedded dashboards
-PUBLIC_ROLE_LIKE = "Gamma"
+# Enable permissive role mapping for embedded dashboards (development only)
+PUBLIC_ROLE_LIKE = "Admin"
+GUEST_ROLE_NAME = "Admin"
 
 # Keep CSRF enabled for security, but with exemptions
 WTF_CSRF_ENABLED = True
