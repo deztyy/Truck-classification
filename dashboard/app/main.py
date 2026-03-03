@@ -644,11 +644,16 @@ def build_superset_dashboard_url() -> str:
     return ""
 
 
-@st.fragment(run_every=SUPERSET_AUTO_REFRESH_SECONDS)
+@st.fragment
 def render_superset_tab() -> None:
     import requests
     st.markdown("### 📊 Superset Dashboards")
-    st.caption(f"รีเฟรชอัตโนมัติทุก {SUPERSET_AUTO_REFRESH_SECONDS} วินาที")
+    col_info, col_action = st.columns([3, 1])
+    with col_info:
+        st.caption("รีเฟรชแบบ Manual (กดปุ่ม Refresh)")
+    with col_action:
+        if st.button("🔄 Refresh", key="superset_manual_refresh", use_container_width=True):
+            st.rerun(scope="fragment")
 
     SUPERSET_URL = "http://localhost:8088"
     GUEST_TOKEN_API = "http://superset-api:8000/guest-token"
