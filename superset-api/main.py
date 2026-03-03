@@ -1,4 +1,5 @@
 import os
+from typing import Tuple
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -22,6 +23,15 @@ SUPERSET_EMBEDDED_DASHBOARD_ID = os.getenv(
 ).strip()
 SUPERSET_DASHBOARD_UUID = os.getenv("SUPERSET_DASHBOARD_UUID", "").strip()
 SUPERSET_DASHBOARD_SLUG = os.getenv("SUPERSET_DASHBOARD_SLUG", "").strip()
+SUPERSET_ALLOWED_EMBED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "SUPERSET_ALLOWED_EMBED_ORIGINS",
+        "http://localhost:8501,http://127.0.0.1:8501",
+    ).split(",")
+    if origin.strip()
+]
+
 
 async def get_access_token(client: httpx.AsyncClient) -> str:
     login = await client.post(f"{SUPERSET_URL}/api/v1/security/login", json={
@@ -33,8 +43,71 @@ async def get_access_token(client: httpx.AsyncClient) -> str:
         raise HTTPException(status_code=500, detail=f"Login failed: {login.text}")
     return login.json()["access_token"]
 
-async def get_dashboard_uuid(client: httpx.AsyncClient, access_token: str) -> str:
-    """ดึง embedded UUID โดยใช้ embedded id จาก env ก่อน จากนั้นค่อย fallback ด้วย slug/uuid"""
+
+async def get_csrf_token(client: httpx.AsyncClient, access_token: str) -> Tuple[str, httpx.Cookies]:
+    csrf_res = await client.get(
+        f"{SUPERSET_URL}/api/v1/security/csrf_token/",
+        headers={"Authorization": f"Bearer {access_token}"}
+    )
+    if csrf_res.status_code != 200:
+        raise HTTPException(status_code=500, detail=f"Get CSRF token failed: {csrf_res.text}")
+
+    csrf_token = csrf_res.json().get("result", "")
+    if not csrf_token:
+        raise HTTPException(status_code=500, detail="Get CSRF token failed: empty token")
+
+    return csrf_token, csrf_res.cookies
+
+
+async def get_or_create_embedded_uuid(
+    client: httpx.AsyncClient,
+    access_token: str,
+    csrf_token: str,
+    cookies: httpx.Cookies,
+    dashboard_id: int,
+) -> str:
+    embed_res = await client.get(
+        f"{SUPERSET_URL}/api/v1/dashboard/{dashboard_id}/embedded",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    if embed_res.status_code == 200:
+        uuid = embed_res.json().get("result", {}).get("uuid", "")
+        if uuid:
+            return uuid
+
+    create_embed_res = await client.post(
+        f"{SUPERSET_URL}/api/v1/dashboard/{dashboard_id}/embedded",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "X-CSRFToken": csrf_token,
+            "Referer": SUPERSET_URL,
+            "Content-Type": "application/json",
+        },
+        cookies=cookies,
+        json={"allowed_domains": SUPERSET_ALLOWED_EMBED_ORIGINS},
+    )
+    if create_embed_res.status_code in (200, 201):
+        uuid = create_embed_res.json().get("result", {}).get("uuid", "")
+        if uuid:
+            return uuid
+
+    raise HTTPException(
+        status_code=500,
+        detail=(
+            "Fetch embedded UUID failed. "
+            f"POST /embedded -> {create_embed_res.status_code}: {create_embed_res.text}; "
+            f"GET /embedded -> {embed_res.status_code}: {embed_res.text}"
+        ),
+    )
+
+
+async def get_dashboard_uuid(
+    client: httpx.AsyncClient,
+    access_token: str,
+    csrf_token: str,
+    cookies: httpx.Cookies,
+) -> str:
+    """Resolve embedded dashboard UUID using env and auto-enable embedding if required."""
     if SUPERSET_EMBEDDED_DASHBOARD_ID:
         return SUPERSET_EMBEDDED_DASHBOARD_ID
 
@@ -81,19 +154,14 @@ async def get_dashboard_uuid(client: httpx.AsyncClient, access_token: str) -> st
         selected_dashboard = dashboards[0]
 
     dashboard_id = selected_dashboard["id"]
-    
-    # ดึง embedded UUID
-    embed_res = await client.get(
-        f"{SUPERSET_URL}/api/v1/dashboard/{dashboard_id}/embedded",
-        headers={"Authorization": f"Bearer {access_token}"}
-    )
-    if embed_res.status_code != 200:
-        raise HTTPException(status_code=500, detail=f"Fetch embedded UUID failed: {embed_res.text}")
 
-    uuid = embed_res.json().get("result", {}).get("uuid")
-    if not uuid:
-        raise HTTPException(status_code=500, detail="Dashboard embedding not enabled")
-    return uuid
+    return await get_or_create_embedded_uuid(
+        client=client,
+        access_token=access_token,
+        csrf_token=csrf_token,
+        cookies=cookies,
+        dashboard_id=dashboard_id,
+    )
 
 @app.get("/guest-token")
 async def get_guest_token():
@@ -101,16 +169,11 @@ async def get_guest_token():
         # 1. Login
         access_token = await get_access_token(client)
 
-        # 2. ดึง UUID อัตโนมัติ
-        dashboard_uuid = await get_dashboard_uuid(client, access_token)
+        # 2. ขอ CSRF token
+        csrf_token, cookies = await get_csrf_token(client, access_token)
 
-        # 3. ขอ CSRF token
-        csrf_res = await client.get(
-            f"{SUPERSET_URL}/api/v1/security/csrf_token/",
-            headers={"Authorization": f"Bearer {access_token}"}
-        )
-        csrf_token = csrf_res.json()["result"]
-        cookies = csrf_res.cookies
+        # 3. ดึง UUID อัตโนมัติ
+        dashboard_uuid = await get_dashboard_uuid(client, access_token, csrf_token, cookies)
 
         # 4. ขอ guest token
         guest = await client.post(

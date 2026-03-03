@@ -329,6 +329,41 @@ services:
       echo 'Superset init complete!'
       "
 
+  superset-import:
+    build:
+      context: ./superset-dockerfile
+    image: superset-custom:latest
+    container_name: superset_import
+    restart: "no"
+    depends_on:
+      superset-postgres:
+        condition: service_healthy
+      superset-init:
+        condition: service_completed_successfully
+    environment:
+      FLASK_ENV: production
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-1234567890abcdefghijklmnopqrstuvwxyz}
+      SQLALCHEMY_DATABASE_URI: postgresql://superset:superset123@superset-postgres:5432/superset
+      SUPERSET_SQLALCHEMY_DATABASE_URI: postgresql://superset:superset123@superset-postgres:5432/superset
+      PYTHONUNBUFFERED: 1
+      SUPERSET_DATASET_EXPORT_PATH: ${SUPERSET_DATASET_EXPORT_PATH:-/imports/dataset_export_20260205T094311.zip}
+      SUPERSET_DASHBOARD_EXPORT_PATH: ${SUPERSET_DASHBOARD_EXPORT_PATH:-/imports/dashboard_export_20260205T085329.zip}
+      SUPERSET_IMPORT_USERNAME: ${SUPERSET_IMPORT_USERNAME:-admin}
+      SUPERSET_ANALYTICS_DB_URI: ${SUPERSET_ANALYTICS_DB_URI:-postgresql://postgres:postgres1234@db:5432/vehicle_db}
+      SUPERSET_DASHBOARD_SLUG: ${SUPERSET_DASHBOARD_SLUG:-AQW7bQEbaVn}
+      SUPERSET_ALLOWED_EMBED_ORIGINS: ${SUPERSET_ALLOWED_EMBED_ORIGINS:-http://localhost:8501,http://127.0.0.1:8501}
+    volumes:
+      - superset_data:/var/lib/superset
+      - ./superset-dockerfile/superset_config.py:/app/pythonpath/superset_config.py
+      - ./:/imports:ro
+      - ./superset-dockerfile/import_superset_assets.sh:/app/import_superset_assets.sh:ro
+    networks:
+      - analytics_network
+    command: >
+      /bin/bash -c "
+      /bin/sh /app/import_superset_assets.sh
+      "
+
   superset:
     build:
       context: ./superset-dockerfile
@@ -344,6 +379,8 @@ services:
       superset-postgres:
         condition: service_healthy
       superset-init:
+        condition: service_completed_successfully
+      superset-import:
         condition: service_completed_successfully
     environment:
       FLASK_ENV: production
@@ -380,6 +417,7 @@ services:
       SUPERSET_EMBEDDED_DASHBOARD_ID: ${SUPERSET_EMBEDDED_DASHBOARD_ID:-}
       SUPERSET_DASHBOARD_UUID: ${SUPERSET_DASHBOARD_UUID:-}
       SUPERSET_DASHBOARD_SLUG: ${SUPERSET_DASHBOARD_SLUG:-}
+      SUPERSET_ALLOWED_EMBED_ORIGINS: ${SUPERSET_ALLOWED_EMBED_ORIGINS:-http://localhost:8501,http://127.0.0.1:8501}
     ports:
       - "8000:8000"
     depends_on:
