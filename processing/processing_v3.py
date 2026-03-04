@@ -103,22 +103,61 @@ def start_midnight_scheduler(redis_client, service):
     thread.start()
     logging.info("✅ Midnight scheduler started")
 
-class CameraWorker:
-    def __init__(self, camera_id, service, process_fn): #รับ camera_id, service และ process_fn (ฟังก์ชันการประมวลผล) เป็นพารามิเตอร์
-        self.camera_id = camera_id                      #กำหนด camera_id ให้กับ worker นี้  
-        self.queue = Queue()                            #สร้างคิวสำหรับเก็บงานที่ต้องประมวลผล         
-        self.thread = threading.Thread(target=self._run, daemon=True) #สร้าง thread สำหรับรันฟังก์ชัน _run ซึ่งจะทำงานใน background
-        self.process_fn = process_fn                    #เก็บฟังก์ชันการประมวลผลที่ส่งมาในตัวแปร process_fn
-        self.thread.start()                             #เริ่มต้น thread เพื่อให้พร้อมรับงานและประมวลผล
+class ModelPool:
+    def __init__(self, onnx_path, max_models=3, inference_timeout=1.0):
+        self.onnx_path = onnx_path
+        self.max_models = max_models          # max model copies allowed
+        self.inference_timeout = inference_timeout  # seconds before spawning new
+        
+        # Start with 1 model
+        self.models = [YOLO(onnx_path, task='detect')]
+        self.locks  = [threading.Lock()]
+        self.pool_lock = threading.Lock()     # protects models list itself
+    
+    def get_model(self):
+        """Try each model, if all busy too long → spawn new one"""
+        
+        # Try to acquire any available model
+        for i, (model, lock) in enumerate(zip(self.models, self.locks)):
+            acquired = lock.acquire(timeout=self.inference_timeout)
+            if acquired:
+                return i, model, lock   # ← got one, use it
+        
+        # All models busy for too long → spawn new model if under limit
+        with self.pool_lock:
+            if len(self.models) < self.max_models:
+                new_model = YOLO(self.onnx_path, task='detect')
+                new_lock  = threading.Lock()
+                self.models.append(new_model)
+                self.locks.append(new_lock)
+                
+                idx = len(self.models) - 1
+                self.locks[idx].acquire()   # immediately acquire it
+                logging.info(f"🆕 Spawned new model instance #{idx}")
+                return idx, new_model, self.locks[idx]
+            else:
+                # Hit max_models limit → just wait for any model
+                logging.warning("⚠️ Model pool at max capacity — waiting...")
+                for i, (model, lock) in enumerate(zip(self.models, self.locks)):
+                    lock.acquire()   # blocking wait
+                    return i, model, lock
 
-    def _run(self): #ฟังก์ชันนี้จะทำงานใน thread แยกต่างหาก มันจะรอรับงานจากคิวและเรียกใช้ฟังก์ชันการประมวลผลที่กำหนดไว้
+class CameraWorker:
+    def __init__(self, camera_id, service, process_fn):
+        self.camera_id = camera_id
+        self.queue = Queue()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.process_fn = process_fn
+        self.thread.start()
+
+    def _run(self):
         while True:
             task_json = self.queue.get()
             if task_json is None:
                 break
-            self.process_fn(task_json) #เมื่อได้รับงานจากคิว มันจะเรียกใช้ฟังก์ชันการประมวลผล (process_fn) ที่ถูกส่งมาใน constructor โดยส่ง task_json เป็นอาร์กิวเมนต์
+            self.process_fn(task_json)
 
-    def submit(self, task_json): #ฟังก์ชันนี้ใช้สำหรับส่งงานใหม่เข้ามาในคิวของ worker โดยรับ task_json เป็นพารามิเตอร์และนำไปใส่ในคิวเพื่อให้ thread ที่รันฟังก์ชัน _run สามารถดึงงานนี้ไปประมวลผลได้
+    def submit(self, task_json):
         self.queue.put(task_json)
 
 class VehicleClass(Enum):
@@ -454,8 +493,11 @@ class ProcessingService:
         mlflow.set_tracking_uri(mlflow_tracking_uri)
         local_model_path = mlflow.artifacts.download_artifacts(artifact_uri=model_uri)
         self.onnx_path = os.path.join(local_model_path, "model.onnx")
-        self.shared_model = YOLO(self.onnx_path, task='detect')
-        self._model_lock = threading.Lock()
+        self.model_pool = ModelPool(
+            onnx_path=self.onnx_path,
+            max_models=3,           # max 3 model copies on GPU
+            inference_timeout=1.0   # if waiting > 1s → spawn new model
+        )
 
         # self.trackers = {} 
         self.byte_trackers: Dict[str, BYTETracker] = {}
@@ -729,8 +771,9 @@ class ProcessingService:
         frame_uint8 = self._normalize_to_uint8(frame)
         logging.info(f"Frame shape: {frame_uint8.shape}")
         t0 = time.time()
-        with self._model_lock:
-            predict_results = list(self.shared_model.predict(
+        idx, model, lock = self.model_pool.get_model()
+        try:
+            predict_results = list(model.predict(
                 source=frame_uint8,
                 verbose=False,
                 conf=0.35,
@@ -738,6 +781,8 @@ class ProcessingService:
                 device=0,
                 stream=True,
             ))
+        finally:
+            lock.release()
         logging.info(f"✅ predict done, {len(predict_results)} results")
         logging.info(f"[{task.camera_id}] Model lock wait+inference: {time.time()-t0:.3f}s")
 
@@ -1000,14 +1045,6 @@ def main():
     def process_task_json(task_json):
         try:
             task = ProcessingTask.from_json(task_json)
-            # Example task JSON structure:
-            # {
-            # task.camera_id           = "CAM_01"
-            # task.task_id             = "task_123"
-            # task.minio_bucket        = "video-frames"
-            # task.object_key_or_prefix= "CAM_01/2024-01-15/frame_001.npy"
-            # task.timestamp           = 2024-01-15T10:30:00+07:00
-            # }
             result = service.process_task(task)
             
             if result.get("status") == "success":
@@ -1027,19 +1064,11 @@ def main():
             logging.error(f"❌ Task failed: {e}")
     def route_task(task_json):
         """Route task to correct camera worker"""
-        try: 
+        try:
             task = ProcessingTask.from_json(task_json)
-            # Example task JSON structure:
-            # {
-            # task.camera_id           = "CAM_01"
-            # task.task_id             = "task_123"
-            # task.minio_bucket        = "video-frames"
-            # task.object_key_or_prefix= "CAM_01/2024-01-15/frame_001.npy"
-            # task.timestamp           = 2024-01-15T10:30:00+07:00
-            # }
             if task.camera_id not in camera_workers:
                 logging.info(f"🆕 Creating worker for {task.camera_id}")
-                camera_workers[task.camera_id] = CameraWorker(task.camera_id, service, process_task_json) #สร้าง thread worker ใหม่สำหรับกล้องนั้นๆ
+                camera_workers[task.camera_id] = CameraWorker(task.camera_id, service, process_task_json)
             camera_workers[task.camera_id].submit(task_json)
         except Exception as e:
             logging.error(f"❌ Route failed: {e}")
@@ -1048,14 +1077,6 @@ def main():
         # Drain existing tasks on startup
         while True:
             task_json = redis_manager.client.lpop(redis_manager.queue_name)
-            # Example task JSON structure:
-            # {
-            #     "camera_id": "CAM_01",
-            #     "task_id": "task_123",
-            #     "minio_bucket": "video-frames",
-            #     "object_key_or_prefix": "CAM_01/2024-01-15/frame_001.npy",
-            #     "timestamp": "2024-01-15T10:30:00+07:00"
-            # }
             if not task_json:
                 break
             route_task(task_json)
