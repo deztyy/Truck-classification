@@ -9,7 +9,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from minio import Minio
 from minio.error import S3Error
-from PIL import Image
+from PIL import Image, ImageOps
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
@@ -75,7 +75,7 @@ def load_custom_css() -> None:
     <style>
         /* ========== MODERN GLOBAL STYLES ========== */
         .stApp {
-            background: linear-gradient(135deg, #0f0f1e 0%, #1a1a2e 50%, #16213e 100%);
+            background: linear-gradient(135deg, #070b14 0%, #0b1324 50%, #111c33 100%);
             background-attachment: fixed;
         }
 
@@ -85,11 +85,11 @@ def load_custom_css() -> None:
 
         /* ========== HEADER STYLES ========== */
         .main-header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
+            background: linear-gradient(135deg, #1b2a4a 0%, #2e4f7a 50%, #ff7a00 100%);
             padding: 0.75rem 1.75rem;
             border-radius: 16px;
             margin-bottom: 1.25rem;
-            box-shadow: 0 8px 32px rgba(102, 126, 234, 0.35), inset 0 1px 0 rgba(255,255,255,0.2);
+            box-shadow: 0 8px 32px rgba(46, 79, 122, 0.42), inset 0 1px 0 rgba(255,255,255,0.2);
             backdrop-filter: blur(10px);
             border: 1px solid rgba(255,255,255,0.15);
             animation: fadeInDown 0.5s ease;
@@ -129,10 +129,10 @@ def load_custom_css() -> None:
         }
 
         .time-text {
-            color: #ffd700;
+            color: #ffffff;
             font-weight: 800;
             font-family: 'JetBrains Mono', 'Courier New', monospace;
-            text-shadow: 0 2px 8px rgba(255,215,0,0.4);
+            text-shadow: 0 2px 8px rgba(255,255,255,0.35);
             line-height: 1.4;
             font-size: 0.95rem;
             letter-spacing: 1px;
@@ -154,7 +154,7 @@ def load_custom_css() -> None:
         }
 
         div[data-testid="stRadio"] input[type="radio"] {
-            accent-color: #667eea;
+            accent-color: #ff7a00;
         }
 
         /* ========== RESPONSIVE DESIGN ========== */
@@ -177,31 +177,31 @@ def load_custom_css() -> None:
 
         /* ========== CARD & EXPANDER STYLES ========== */
         div[data-testid="stExpander"] {
-            background: rgba(102,126,234,0.08) !important;
+            background: rgba(46,79,122,0.18) !important;
             border-radius: 14px !important;
-            border: 1px solid rgba(102,126,234,0.25) !important;
+            border: 1px solid rgba(255,122,0,0.28) !important;
             transition: all 0.3s ease;
         }
 
         div[data-testid="stExpander"]:hover {
-            background: rgba(102,126,234,0.12) !important;
-            border-color: rgba(102,126,234,0.4) !important;
-            box-shadow: 0 8px 24px rgba(102,126,234,0.15);
+            background: rgba(46,79,122,0.28) !important;
+            border-color: rgba(255,159,26,0.45) !important;
+            box-shadow: 0 8px 24px rgba(255,122,0,0.16);
         }
 
         /* ========== METRIC STYLES ========== */
         div[data-testid="stMetricContainer"] {
-            background: linear-gradient(135deg, rgba(102,126,234,0.1) 0%, rgba(240,147,251,0.08) 100%) !important;
+            background: linear-gradient(135deg, rgba(27,42,74,0.28) 0%, rgba(255,122,0,0.14) 100%) !important;
             border-radius: 14px !important;
             border: 1px solid rgba(255,255,255,0.1) !important;
             padding: 1.5rem !important;
-            box-shadow: 0 4px 15px rgba(102,126,234,0.1);
+            box-shadow: 0 4px 15px rgba(46,79,122,0.25);
             transition: all 0.3s ease;
         }
 
         div[data-testid="stMetricContainer"]:hover {
             transform: translateY(-4px);
-            box-shadow: 0 8px 30px rgba(102,126,234,0.2);
+            box-shadow: 0 8px 30px rgba(255,122,0,0.24);
         }
 
         div[data-testid="stMetricValue"] {
@@ -217,34 +217,38 @@ def load_custom_css() -> None:
 
         /* ========== BUTTON STYLES ========== */
         .stButton > button {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+            background: linear-gradient(135deg, #ff7a00 0%, #ff9f1a 100%) !important;
             border: none !important;
             border-radius: 12px !important;
-            font-weight: 700 !important;
+            font-weight: 800 !important;
             padding: 0.75rem 1.5rem !important;
             transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) !important;
             font-size: 0.95rem !important;
             color: white !important;
-            box-shadow: 0 4px 15px rgba(102,126,234,0.3) !important;
+            box-shadow: 0 4px 15px rgba(255,122,0,0.32) !important;
         }
 
-        .stButton > button:hover {
-            transform: translateY(-3px) scale(1.02) !important;
-            box-shadow: 0 8px 30px rgba(102,126,234,0.5) !important;
+        .stButton > button p {
+            font-weight: 800 !important;
         }
 
-        .stButton > button:active {
-            transform: translateY(-1px) !important;
+        .stLinkButton > a {
+            background: linear-gradient(135deg, #ff7a00 0%, #ff9f1a 100%) !important;
+            color: #ffffff !important;
+            border: none !important;
+            border-radius: 12px !important;
+            font-weight: 800 !important;
+            padding: 0.75rem 1.5rem !important;
+            box-shadow: 0 4px 15px rgba(255,122,0,0.32) !important;
+            transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) !important;
         }
 
-        /* ========== FORM CONTAINER ========== */
-        .form-container {
-            background: linear-gradient(135deg, rgba(255,255,255,0.05) 0%, rgba(102,126,234,0.05) 100%);
+            background: linear-gradient(135deg, rgba(255,255,255,0.05) 0%, rgba(27,42,74,0.22) 100%);
             padding: 2rem;
             border-radius: 18px;
             border: 1px solid rgba(255,255,255,0.12);
             backdrop-filter: blur(10px);
-            box-shadow: 0 8px 32px rgba(102,126,234,0.08);
+            box-shadow: 0 8px 32px rgba(46,79,122,0.18);
         }
 
         /* ========== INPUT & SELECT STYLES ========== */
@@ -258,25 +262,25 @@ def load_custom_css() -> None:
 
         input:focus, select:focus, textarea:focus {
             background: rgba(255,255,255,0.1) !important;
-            border-color: rgba(102,126,234,0.5) !important;
-            box-shadow: 0 0 0 3px rgba(102,126,234,0.1) !important;
+            border-color: rgba(255,122,0,0.5) !important;
+            box-shadow: 0 0 0 3px rgba(255,122,0,0.12) !important;
         }
 
         /* ========== HISTORY PANEL STYLES ========== */
         .history-panel {
-            background: linear-gradient(135deg, rgba(102,126,234,0.15) 0%, rgba(240,147,251,0.1) 100%);
-            border: 1px solid rgba(102,126,234,0.3);
+            background: linear-gradient(135deg, rgba(27,42,74,0.42) 0%, rgba(255,122,0,0.16) 100%);
+            border: 1px solid rgba(255,122,0,0.28);
             border-radius: 16px;
             padding: 1.5rem;
             margin: 1.5rem 0;
-            box-shadow: 0 8px 24px rgba(102,126,234,0.12);
+            box-shadow: 0 8px 24px rgba(46,79,122,0.22);
             backdrop-filter: blur(10px);
             transition: all 0.3s ease;
         }
 
         .history-panel:hover {
-            border-color: rgba(102,126,234,0.5);
-            box-shadow: 0 12px 32px rgba(102,126,234,0.2);
+            border-color: rgba(255,159,26,0.45);
+            box-shadow: 0 12px 32px rgba(255,122,0,0.2);
         }
 
         .history-panel-title {
@@ -308,7 +312,7 @@ def load_custom_css() -> None:
             align-items: center;
             justify-content: center;
             background: rgba(255,255,255,0.05);
-            border: 1px solid rgba(102,126,234,0.3);
+            border: 1px solid rgba(255,122,0,0.35);
             border-radius: 10px;
             padding: 0.4rem 1.2rem;
             min-width: 140px;
@@ -385,12 +389,12 @@ def load_custom_css() -> None:
         }
 
         ::-webkit-scrollbar-thumb {
-            background: linear-gradient(180deg, #667eea, #764ba2);
+            background: linear-gradient(180deg, #2e4f7a, #ff7a00);
             border-radius: 10px;
         }
 
         ::-webkit-scrollbar-thumb:hover {
-            background: linear-gradient(180deg, #764ba2, #667eea);
+            background: linear-gradient(180deg, #ff9f1a, #2e4f7a);
         }
     </style>
     """,
@@ -648,11 +652,12 @@ def build_superset_dashboard_url() -> str:
 def render_superset_tab() -> None:
     import requests
     st.markdown("### 📊 Superset Dashboards")
-    col_info, col_action = st.columns([3, 1])
+
+    col_info, col_action = st.columns([5.2, 0.8])
     with col_info:
         st.caption("รีเฟรชแบบ Manual (กดปุ่ม Refresh)")
     with col_action:
-        if st.button("🔄 Refresh", key="superset_manual_refresh", use_container_width=True):
+        if st.button("🔄 Refresh", key="superset_manual_refresh", use_container_width=False):
             st.rerun(scope="fragment")
 
     SUPERSET_URL = "http://localhost:8088"
@@ -692,6 +697,10 @@ def render_superset_tab() -> None:
         st.error(f"❌ เกิดข้อผิดพลาดที่ไม่คาดคิด: {e}")
         return
 
+    st.markdown("<div style='height: 0.4rem;'></div>", unsafe_allow_html=True)
+
+    frame_height = 1080
+
     components.html(
         f"""
         <!DOCTYPE html>
@@ -699,16 +708,60 @@ def render_superset_tab() -> None:
         <head>
             <script src="https://unpkg.com/@superset-ui/embedded-sdk"></script>
             <style>
-                body {{ margin: 0; padding: 0; }}
+                html, body {{
+                    margin: 0;
+                    padding: 0;
+                    overflow: hidden;
+                    background: #0f1224;
+                }}
+
+                #superset-wrapper {{
+                    width: 100%;
+                    min-height: 900px;
+                }}
+
+                #superset-toolbar {{
+                    display: flex;
+                    justify-content: flex-end;
+                    margin-bottom: 8px;
+                }}
+
+                #fullscreen-btn {{
+                    border: 1px solid rgba(255,255,255,0.2);
+                    background: rgba(102, 126, 234, 0.18);
+                    color: #fff;
+                    border-radius: 8px;
+                    padding: 6px 10px;
+                    font-size: 12px;
+                    font-weight: 600;
+                    cursor: pointer;
+                }}
+
+                #fullscreen-btn:hover {{
+                    background: rgba(102, 126, 234, 0.35);
+                }}
+
+                #superset-container {{
+                    width: 100%;
+                    border-radius: 10px;
+                    overflow: hidden;
+                }}
+
                 #superset-container iframe {{
                     width: 100%;
-                    height: 900px;
+                    height: calc(100vh - 140px);
+                    min-height: 860px;
                     border: none;
                 }}
             </style>
         </head>
         <body>
-            <div id="superset-container"></div>
+            <div id="superset-wrapper">
+                <div id="superset-toolbar">
+                    <button id="fullscreen-btn" type="button">⛶ Fullscreen</button>
+                </div>
+                <div id="superset-container"></div>
+            </div>
             <script>
                 supersetEmbeddedSdk.embedDashboard({{
                     id: "{dashboard_uuid}",
@@ -721,11 +774,23 @@ def render_superset_tab() -> None:
                         hideTab: false,
                     }},
                 }});
+
+                const fullscreenButton = document.getElementById("fullscreen-btn");
+                const targetElement = document.getElementById("superset-wrapper");
+                if (fullscreenButton && targetElement) {{
+                    fullscreenButton.addEventListener("click", () => {{
+                        if (document.fullscreenElement) {{
+                            document.exitFullscreen();
+                        }} else if (targetElement.requestFullscreen) {{
+                            targetElement.requestFullscreen();
+                        }}
+                    }});
+                }}
             </script>
         </body>
         </html>
         """,
-        height=920,
+        height=frame_height,
     )
 
 # ==================== DATA LOADING ====================
@@ -915,9 +980,9 @@ def render_current_vehicle_tab() -> None:
 
             st.markdown(
                 """
-            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            <div style="background: linear-gradient(135deg, #1b2a4a 0%, #2e4f7a 55%, #ff7a00 100%);
                  padding: 3rem 2rem; border-radius: 20px; margin-bottom: 2rem;
-                 box-shadow: 0 10px 40px rgba(102, 126, 234, 0.4);">
+                 box-shadow: 0 10px 40px rgba(46, 79, 122, 0.42);">
                 <div style="text-align: center; color: white; font-size: 2em; font-weight: 800;">
                     Latest Vehicle Entry
                 </div>
@@ -937,7 +1002,7 @@ def render_current_vehicle_tab() -> None:
                          text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem;">
                         📷 Camera ID
                     </div>
-                    <div style="color: #ffd700; font-size: 2em; font-weight: 800;
+                    <div style="color: #ff9f1a; font-size: 2em; font-weight: 800;
                          text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">
                         {vehicle["camera_id"]}
                     </div>
@@ -955,7 +1020,7 @@ def render_current_vehicle_tab() -> None:
                          text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem;">
                         🚙 Vehicle Type
                     </div>
-                    <div style="color: #ffd700; font-size: 2em; font-weight: 800;
+                    <div style="color: #ff9f1a; font-size: 2em; font-weight: 800;
                          text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">
                         {vehicle["vehicle_type"]}
                     </div>
@@ -973,7 +1038,7 @@ def render_current_vehicle_tab() -> None:
                          text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem;">
                         💰 Total Fee
                     </div>
-                    <div style="color: #ffd700; font-size: 2em; font-weight: 800;
+                    <div style="color: #ff9f1a; font-size: 2em; font-weight: 800;
                          text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">
                         {total_fee:.2f} ฿
                     </div>
@@ -991,7 +1056,7 @@ def render_current_vehicle_tab() -> None:
                          text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem;">
                         ⏰ Timestamp
                     </div>
-                    <div style="color: #ffd700; font-size: 1.4em; font-weight: 800;
+                    <div style="color: #ff9f1a; font-size: 1.4em; font-weight: 800;
                          text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">
                         {formatted_time}
                     </div>
@@ -1032,10 +1097,10 @@ def render_current_vehicle_tab() -> None:
             st.markdown(
                 """
             <div style="text-align: center; padding: 4rem 2rem;
-                 background: rgba(102, 126, 234, 0.05); border-radius: 20px;
-                 border: 2px dashed rgba(102, 126, 234, 0.3);">
+                 background: rgba(27, 42, 74, 0.22); border-radius: 20px;
+                 border: 2px dashed rgba(255, 122, 0, 0.34);">
                 <div style="font-size: 5em; opacity: 0.5;"></div>
-                <div style="color: #667eea; font-size: 1.8em; font-weight: 700;">
+                <div style="color: #ff9f1a; font-size: 1.8em; font-weight: 700;">
                     No Vehicles Yet
                 </div>
                 <div style="color: #999; font-size: 1.1em;">
@@ -1083,8 +1148,8 @@ def render_transaction_history() -> None:
                 display: flex;
                 align-items: center;
                 gap: 0.5rem;
-                background: rgba(102,126,234,0.15);
-                border: 1px solid rgba(102,126,234,0.35);
+                background: rgba(27,42,74,0.42);
+                border: 1px solid rgba(255,122,0,0.35);
                 border-radius: 10px;
                 padding: 0.35rem 1rem;
                 font-size: 0.88rem;
@@ -1401,6 +1466,71 @@ def render_transaction_history() -> None:
             st.caption(
                 f"Showing records {start_idx + 1}-{min(end_idx, total_records)} of {total_records}"
             )
+
+            st.markdown(
+                """
+                <style>
+                    .history-item-header {
+                        display: flex;
+                        align-items: center;
+                        justify-content: space-between;
+                        gap: 0.75rem;
+                        flex-wrap: wrap;
+                    }
+
+                    .history-item-chip {
+                        background: rgba(27,42,74,0.62);
+                        border: 1px solid rgba(255,122,0,0.4);
+                        color: rgba(255,255,255,0.95);
+                        border-radius: 999px;
+                        padding: 0.2rem 0.7rem;
+                        font-size: 0.78rem;
+                        font-weight: 600;
+                    }
+
+                    .history-image-card,
+                    .history-info-card {
+                        background: linear-gradient(135deg, rgba(255,255,255,0.05) 0%, rgba(27,42,74,0.35) 100%);
+                        border: 1px solid rgba(255,255,255,0.12);
+                        border-radius: 14px;
+                        padding: 0.9rem;
+                    }
+
+                    .history-info-title {
+                        color: #ffffff;
+                        font-size: 1rem;
+                        font-weight: 750;
+                        margin-bottom: 0.6rem;
+                    }
+
+                    .history-info-row {
+                        display: flex;
+                        justify-content: space-between;
+                        gap: 1rem;
+                        padding: 0.34rem 0;
+                        border-bottom: 1px dashed rgba(255,255,255,0.08);
+                        color: rgba(255,255,255,0.88);
+                        font-size: 0.92rem;
+                    }
+
+                    .history-info-row:last-child {
+                        border-bottom: none;
+                    }
+
+                    .history-info-key {
+                        color: rgba(255,255,255,0.65);
+                        font-weight: 600;
+                    }
+
+                    .history-info-value {
+                        color: #ffffff;
+                        font-weight: 700;
+                        text-align: right;
+                    }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
             
             # Prepare display dataframe
             for _, row in df_page.iterrows():
@@ -1408,31 +1538,62 @@ def render_transaction_history() -> None:
                     f"Transaction #{row['id']} | {row['camera_id']} | {row['time_bangkok'].strftime('%H:%M:%S')} | {translate_class_name(row['class_name'])}",
                     expanded=False
                 ):
-                    col_img, col_info = st.columns([1, 1], gap="large")
+                    st.markdown(
+                        f"""
+                        <div class="history-item-header">
+                            <span class="history-item-chip">ID #{row['id']}</span>
+                            <span class="history-item-chip">{row['time_bangkok'].strftime('%H:%M:%S')}</span>
+                            <span class="history-item-chip">{translate_class_name(row['class_name'])}</span>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                    col_img, col_info = st.columns([1.15, 1], gap="large")
                     
                     # Image column
                     with col_img:
-                        st.markdown("**📸 Vehicle Image**")
+                        st.markdown('<div class="history-image-card"><div class="history-info-title">📸 Vehicle Image</div>', unsafe_allow_html=True)
                         if row["img_path"] and row["img_path"] != "":
                             image = get_image_from_minio(row["img_path"])
                             if image:
-                                st.image(image, use_container_width=True)
+                                base_image = image.convert("RGB")
+                                target_width, target_height = 320, 220
+                                resized_image = ImageOps.contain(
+                                    base_image,
+                                    (target_width, target_height),
+                                    method=Image.LANCZOS,
+                                )
+                                display_image = Image.new("RGB", (target_width, target_height), (20, 24, 48))
+                                offset_x = (target_width - resized_image.width) // 2
+                                offset_y = (target_height - resized_image.height) // 2
+                                display_image.paste(resized_image, (offset_x, offset_y))
+
+                                st.image(display_image, width=target_width)
+                                st.caption(f"Display size: {target_width}x{target_height} px")
                             else:
                                 st.warning("⚠️ Image not available")
                         else:
                             st.info("📭 No image recorded")
+                        st.markdown('</div>', unsafe_allow_html=True)
                     
                     # Info column
                     with col_info:
-                        st.markdown("**📋 Transaction Details**")
-                        st.write(f"**⏰ Time:** {row['time_bangkok'].strftime('%H:%M:%S')}")
-                        st.write(f"**📷 Camera ID:** {row['camera_id']}")
-                        st.write(f"**🔖 Track ID:** {row['track_id']}")
-                        st.write(f"**Vehicle Type:** {translate_class_name(row['class_name'])}")
-                        st.write(f"**💰 Total Fee:** {row['total_fee']:.2f} ฿")
-                        st.write(f"**🎯 Confidence:** {row['confidence']:.2f}%")
-                        st.divider()
-                        st.write(f"**Transaction ID:** `{row['id']}`")
+                        st.markdown(
+                            f"""
+                            <div class="history-info-card">
+                                <div class="history-info-title">📋 Transaction Details</div>
+                                <div class="history-info-row"><span class="history-info-key">⏰ Time</span><span class="history-info-value">{row['time_bangkok'].strftime('%H:%M:%S')}</span></div>
+                                <div class="history-info-row"><span class="history-info-key">📷 Camera ID</span><span class="history-info-value">{row['camera_id']}</span></div>
+                                <div class="history-info-row"><span class="history-info-key">🔖 Track ID</span><span class="history-info-value">{row['track_id']}</span></div>
+                                <div class="history-info-row"><span class="history-info-key">🚙 Vehicle Type</span><span class="history-info-value">{translate_class_name(row['class_name'])}</span></div>
+                                <div class="history-info-row"><span class="history-info-key">💰 Total Fee</span><span class="history-info-value">{row['total_fee']:.2f} ฿</span></div>
+                                <div class="history-info-row"><span class="history-info-key">🎯 Confidence</span><span class="history-info-value">{row['confidence']:.2f}%</span></div>
+                                <div class="history-info-row"><span class="history-info-key">🧾 Transaction ID</span><span class="history-info-value">{row['id']}</span></div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
 
             # ── Pagination (bottom) ─────────────────────────────────────
             st.markdown("---")
@@ -1470,10 +1631,10 @@ def render_transaction_history() -> None:
             st.markdown(
                 """
             <div style="text-align: center; padding: 4rem 2rem;
-                 background: rgba(102, 126, 234, 0.05); border-radius: 20px;
-                 border: 2px dashed rgba(102, 126, 234, 0.3);">
+                 background: rgba(27, 42, 74, 0.22); border-radius: 20px;
+                 border: 2px dashed rgba(255, 122, 0, 0.34);">
                 <div style="font-size: 5em; opacity: 0.5;">📜📭</div>
-                <div style="color: #667eea; font-size: 1.8em; font-weight: 700;">
+                <div style="color: #ff9f1a; font-size: 1.8em; font-weight: 700;">
                     No Transactions Yet
                 </div>
                 <div style="color: #999; font-size: 1.1em;">
@@ -1501,10 +1662,10 @@ def render_master_data_tab(df_classes: pd.DataFrame) -> None:
     st.markdown("""
     <style>
         .master-data-container {
-            background: linear-gradient(135deg, rgba(102,126,234,0.08) 0%, rgba(240,147,251,0.08) 100%);
+            background: linear-gradient(135deg, rgba(27,42,74,0.32) 0%, rgba(255,122,0,0.12) 100%);
             border-radius: 16px;
             padding: 1.5rem;
-            border: 1px solid rgba(102,126,234,0.25);
+            border: 1px solid rgba(255,122,0,0.28);
             margin-bottom: 2rem;
         }
         
@@ -1519,14 +1680,14 @@ def render_master_data_tab(df_classes: pd.DataFrame) -> None:
         
         .master-data-card:hover {
             background: rgba(255,255,255,0.08);
-            border-color: rgba(102,126,234,0.3);
+            border-color: rgba(255,122,0,0.35);
             transform: translateY(-2px);
-            box-shadow: 0 8px 24px rgba(102,126,234,0.1);
+            box-shadow: 0 8px 24px rgba(255,122,0,0.12);
         }
         
         .fee-badge {
             display: inline-block;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #2e4f7a 0%, #ff7a00 100%);
             color: white;
             padding: 0.5rem 1rem;
             border-radius: 10px;
@@ -1568,7 +1729,7 @@ def render_master_data_tab(df_classes: pd.DataFrame) -> None:
             with col2:
                 st.markdown(f"""
                 <div class="master-data-card">
-                    <div style="font-weight: 700; color: #ffd700; font-size: 1.1rem;">฿ {row['entry_fee']:.0f}</div>
+                    <div style="font-weight: 700; color: #ff9f1a; font-size: 1.1rem;">฿ {row['entry_fee']:.0f}</div>
                     <div style="color: rgba(255,255,255,0.6); font-size: 0.75rem;">Entry Fee</div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -1576,14 +1737,14 @@ def render_master_data_tab(df_classes: pd.DataFrame) -> None:
             with col3:
                 st.markdown(f"""
                 <div class="master-data-card">
-                    <div style="font-weight: 700; color: #ffd700; font-size: 1.1rem;">฿ {row['xray_fee']:.0f}</div>
+                    <div style="font-weight: 700; color: #ff9f1a; font-size: 1.1rem;">฿ {row['xray_fee']:.0f}</div>
                     <div style="color: rgba(255,255,255,0.6); font-size: 0.75rem;">X-Ray Fee</div>
                 </div>
                 """, unsafe_allow_html=True)
             
             with col4:
                 st.markdown(f"""
-                <div class="master-data-card" style="background: linear-gradient(135deg, rgba(102,126,234,0.15) 0%, rgba(240,147,251,0.1) 100%);">
+                <div class="master-data-card" style="background: linear-gradient(135deg, rgba(27,42,74,0.42) 0%, rgba(255,122,0,0.16) 100%);">
                     <div style="font-weight: 800; color: #ffffff; font-size: 1.15rem;">฿ {row['total_fee']:.0f}</div>
                     <div style="color: rgba(255,255,255,0.7); font-size: 0.75rem; font-weight: 600;">Total</div>
                 </div>
@@ -1619,10 +1780,10 @@ def render_dashboard_tab() -> None:
     st.markdown("""
     <style>
         .dashboard-section {
-            background: linear-gradient(135deg, rgba(102,126,234,0.08) 0%, rgba(240,147,251,0.08) 100%);
+            background: linear-gradient(135deg, rgba(27,42,74,0.32) 0%, rgba(255,122,0,0.12) 100%);
             border-radius: 16px;
             padding: 1.5rem;
-            border: 1px solid rgba(102,126,234,0.25);
+            border: 1px solid rgba(255,122,0,0.28);
             margin-bottom: 2rem;
         }
         
@@ -1903,21 +2064,21 @@ def main() -> None:
             }
             
             .nav-button-active {
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                background: linear-gradient(135deg, #a34000 0%, #c45100 55%, #e36400 100%);
                 color: white;
-                box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
-                border-bottom: 3px solid #ffd700;
+                box-shadow: 0 6px 18px rgba(227, 100, 0, 0.4);
+                border-bottom: 3px solid #ff9f1a;
             }
             
             .nav-button-inactive {
-                background: rgba(255,255,255,0.05);
-                color: rgba(255,255,255,0.7);
-                border: 1px solid rgba(255,255,255,0.1);
+                background: rgba(163, 64, 0, 0.28);
+                color: rgba(255,255,255,0.92);
+                border: 1px solid rgba(255,159,26,0.4);
             }
             
             .nav-button-inactive:hover {
-                background: rgba(255,255,255,0.08);
-                color: rgba(255,255,255,0.9);
+                background: rgba(196, 81, 0, 0.45);
+                color: #ffffff;
             }
             
             .nav-container {
