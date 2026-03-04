@@ -37,3 +37,20 @@ COPY processing.py .
 ENV PYTHONUNBUFFERED=1
 
 CMD ["python3", "processing.py"]
+# FROM ultralytics/ultralytics:latest-python
+
+# WORKDIR /app
+
+# # Copy requirements first
+# COPY requirements.txt .
+
+# # We ONLY install the things NOT already in the Ultralytics image.
+# # We also fix the numpy error here.
+# RUN pip install --no-cache-dir "numpy<2.0.0" && \
+#     pip install --no-cache-dir -r requirements.txt
+
+# # Copy your code last
+# COPY processing.py .
+
+# ENV PYTHONUNBUFFERED=1
+# CMD ["python3", "processing.py"]

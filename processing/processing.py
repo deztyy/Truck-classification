@@ -455,6 +455,7 @@ class ProcessingService:
         local_model_path = mlflow.artifacts.download_artifacts(artifact_uri=model_uri)
         self.onnx_path = os.path.join(local_model_path, "model.onnx")
         self.shared_model = YOLO(self.onnx_path, task='detect')
+        self._model_lock = threading.Lock()
 
         # self.trackers = {} 
         self.byte_trackers: Dict[str, BYTETracker] = {}
@@ -494,15 +495,32 @@ class ProcessingService:
                     self._camera_locks[camera_id] = threading.Lock()
         return self._camera_locks[camera_id]
 
-    def _crop_with_padding(self, frame: np.ndarray, box: np.ndarray) -> np.ndarray:
+    def _crop_with_padding(self, frame: np.ndarray, box: np.ndarray, scale: float = 1.5) -> np.ndarray:
         h, w = frame.shape[:2]
-        x1, y1, x2, y2 = box.astype(int)
-        center_x = (x1 + x2) // 2
+        x1, y1, x2, y2 = box.astype(float)
 
-        if center_x < w // 2:
-            return frame[0:h, 0:w//2]   # left half
-        else:
-            return frame[0:h, w//2:w]   # right half
+        # Bbox dimensions
+        box_w = x2 - x1
+        box_h = y2 - y1
+
+        # Expand obliquely:
+        # - Bottom-left corner: expand LEFT and DOWN
+        # - Top-right corner: expand RIGHT and UP
+        expand_x = box_w * (scale - 1)
+        expand_y = box_h * (scale - 1)
+
+        new_x1 = x1 - expand_x   # bottom-left goes further LEFT
+        new_y2 = y2 + expand_y   # bottom-left goes further DOWN
+        new_x2 = x2 + expand_x   # top-right goes further RIGHT
+        new_y1 = y1 - expand_y   # top-right goes further UP
+
+        # Clamp to frame bounds
+        new_x1 = int(max(0, new_x1))
+        new_y1 = int(max(0, new_y1))
+        new_x2 = int(min(w, new_x2))
+        new_y2 = int(min(h, new_y2))
+
+        return frame[new_y1:new_y2, new_x1:new_x2]
     @staticmethod
     def _normalize_to_uint8(arr: np.ndarray) -> np.ndarray:
         if arr.dtype in (np.float32, np.float64):
@@ -714,14 +732,15 @@ class ProcessingService:
         frame_uint8 = self._normalize_to_uint8(frame)
         logging.info(f"Frame shape: {frame_uint8.shape}")
 
-        predict_results = list(self.shared_model.predict(
-            source=frame_uint8,
-            verbose=False,
-            conf=0.35,
-            iou=0.5,
-            device=0,
-            stream=True,
-        ))
+        with self._model_lock:
+            predict_results = list(self.shared_model.predict(
+                source=frame_uint8,
+                verbose=False,
+                conf=0.35,
+                iou=0.5,
+                device=0,
+                stream=True,
+            ))
         logging.info(f"✅ predict done, {len(predict_results)} results")
 
         byte_tracker = self._get_byte_tracker(task.camera_id)

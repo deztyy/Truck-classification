@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS vehicle_transactions (
     total_fee DECIMAL(10,2) DEFAULT 0.00,
     time_stamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     img_path TEXT,
-    confidence FLOAT,
+    confidence FLOAT   -- ✅ removed trailing comma
 );
 
 -- Insert Vehicle Classes Reference Data
