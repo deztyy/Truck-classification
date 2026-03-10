@@ -2033,7 +2033,7 @@ def main() -> None:
     #st.markdown("---")
 
     # ========== STYLIZED TAB NAVIGATION ==========
-    navigation_options = ["🏠 Dashboard", "📜 History", "⚙️ Master Data", "📊 Superset"]
+    navigation_options = ["🏠 Overview", "📜 History", "⚙️ Master Data", "📊 Dashboard"]
     query_section = st.query_params.get("section", "dashboard")
     if isinstance(query_section, list):
         query_section = query_section[0] if query_section else "dashboard"
@@ -2105,13 +2105,13 @@ def main() -> None:
     active_section = st.session_state.get("active_section", navigation_options[0])
     st.query_params["section"] = OPTION_TO_SECTION_QUERY.get(active_section, "dashboard")
 
-    if active_section == "🏠 Dashboard":
+    if active_section == "🏠 Overview":
         render_dashboard_tab()
     elif active_section == "📜 History":
         render_transaction_history()
     elif active_section == "⚙️ Master Data":
         render_master_data_tab(df_classes)
-    elif active_section == "📊 Superset":
+    elif active_section == "📊 Dashboard":
         render_superset_tab()
 
 if __name__ == "__main__":
