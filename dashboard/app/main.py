@@ -37,10 +37,10 @@ DEFAULT_CAMERA_OPTIONS = ["1", "2", "3", "➕ Add New"]
 ADD_NEW_OPTION = "➕ Add New"
 HISTORY_PAGE_SIZE = 10
 SECTION_QUERY_TO_OPTION = {
-    "dashboard": "🏠 Dashboard",
+    "dashboard": "🏠 Overview",
     "history": "📜 History",
     "master-data": "⚙️ Master Data",
-    "superset": "📊 Superset",
+    "superset": "📊 Dashboard",
 }
 OPTION_TO_SECTION_QUERY = {v: k for k, v in SECTION_QUERY_TO_OPTION.items()}
 
@@ -1774,7 +1774,7 @@ def render_master_data_tab(df_classes: pd.DataFrame) -> None:
 # ==================== DASHBOARD TAB ====================
 def render_dashboard_tab() -> None:
     """Render dashboard with overview statistics"""
-    st.markdown("### 📊 Dashboard Overview")
+    st.markdown("### 📊 Overview")
     
     # Add custom styles for dashboard
     st.markdown("""
