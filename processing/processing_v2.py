@@ -46,8 +46,7 @@ RETRY_DELAY = 0.01  # Seconds to wait between retries (10ms)
 MAX_WAIT_TIME = 30  # Maximum seconds to wait before logging warning (not stopping)
 MAX_RETRIES = 3
 
-LINE_Y1 = 270
-LINE_Y2 = 335
+LINE_Y1 = 295
 COUNT_DIRECTION = "down"
 
 def flush_redis_daily(redis_client, service):
@@ -75,8 +74,6 @@ def flush_redis_daily(redis_client, service):
         "counted_tracks:*",
         "insert_lock:*",
         "pos_history:*",
-        "pending_vehicle:*",
-        "line1_crossed:*",
         "best_class:*",
         "last_pos:*",
     ]
@@ -104,21 +101,21 @@ def start_midnight_scheduler(redis_client, service):
     logging.info("✅ Midnight scheduler started")
 
 class CameraWorker:
-    def __init__(self, camera_id, service, process_fn):
-        self.camera_id = camera_id
-        self.queue = Queue()
-        self.thread = threading.Thread(target=self._run, daemon=True)
-        self.process_fn = process_fn
-        self.thread.start()
+    def __init__(self, camera_id, service, process_fn): #รับ camera_id, service และ process_fn (ฟังก์ชันการประมวลผล) เป็นพารามิเตอร์
+        self.camera_id = camera_id                      #กำหนด camera_id ให้กับ worker นี้  
+        self.queue = Queue()                            #สร้างคิวสำหรับเก็บงานที่ต้องประมวลผล         
+        self.thread = threading.Thread(target=self._run, daemon=True) #สร้าง thread สำหรับรันฟังก์ชัน _run ซึ่งจะทำงานใน background
+        self.process_fn = process_fn                    #เก็บฟังก์ชันการประมวลผลที่ส่งมาในตัวแปร process_fn
+        self.thread.start()                             #เริ่มต้น thread เพื่อให้พร้อมรับงานและประมวลผล
 
-    def _run(self):
+    def _run(self): #ฟังก์ชันนี้จะทำงานใน thread แยกต่างหาก มันจะรอรับงานจากคิวและเรียกใช้ฟังก์ชันการประมวลผลที่กำหนดไว้
         while True:
             task_json = self.queue.get()
             if task_json is None:
                 break
-            self.process_fn(task_json)
+            self.process_fn(task_json) #เมื่อได้รับงานจากคิว มันจะเรียกใช้ฟังก์ชันการประมวลผล (process_fn) ที่ถูกส่งมาใน constructor โดยส่ง task_json เป็นอาร์กิวเมนต์
 
-    def submit(self, task_json):
+    def submit(self, task_json): #ฟังก์ชันนี้ใช้สำหรับส่งงานใหม่เข้ามาในคิวของ worker โดยรับ task_json เป็นพารามิเตอร์และนำไปใส่ในคิวเพื่อให้ thread ที่รันฟังก์ชัน _run สามารถดึงงานนี้ไปประมวลผลได้
         self.queue.put(task_json)
 
 class VehicleClass(Enum):
@@ -454,27 +451,24 @@ class ProcessingService:
         mlflow.set_tracking_uri(mlflow_tracking_uri)
         local_model_path = mlflow.artifacts.download_artifacts(artifact_uri=model_uri)
         self.onnx_path = os.path.join(local_model_path, "model.onnx")
-        self.models: Dict[str, YOLO] = {}
-        self._model_init_lock = threading.Lock()
+        self._models: Dict[str, YOLO] = {}
+        self._model_lock = threading.Lock()
 
         # self.trackers = {} 
         self.byte_trackers: Dict[str, BYTETracker] = {}
         self._tracker_lock = threading.Lock()
+        self._camera_locks: Dict[str, threading.Lock] = {}
+        self._camera_locks_lock = threading.Lock()
         self._flush_lock = threading.Event()
         self._flush_lock.set()  # set = allowed to process
         self._active_tasks = 0
         self._active_tasks_lock = threading.Lock()
+        self.session_id = datetime.datetime.now().strftime("%H%M%S")
 
-    def _get_model(self, camera_id: str) -> YOLO:
-        if camera_id not in self.models:
-            with self._model_init_lock:
-                if camera_id not in self.models:
-                    self.models[camera_id] = YOLO(self.onnx_path, task='detect')
-                    logging.info(
-                        f"[{camera_id}] ✅ Model instance created | "
-                        f"total models loaded: {len(self.models)}"
-                )
-        return self.models[camera_id]
+    def _make_track_id(self, camera_id: str, raw_track_id: int) -> str:
+        """Create globally unique track_id per session"""
+        return f"{self.session_id}_{raw_track_id}"
+
     def _increment_active(self):
         with self._active_tasks_lock:
             self._active_tasks += 1
@@ -495,9 +489,17 @@ class ProcessingService:
                     fuse_score=True,
                 )
                 self.byte_trackers[camera_id] = BYTETracker(args, frame_rate=30)
+                logging.info(f"[{camera_id}] ✅ New tracker created")
+            logging.info(f"[{camera_id}] 🔁 Returning tracker | all trackers: {list(self.byte_trackers.keys())}")
         return self.byte_trackers[camera_id]
-    
-    def _crop_with_padding(self, frame: np.ndarray, box: np.ndarray, scale: float = 1.0) -> np.ndarray:
+    def _get_model(self, camera_id: str) -> YOLO:
+        with self._model_lock:
+            if camera_id not in self._models:
+                self._models[camera_id] = YOLO(self.onnx_path, task='detect')
+                logging.info(f"[{camera_id}] ✅ New model loaded")
+        return self._models[camera_id]
+
+    def _crop_with_padding(self, frame: np.ndarray, box: np.ndarray, scale: float = 1.5) -> np.ndarray:
         h, w = frame.shape[:2]
         x1, y1, x2, y2 = box.astype(float)
 
@@ -505,7 +507,6 @@ class ProcessingService:
         box_w = x2 - x1
         box_h = y2 - y1
 
-        # Expand obliquely:
         # - Bottom-left corner: expand LEFT and DOWN
         # - Top-right corner: expand RIGHT and UP
         expand_x = box_w * (scale - 1)
@@ -594,22 +595,6 @@ class ProcessingService:
         key = f"pos_history:{camera_id}:{track_id}"
         raw = self.redis_client.get(key)
         return json.loads(raw) if raw else []
- 
-    def _save_pending_vehicle(self, camera_id, track_id, data: dict):
-        """Save frame + timestamp when vehicle crosses Line 1"""
-        key = f"pending_vehicle:{camera_id}:{track_id}"
-        self.redis_client.setex(key, 300, json.dumps(data))
-
-    def _get_pending_vehicle(self, camera_id, track_id) -> Optional[dict]:
-        """Get saved data when vehicle crosses Line 2"""
-        key = f"pending_vehicle:{camera_id}:{track_id}"
-        val = self.redis_client.get(key)
-        return json.loads(val) if val else None
-
-    def _delete_pending_vehicle(self, camera_id, track_id):
-        """Clean up after committing to DB"""
-        key = f"pending_vehicle:{camera_id}:{track_id}"
-        self.redis_client.delete(key)
         
     def _save_last_known_position(self, camera_id, track_id, center_x, center_y):
         """Save last known position when track is active"""
@@ -658,60 +643,66 @@ class ProcessingService:
                 best_match = lost["track_id"]
         
         return best_match
-    def _mark_line1_crossed(self, camera_id, track_id):
-        key = f"line1_crossed:{camera_id}:{track_id}"
-        self.redis_client.setex(key, 3600, 1)
-
-    def _is_line1_crossed(self, camera_id, track_id) -> bool:
-        key = f"line1_crossed:{camera_id}:{track_id}"
-        return bool(self.redis_client.exists(key))
 
     def _transfer_track_state(self, camera_id, old_track_id, new_track_id):
         """Transfer all Redis state from old track_id to new track_id"""
-        
+
         # Transfer position history
         old_history = self._get_position_history(camera_id, old_track_id)
         if old_history:
             key = f"pos_history:{camera_id}:{new_track_id}"
             self.redis_client.setex(key, 3600, json.dumps(old_history))
-        
-        # Transfer pending vehicle (Line 1 data)
-        pending = self._get_pending_vehicle(camera_id, old_track_id)
-        if pending:
-            self._save_pending_vehicle(camera_id, new_track_id, pending)
-            self._delete_pending_vehicle(camera_id, old_track_id)
-        if self._is_line1_crossed(camera_id, old_track_id):
-            self._mark_line1_crossed(camera_id, new_track_id)
-        self.redis_client.delete(f"line1_crossed:{camera_id}:{old_track_id}")    
-        
-        # Clean up old position key
+
+        # Clean up old keys
         self.redis_client.delete(f"last_pos:{camera_id}:{old_track_id}")
         self.redis_client.delete(f"pos_history:{camera_id}:{old_track_id}")
-        
-        logging.info(f"🔄 ReID: Transferred state from track_{old_track_id} → track_{new_track_id}")
+
+        logging.info(f"🔄 ReID: Transferred state from {old_track_id} → {new_track_id}")
 
     def _try_lock_for_insert(self, camera_id, track_id) -> bool:
         """Atomic lock — only first caller returns True"""
         key = f"insert_lock:{camera_id}:{track_id}"
         # SET key 1 NX EX 3600 — only sets if key doesn't exist
         result = self.redis_client.set(key, 1, nx=True, ex=3600)
+        logging.info(f"[{camera_id}] insert_lock track_{track_id}: {'ACQUIRED' if result else 'BLOCKED ⚠️'}")
         return result is True
 
     def _update_best_class(self, camera_id, track_id, class_id, conf):
         key = f"best_class:{camera_id}:{track_id}"
         raw = self.redis_client.get(key)
-        current = json.loads(raw) if raw else None
-        
-        if current is None or conf > current["confidence"]:
-            self.redis_client.setex(key, 3600, json.dumps({
-                "class_id": class_id,
-                "confidence": conf
-            }))
+        current = json.loads(raw) if raw else {}
+
+        # Track votes and total confidence per class
+        class_key = str(class_id)
+        if class_key not in current:
+            current[class_key] = {"votes": 0, "total_conf": 0.0}
+
+        current[class_key]["votes"] += 1
+        current[class_key]["total_conf"] += conf
+
+        self.redis_client.setex(key, 3600, json.dumps(current))
 
     def _get_best_class(self, camera_id, track_id) -> dict:
         key = f"best_class:{camera_id}:{track_id}"
         raw = self.redis_client.get(key)
-        return json.loads(raw) if raw else {"class_id": 0, "confidence": 0.0}   
+        if not raw:
+            return {"class_id": 0, "confidence": 0.0}
+
+        current = json.loads(raw)
+
+        # Pick class with most votes, use avg confidence as tiebreaker
+        best_class_key = max(
+            current,
+            key=lambda c: (current[c]["votes"], current[c]["total_conf"] / current[c]["votes"])
+        )
+
+        best = current[best_class_key]
+        avg_conf = best["total_conf"] / best["votes"]
+
+        return {
+            "class_id": int(best_class_key),
+            "confidence": round(avg_conf, 4)
+        }   
     def _check_crossed_line(self, history: list, line_y: int, 
                             direction: str) -> bool:
         """Check last N positions not just prev frame"""
@@ -733,7 +724,7 @@ class ProcessingService:
         torch.cuda.set_device(0)
         frame_uint8 = self._normalize_to_uint8(frame)
         logging.info(f"Frame shape: {frame_uint8.shape}")
-
+        t0 = time.time()
         model = self._get_model(task.camera_id)
         predict_results = list(model.predict(
             source=frame_uint8,
@@ -743,7 +734,7 @@ class ProcessingService:
             device=0,
             stream=True,
         ))
-        logging.info(f"✅ predict done, {len(predict_results)} results")
+        logging.info(f"[{task.camera_id}] Inference: {time.time()-t0:.3f}s")
 
         byte_tracker = self._get_byte_tracker(task.camera_id)
         final_results = []
@@ -752,7 +743,6 @@ class ProcessingService:
             if r.boxes is None or len(r.boxes) == 0:
                 continue
 
-            # Move to CPU for BYTETracker
             r = r.cpu()
             xyxy  = r.boxes.xyxy.numpy()
             confs = r.boxes.conf.numpy()
@@ -763,7 +753,6 @@ class ProcessingService:
             )
             boxes_input = Boxes(det_tensor, orig_shape=frame_uint8.shape[:2])
 
-            # ✅ Wrap in try/catch to see exact BYTETracker error if it fails
             try:
                 tracked = byte_tracker.update(boxes_input, img=frame_uint8)
             except Exception as e:
@@ -776,6 +765,7 @@ class ProcessingService:
             for t in tracked:
                 x1, y1, x2, y2, track_id = t[:5]
                 track_id = int(track_id)
+                stable_track_id = self._make_track_id(task.camera_id, track_id)  # ✅ already here
                 box = np.array([x1, y1, x2, y2])
                 center_x = int((x1 + x2) / 2)
                 center_y = int((y1 + y2) / 2)
@@ -788,97 +778,79 @@ class ProcessingService:
                 conf = float(confs[best_idx])
                 cls  = int(clss[best_idx])
 
-                # ✅ ReID guard — only after 3 stable frames
-                history = self._save_position_history(task.camera_id, track_id, center_y)
-                self._save_last_known_position(task.camera_id, track_id, center_x, center_y)
+                # ✅ All Redis calls use stable_track_id
+                history = self._save_position_history(task.camera_id, stable_track_id, center_y)
+                self._save_last_known_position(task.camera_id, stable_track_id, center_x, center_y)
 
                 if len(history) >= 3:
                     matched_old_track_id = self._find_matching_lost_track(
-                        task.camera_id, center_x, center_y, track_id
+                        task.camera_id, center_x, center_y, stable_track_id
                     )
                     if matched_old_track_id is not None:
-                        logging.info(f"🔍 ReID match: new track_{track_id} → old track_{matched_old_track_id}")
-                        self._transfer_track_state(task.camera_id, matched_old_track_id, track_id)
+                        logging.info(f"🔍 ReID match: new {stable_track_id} → old {matched_old_track_id}")
+                        self._transfer_track_state(task.camera_id, matched_old_track_id, stable_track_id)
 
-                unique_track_id = f"{task.camera_id}_{track_id}"
+                unique_track_id = f"{task.camera_id}_{stable_track_id}"
 
                 if history[-1] > 240:
-                    logging.info(f"📊 track_{track_id} center_y history: {history}")
+                    logging.info(f"📊 {stable_track_id} center_y history: {history}")
 
                 if cls != VehicleClass.OTHER.value:
-                    self._update_best_class(task.camera_id, track_id, cls, conf)
+                    self._update_best_class(task.camera_id, stable_track_id, cls, conf)  # ✅
 
                 if len(history) < 2:
                     continue
                 if cls == VehicleClass.OTHER.value:
                     continue
-                if self._is_counted(task.camera_id, track_id):
-                    logging.warning(f"⚠️ track_{track_id} skipped — already counted")
+                if self._is_counted(task.camera_id, stable_track_id):  # ✅
+                    logging.warning(f"⚠️ {stable_track_id} skipped — already counted")
                     continue
 
-                # === LINE 1 ===
-                if self._check_crossed_line(history, LINE_Y1, COUNT_DIRECTION):
-                    if not self._is_line1_crossed(task.camera_id, track_id):
-                        logging.info(f"📸 Line 1 crossed: {unique_track_id}")
-                        minio_path = self.convert_npy_to_jpg(
-                            npy_array=frame_uint8,
-                            frame_index=frame_idx,
-                            camera_id=task.camera_id,
-                            task_id=task.task_id,
-                            task_timestamp=task.timestamp,
-                            crop_box=box,
-                            track_id=track_id,
-                        )
-                        self._save_pending_vehicle(task.camera_id, track_id, {
-                            "minio_path": minio_path,
-                            "timestamp": (task.timestamp or datetime.datetime.now(datetime.timezone.utc)).isoformat(),
-                            "class_id": cls,
-                            "confidence": conf,
-                            "unique_track_id": unique_track_id,
-                        })
-                        self._mark_line1_crossed(task.camera_id, track_id)
+                # === SINGLE LINE ===
+                if not self._check_crossed_line(history, LINE_Y1, COUNT_DIRECTION):
                     continue
 
-                # === LINE 2 ===
-                if not self._check_crossed_line(history, LINE_Y2, COUNT_DIRECTION):
-                    continue
-
-                pending = self._get_pending_vehicle(task.camera_id, track_id)
-                if pending is None:
-                    logging.warning(f"⚠️ Line 2 crossed but no Line 1 data for {unique_track_id}")
-                    continue
-
-                logging.info(f"✅ Line 2 crossed: {unique_track_id} - saving to DB")
-                if not self._try_lock_for_insert(task.camera_id, track_id):
+                if not self._try_lock_for_insert(task.camera_id, stable_track_id):  # ✅
                     logging.warning(f"⚠️ Duplicate insert prevented for {unique_track_id}")
                     continue
 
-                self._mark_counted(task.camera_id, track_id)
-                self._delete_pending_vehicle(task.camera_id, track_id)
+                logging.info(f"✅ Line crossed: {unique_track_id} - saving to DB")
+                self._mark_counted(task.camera_id, stable_track_id)  # ✅
 
-                best = self._get_best_class(task.camera_id, track_id)
+                minio_path = self.convert_npy_to_jpg(
+                    npy_array=frame_uint8,
+                    frame_index=frame_idx,
+                    camera_id=task.camera_id,
+                    task_id=task.task_id,
+                    task_timestamp=task.timestamp,
+                    crop_box=box,
+                    track_id=stable_track_id,  # ✅ also in filename
+                )
+
+                best = self._get_best_class(task.camera_id, stable_track_id)  # ✅
                 vehicle_info = self.db.get_vehicle_class(best["class_id"])
                 total_fee = vehicle_info.get("total_fee", 0.0) if vehicle_info else 0.0
 
                 transaction = VehicleTransaction(
                     camera_id=task.camera_id,
-                    track_id=track_id,
+                    track_id=stable_track_id,  # ✅
                     class_id=best["class_id"],
                     total_fee=total_fee,
-                    time_stamp=datetime.datetime.fromisoformat(pending["timestamp"]),
-                    img_path=pending["minio_path"],
+                    time_stamp=task.timestamp or datetime.datetime.now(datetime.timezone.utc),
+                    img_path=minio_path,
                     confidence=best["confidence"],
                 )
                 try:
                     self.db.insert_transaction(transaction)
+                    logging.info(f"✅ Transaction saved: {unique_track_id}")
                     final_results.append({
-                        "track_id": track_id,
+                        "track_id": stable_track_id,  # ✅
                         "bbox": box.tolist(),
-                        "class": pending["class_id"],
-                        "minio_path": pending["minio_path"],
+                        "class": best["class_id"],
+                        "minio_path": minio_path,
                     })
                 except Exception as e:
-                    logging.error(f"DB insert failed for track {track_id}: {e}")
+                    logging.error(f"DB insert failed for {stable_track_id}: {e}")
 
         return {"frame_idx": frame_idx, "detections": final_results} if final_results else None
     def process_task(self, task: ProcessingTask) -> Dict[str, Any]:
@@ -1003,6 +975,14 @@ def main():
     def process_task_json(task_json):
         try:
             task = ProcessingTask.from_json(task_json)
+            # Example task JSON structure:
+            # {
+            # task.camera_id           = "CAM_01"
+            # task.task_id             = "task_123"
+            # task.minio_bucket        = "video-frames"
+            # task.object_key_or_prefix= "CAM_01/2024-01-15/frame_001.npy"
+            # task.timestamp           = 2024-01-15T10:30:00+07:00
+            # }
             result = service.process_task(task)
             
             if result.get("status") == "success":
@@ -1022,11 +1002,19 @@ def main():
             logging.error(f"❌ Task failed: {e}")
     def route_task(task_json):
         """Route task to correct camera worker"""
-        try:
+        try: 
             task = ProcessingTask.from_json(task_json)
+            # Example task JSON structure:
+            # {
+            # task.camera_id           = "CAM_01"
+            # task.task_id             = "task_123"
+            # task.minio_bucket        = "video-frames"
+            # task.object_key_or_prefix= "CAM_01/2024-01-15/frame_001.npy"
+            # task.timestamp           = 2024-01-15T10:30:00+07:00
+            # }
             if task.camera_id not in camera_workers:
                 logging.info(f"🆕 Creating worker for {task.camera_id}")
-                camera_workers[task.camera_id] = CameraWorker(task.camera_id, service, process_task_json)
+                camera_workers[task.camera_id] = CameraWorker(task.camera_id, service, process_task_json) #สร้าง thread worker ใหม่สำหรับกล้องนั้นๆ
             camera_workers[task.camera_id].submit(task_json)
         except Exception as e:
             logging.error(f"❌ Route failed: {e}")
@@ -1035,6 +1023,14 @@ def main():
         # Drain existing tasks on startup
         while True:
             task_json = redis_manager.client.lpop(redis_manager.queue_name)
+            # Example task JSON structure:
+            # {
+            #     "camera_id": "CAM_01",
+            #     "task_id": "task_123",
+            #     "minio_bucket": "video-frames",
+            #     "object_key_or_prefix": "CAM_01/2024-01-15/frame_001.npy",
+            #     "timestamp": "2024-01-15T10:30:00+07:00"
+            # }
             if not task_json:
                 break
             route_task(task_json)

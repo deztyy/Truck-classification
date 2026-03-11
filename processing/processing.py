@@ -591,22 +591,6 @@ class ProcessingService:
         raw = self.redis_client.get(key)
         return json.loads(raw) if raw else []
  
-    # def _save_pending_vehicle(self, camera_id, track_id, data: dict):
-    #     """Save frame + timestamp when vehicle crosses Line 1"""
-    #     key = f"pending_vehicle:{camera_id}:{track_id}"
-    #     self.redis_client.setex(key, 300, json.dumps(data))
-
-    # def _get_pending_vehicle(self, camera_id, track_id) -> Optional[dict]:
-    #     """Get saved data when vehicle crosses Line 2"""
-    #     key = f"pending_vehicle:{camera_id}:{track_id}"
-    #     val = self.redis_client.get(key)
-    #     return json.loads(val) if val else None
-
-    # def _delete_pending_vehicle(self, camera_id, track_id):
-    #     """Clean up after committing to DB"""
-    #     key = f"pending_vehicle:{camera_id}:{track_id}"
-    #     self.redis_client.delete(key)
-        
     def _save_last_known_position(self, camera_id, track_id, center_x, center_y):
         """Save last known position when track is active"""
         key = f"last_pos:{camera_id}:{track_id}"
@@ -654,13 +638,6 @@ class ProcessingService:
                 best_match = lost["track_id"]
         
         return best_match
-    # def _mark_line1_crossed(self, camera_id, track_id):
-    #     key = f"line1_crossed:{camera_id}:{track_id}"
-    #     self.redis_client.setex(key, 3600, 1)
-
-    # def _is_line1_crossed(self, camera_id, track_id) -> bool:
-    #     key = f"line1_crossed:{camera_id}:{track_id}"
-    #     return bool(self.redis_client.exists(key))
 
     def _transfer_track_state(self, camera_id, old_track_id, new_track_id):
         """Transfer all Redis state from old track_id to new track_id"""
