@@ -346,11 +346,11 @@ services:
       SQLALCHEMY_DATABASE_URI: postgresql://superset:superset123@superset-postgres:5432/superset
       SUPERSET_SQLALCHEMY_DATABASE_URI: postgresql://superset:superset123@superset-postgres:5432/superset
       PYTHONUNBUFFERED: 1
-      SUPERSET_DATASET_EXPORT_PATH: ${SUPERSET_DATASET_EXPORT_PATH:-/imports/dataset_export_20260205T094311.zip}
-      SUPERSET_DASHBOARD_EXPORT_PATH: ${SUPERSET_DASHBOARD_EXPORT_PATH:-/imports/dashboard_export_20260310T045801.zip}
-      SUPERSET_IMPORT_USERNAME: ${SUPERSET_IMPORT_USERNAME:-admin}
-      SUPERSET_ANALYTICS_DB_URI: ${SUPERSET_ANALYTICS_DB_URI:-postgresql://postgres:postgres1234@db:5432/vehicle_db}
-      SUPERSET_DASHBOARD_SLUG: ${SUPERSET_DASHBOARD_SLUG:-AQW7bQEbaVn}
+      SUPERSET_DATASET_EXPORT_PATH: ${SUPERSET_DATASET_EXPORT_PATH}
+      SUPERSET_DASHBOARD_EXPORT_PATH: ${SUPERSET_DASHBOARD_EXPORT_PATH}
+      SUPERSET_IMPORT_USERNAME: ${SUPERSET_IMPORT_USERNAME}
+      SUPERSET_ANALYTICS_DB_URI: ${SUPERSET_ANALYTICS_DB_URI}
+      SUPERSET_DASHBOARD_SLUG: ${SUPERSET_DASHBOARD_SLUG}
       SUPERSET_ALLOWED_EMBED_ORIGINS: ${SUPERSET_ALLOWED_EMBED_ORIGINS:-http://localhost:8501,http://127.0.0.1:8501}
     volumes:
       - superset_data:/var/lib/superset
@@ -384,7 +384,7 @@ services:
         condition: service_completed_successfully
     environment:
       FLASK_ENV: production
-      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-1234567890abcdefghijklmnopqrstuvwxyz}
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
       SQLALCHEMY_DATABASE_URI: postgresql://superset:superset123@superset-postgres:5432/superset
       SUPERSET_SQLALCHEMY_DATABASE_URI: postgresql://superset:superset123@superset-postgres:5432/superset
       PYTHONUNBUFFERED: 1
@@ -412,11 +412,11 @@ services:
     restart: always
     environment:
       SUPERSET_URL: http://superset:8088
-      SUPERSET_USER: admin
-      SUPERSET_PASS: admin123
+      SUPERSET_USER: ${SUPERSET_USER}
+      SUPERSET_PASS: ${SUPERSET_PASS}
       SUPERSET_EMBEDDED_DASHBOARD_ID: ${SUPERSET_EMBEDDED_DASHBOARD_ID:-}
       SUPERSET_DASHBOARD_UUID: ${SUPERSET_DASHBOARD_UUID:-}
-      SUPERSET_DASHBOARD_SLUG: ${SUPERSET_DASHBOARD_SLUG:-}
+      SUPERSET_DASHBOARD_SLUG: ${SUPERSET_DASHBOARD_SLUG}
       SUPERSET_ALLOWED_EMBED_ORIGINS: ${SUPERSET_ALLOWED_EMBED_ORIGINS:-http://localhost:8501,http://127.0.0.1:8501}
     ports:
       - "8000:8000"
